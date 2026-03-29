@@ -548,9 +548,16 @@ func runProposeInit() error {
 		return fmt.Errorf("getting home dir: %w", err)
 	}
 
-	scriptPath := filepath.Join(home, ".alluka", "scripts", "dispatch-approved.sh")
+	scriptDir := filepath.Join(home, ".alluka", "scripts")
+	if err := os.MkdirAll(scriptDir, 0o755); err != nil {
+		return fmt.Errorf("creating scripts dir: %w", err)
+	}
+	scriptPath := filepath.Join(scriptDir, "dispatch-approved.sh")
 	if _, err := os.Stat(scriptPath); os.IsNotExist(err) {
-		return fmt.Errorf("dispatch-approved.sh not found at %s — install it first", scriptPath)
+		if err := os.WriteFile(scriptPath, []byte(dispatchScript), 0o755); err != nil {
+			return fmt.Errorf("writing dispatch-approved.sh: %w", err)
+		}
+		fmt.Printf("Created %s\n", scriptPath)
 	}
 
 	if out, err := exec.Command("scheduler", "jobs", "add",
@@ -579,3 +586,93 @@ func runProposeInit() error {
 	fmt.Println("Self-improvement loop initialized.")
 	return nil
 }
+
+const dispatchScript = `#!/usr/bin/env bash
+# dispatch-approved.sh — Run the next approved (in-progress+auto) shu mission.
+set -uo pipefail
+
+LOCK_FILE="${HOME}/.alluka/dispatch-approved.pid"
+LOG_PREFIX="dispatch-approved"
+
+log() { echo "${LOG_PREFIX}: $*"; }
+die() { echo "${LOG_PREFIX}: $*" >&2; exit 1; }
+
+acquire_lock() {
+    if [[ -f "$LOCK_FILE" ]]; then
+        local old_pid
+        old_pid=$(cat "$LOCK_FILE" 2>/dev/null || true)
+        if [[ -n "$old_pid" ]] && kill -0 "$old_pid" 2>/dev/null; then
+            log "already running (pid ${old_pid}), exiting"
+            exit 0
+        fi
+        rm -f "$LOCK_FILE"
+    fi
+    echo $$ > "$LOCK_FILE"
+}
+
+release_lock() { rm -f "$LOCK_FILE"; }
+trap release_lock EXIT
+acquire_lock
+
+command -v jq &>/dev/null     || die "jq is required"
+command -v tracker &>/dev/null || die "tracker is required"
+command -v orchestrator &>/dev/null || die "orchestrator is required"
+command -v shu &>/dev/null    || die "shu is required"
+
+ITEMS_JSON=$(tracker query items --json 2>&1) || die "tracker query items failed: ${ITEMS_JSON}"
+
+ISSUE=$(printf '%s\n' "$ITEMS_JSON" | jq -c '
+    [.items[]
+    | select(.status == "in-progress")
+    | select((.labels // "") | split(",") | map(ltrimstr(" ") | rtrimstr(" ")) | any(. == "auto"))
+    ] | first // empty
+' 2>/dev/null)
+
+if [[ -z "$ISSUE" || "$ISSUE" == "null" ]]; then
+    log "no in-progress auto issues found"
+    exit 0
+fi
+
+ISSUE_ID=$(printf '%s\n' "$ISSUE" | jq -r '.id')
+DESCRIPTION=$(printf '%s\n' "$ISSUE" | jq -r '.description // ""')
+
+MISSION_FILE=$(printf '%s\n' "$DESCRIPTION" | grep -m1 '^Mission: ' | sed 's/^Mission: //' | xargs 2>/dev/null || true)
+
+if [[ -z "$MISSION_FILE" || ! -f "$MISSION_FILE" ]]; then
+    log "mission file not found for ${ISSUE_ID} — reverting to open"
+    tracker comment "$ISSUE_ID" "dispatch-approved: mission file not found" 2>/dev/null || true
+    tracker update "$ISSUE_ID" --status open 2>/dev/null || true
+    exit 1
+fi
+
+FINDING_IDS=$(printf '%s\n' "$DESCRIPTION" | grep '^- ' | sed 's/^- \([^:]*\):.*/\1/' | tr '\n' ',' | sed 's/,$//')
+
+log "dispatching ${ISSUE_ID} — mission: ${MISSION_FILE}"
+
+set +e
+ORCH_OUTPUT=$(orchestrator run "$MISSION_FILE" 2>&1)
+ORCH_EXIT=$?
+set -e
+printf '%s\n' "$ORCH_OUTPUT"
+
+WORKSPACE_ID=$(printf '%s\n' "$ORCH_OUTPUT" | grep -oE '[0-9]{8}-[a-f0-9]{8}' | head -1 || true)
+
+if [[ $ORCH_EXIT -eq 0 ]]; then
+    log "mission succeeded for ${ISSUE_ID}"
+    if [[ -n "$FINDING_IDS" ]]; then
+        CLOSE_ARGS=(--tracker-issue "$ISSUE_ID" --finding-ids "$FINDING_IDS")
+        [[ -n "$WORKSPACE_ID" ]] && CLOSE_ARGS+=(--workspace "$WORKSPACE_ID")
+        shu close "${CLOSE_ARGS[@]}" || {
+            log "warning: shu close failed — closing tracker issue directly"
+            tracker update "$ISSUE_ID" --status done 2>/dev/null || true
+        }
+    else
+        tracker update "$ISSUE_ID" --status done 2>/dev/null || true
+    fi
+else
+    log "mission failed for ${ISSUE_ID} (exit ${ORCH_EXIT}) — reverting to open"
+    tracker comment "$ISSUE_ID" "dispatch-approved: mission failed (exit ${ORCH_EXIT})" 2>/dev/null || true
+    tracker update "$ISSUE_ID" --status open 2>/dev/null || true
+    exit 1
+fi
+`
