@@ -674,6 +674,12 @@ print_dry_run() {
     echo "    tracker init"
   fi
   echo "    orchestrator doctor"
+  if contains "nen" "${SELECTED_PLUGINS[@]}"; then
+    echo "    Create scheduler config at ~/.alluka/scheduler/config.json"
+    echo "    Symlink nen binaries (shu, gyo, ko, en, ryu) into ~/bin/"
+    echo "    Register nanika scheduler launchd service (com.nanika.scheduler)"
+    echo "    shu propose --init (register daily shu evaluation cron jobs)"
+  fi
 }
 
 # ── Create Directories ───────────────────────────────────────────────────────

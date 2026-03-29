@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -12,6 +11,7 @@ import (
 	"text/template"
 	"time"
 
+	"github.com/joeyhipolito/nen/internal/llm"
 	"gopkg.in/yaml.v3"
 )
 
@@ -397,40 +397,8 @@ func (r *Runner) runTest(ctx context.Context, tc *TestCase) *TestResult {
 	return result
 }
 
-// execCmdInterface defines the minimal interface for exec.Cmd to make it testable.
-type execCmdInterface interface {
-	Output() ([]byte, error)
-}
-
-// execCommand is a package variable that can be mocked in tests.
-// It defaults to exec.CommandContext.
-var execCommand func(ctx context.Context, name string, arg ...string) execCmdInterface = func(ctx context.Context, name string, arg ...string) execCmdInterface {
-	return exec.CommandContext(ctx, name, arg...)
-}
-
 // CallLLM executes the claude CLI with the given model and prompt, returning stdout.
-// Command: claude --model MODEL --print --output-format text --max-turns 1 --dangerously-skip-permissions -p PROMPT
+// This is a thin wrapper around llm.CallCLI for backwards compatibility.
 func CallLLM(ctx context.Context, model, prompt string) (string, error) {
-	if model == "" {
-		return "", fmt.Errorf("model is required")
-	}
-	if prompt == "" {
-		return "", fmt.Errorf("prompt is required")
-	}
-
-	cmd := execCommand(ctx, "claude",
-		"--model", model,
-		"--print",
-		"--output-format", "text",
-		"--max-turns", "1",
-		"--dangerously-skip-permissions",
-		"-p", prompt,
-	)
-
-	out, err := cmd.Output()
-	if err != nil {
-		return "", fmt.Errorf("claude exec: %w", err)
-	}
-
-	return strings.TrimSpace(string(out)), nil
+	return llm.CallCLI(ctx, model, prompt)
 }

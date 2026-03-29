@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/joeyhipolito/nen/internal/llm"
 )
 
 func TestRenderPrompt(t *testing.T) {
@@ -542,17 +544,14 @@ func TestCallLLM(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			// Save original execCommand
-			originalExecCommand := execCommand
-
-			// Mock execCommand
-			execCommand = func(ctx context.Context, name string, arg ...string) execCmdInterface {
+			orig := llm.ExecCommand
+			llm.ExecCommand = func(ctx context.Context, name string, arg ...string) llm.Commander {
 				return &mockCmd{
 					output: []byte(tt.mockOutput),
 					err:    tt.mockErr,
 				}
 			}
-			defer func() { execCommand = originalExecCommand }()
+			defer func() { llm.ExecCommand = orig }()
 
 			got, err := CallLLM(context.Background(), tt.model, tt.prompt)
 			if (err != nil) != tt.wantErr {
@@ -573,9 +572,9 @@ func TestCallLLMCommandArgs(t *testing.T) {
 	prompt := "Test prompt"
 
 	var capturedArgs []string
-	originalExecCommand := execCommand
+	orig := llm.ExecCommand
 
-	execCommand = func(ctx context.Context, name string, arg ...string) execCmdInterface {
+	llm.ExecCommand = func(ctx context.Context, name string, arg ...string) llm.Commander {
 		if name != "claude" {
 			t.Errorf("expected command 'claude', got %q", name)
 		}
@@ -585,7 +584,7 @@ func TestCallLLMCommandArgs(t *testing.T) {
 			err:    nil,
 		}
 	}
-	defer func() { execCommand = originalExecCommand }()
+	defer func() { llm.ExecCommand = orig }()
 
 	_, err := CallLLM(context.Background(), model, prompt)
 	if err != nil {

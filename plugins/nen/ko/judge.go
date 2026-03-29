@@ -28,14 +28,14 @@ Format: {"pass": <true|false>, "reasoning": "<one or two sentence explanation>"}
 
 // judgeCallCLI calls claude-haiku via the Claude CLI for judge evaluation.
 func judgeCallCLI(ctx context.Context, userPrompt string) (*judgeVerdict, error) {
-	fullPrompt := judgeSystemPrompt + "\n\n" + userPrompt
 	cmd := exec.CommandContext(ctx, "claude",
 		"--model", judgeModel,
 		"--print",
 		"--output-format", "text",
 		"--max-turns", "1",
 		"--dangerously-skip-permissions",
-		"-p", fullPrompt,
+		"--system-prompt", judgeSystemPrompt,
+		"-p", userPrompt,
 	)
 	out, err := cmd.Output()
 	if err != nil {

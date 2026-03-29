@@ -6,12 +6,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
 
+	"github.com/joeyhipolito/nen/internal/llm"
 	"github.com/joeyhipolito/nen/internal/scan"
 )
 
@@ -487,19 +487,7 @@ func truncateTask(task string) string {
 // ── LLM via Claude CLI ──────────────────────────────────────────────────────
 
 func queryLLM(ctx context.Context, model, prompt string) (string, error) {
-	cmd := exec.CommandContext(ctx, "claude",
-		"--model", model,
-		"--print",
-		"--output-format", "text",
-		"--max-turns", "1",
-		"--dangerously-skip-permissions",
-		"-p", prompt,
-	)
-	out, err := cmd.Output()
-	if err != nil {
-		return "", fmt.Errorf("claude CLI: %w", err)
-	}
-	return strings.TrimSpace(string(out)), nil
+	return llm.CallCLI(ctx, model, prompt)
 }
 
 // ── Workspace resolution ─────────────────────────────────────────────────────

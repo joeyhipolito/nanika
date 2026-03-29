@@ -538,6 +538,27 @@ func formatEvidenceSummary(evidence []evidenceItem) string {
 // Beta: no-op. Post-beta will add proper notification routing via configured channel IDs.
 func notifyChannels(_ string, _ proposableFinding) {}
 
+func schedulerJobExists(name string) (bool, error) {
+	out, err := exec.Command("scheduler", "query", "items", "--json").Output()
+	if err != nil {
+		return false, fmt.Errorf("scheduler query items: %w", err)
+	}
+	var resp struct {
+		Items []struct {
+			Name string `json:"name"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(out, &resp); err != nil {
+		return false, fmt.Errorf("parsing scheduler items: %w", err)
+	}
+	for _, item := range resp.Items {
+		if item.Name == name {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
 func runProposeInit() error {
 	if _, err := exec.LookPath("scheduler"); err != nil {
 		return fmt.Errorf("scheduler plugin required (not found in PATH)")
@@ -560,23 +581,39 @@ func runProposeInit() error {
 		fmt.Printf("Created %s\n", scriptPath)
 	}
 
-	if out, err := exec.Command("scheduler", "jobs", "add",
-		"--name", "propose-remediations",
-		"--cron", "0 */4 * * *",
-		"--command", "shu propose --json",
-	).CombinedOutput(); err != nil {
-		return fmt.Errorf("adding propose job: %s: %w", strings.TrimSpace(string(out)), err)
+	exists, err := schedulerJobExists("propose-remediations")
+	if err != nil {
+		return fmt.Errorf("checking propose-remediations job: %w", err)
 	}
-	fmt.Println("Added scheduler job: propose-remediations (every 4h)")
+	if exists {
+		fmt.Println("Scheduler job already exists: propose-remediations (skipping)")
+	} else {
+		if out, err := exec.Command("scheduler", "jobs", "add",
+			"--name", "propose-remediations",
+			"--cron", "0 */4 * * *",
+			"--command", "shu propose --json",
+		).CombinedOutput(); err != nil {
+			return fmt.Errorf("adding propose job: %s: %w", strings.TrimSpace(string(out)), err)
+		}
+		fmt.Println("Added scheduler job: propose-remediations (every 4h)")
+	}
 
-	if out, err := exec.Command("scheduler", "jobs", "add",
-		"--name", "dispatch-approved",
-		"--cron", "*/15 * * * *",
-		"--command", fmt.Sprintf("bash %s", scriptPath),
-	).CombinedOutput(); err != nil {
-		return fmt.Errorf("adding dispatch job: %s: %w", strings.TrimSpace(string(out)), err)
+	exists, err = schedulerJobExists("dispatch-approved")
+	if err != nil {
+		return fmt.Errorf("checking dispatch-approved job: %w", err)
 	}
-	fmt.Println("Added scheduler job: dispatch-approved (every 15m)")
+	if exists {
+		fmt.Println("Scheduler job already exists: dispatch-approved (skipping)")
+	} else {
+		if out, err := exec.Command("scheduler", "jobs", "add",
+			"--name", "dispatch-approved",
+			"--cron", "*/15 * * * *",
+			"--command", fmt.Sprintf("bash %s", scriptPath),
+		).CombinedOutput(); err != nil {
+			return fmt.Errorf("adding dispatch job: %s: %w", strings.TrimSpace(string(out)), err)
+		}
+		fmt.Println("Added scheduler job: dispatch-approved (every 15m)")
+	}
 
 	remDir := filepath.Join(home, ".alluka", "missions", "remediation")
 	if err := os.MkdirAll(remDir, 0o755); err != nil {
@@ -589,7 +626,7 @@ func runProposeInit() error {
 
 const dispatchScript = `#!/usr/bin/env bash
 # dispatch-approved.sh — Run the next approved (in-progress+auto) shu mission.
-set -uo pipefail
+set -euo pipefail
 
 LOCK_FILE="${HOME}/.alluka/dispatch-approved.pid"
 LOG_PREFIX="dispatch-approved"
