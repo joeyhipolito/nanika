@@ -1,6 +1,17 @@
 bin/
 node_modules/
 
+# Compiled binaries
+/shu
+/gyo
+/en
+/ryu
+/ko
+/watermark
+plugins/nen/shu
+plugins/nen/bin/
+plugins/scheduler/bin/
+
 # Go workspace (developer-local)
 go.work
 
