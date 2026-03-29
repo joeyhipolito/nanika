@@ -37,7 +37,7 @@ func newDoctorCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "doctor",
 		Short: "Validate installation and configuration",
-		Long:  `Run a series of checks to verify that scheduler-cli is set up correctly.`,
+		Long:  `Run a series of checks to verify that scheduler is set up correctly.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runDoctor(jsonFlag)
 		},
@@ -58,8 +58,8 @@ func runDoctor(jsonOutput bool) error {
 	}
 
 	// 1. Binary in PATH
-	if binaryPath, err := exec.LookPath("scheduler-cli"); err != nil {
-		addCheck("Binary", "warn", "scheduler-cli not found in PATH (running from local build?)")
+	if binaryPath, err := exec.LookPath("scheduler"); err != nil {
+		addCheck("Binary", "warn", "scheduler not found in PATH (running from local build?)")
 	} else {
 		addCheck("Binary", "ok", binaryPath)
 	}
@@ -67,7 +67,7 @@ func runDoctor(jsonOutput bool) error {
 	// 2. Config dir exists
 	configDir := config.Dir()
 	if info, err := os.Stat(configDir); err != nil {
-		addCheck("Config dir", "warn", fmt.Sprintf("%s not found — run 'scheduler-cli configure'", configDir))
+		addCheck("Config dir", "warn", fmt.Sprintf("%s not found — run 'scheduler configure'", configDir))
 	} else if !info.IsDir() {
 		addCheck("Config dir", "fail", fmt.Sprintf("%s exists but is not a directory", configDir))
 	} else {
@@ -77,7 +77,7 @@ func runDoctor(jsonOutput bool) error {
 	// 3. Config file exists and is readable
 	configPath := config.Path()
 	if !config.Exists() {
-		addCheck("Config file", "warn", fmt.Sprintf("%s not found — run 'scheduler-cli configure'", configPath))
+		addCheck("Config file", "warn", fmt.Sprintf("%s not found — run 'scheduler configure'", configPath))
 	} else {
 		addCheck("Config file", "ok", configPath)
 
@@ -202,7 +202,7 @@ func runDoctor(jsonOutput bool) error {
 
 	if !allOK {
 		fmt.Println()
-		fmt.Println("  Fix the failures above before using scheduler-cli.")
+		fmt.Println("  Fix the failures above before using scheduler.")
 		return fmt.Errorf("doctor: %d check(s) failed", counts["fail"])
 	}
 	return nil

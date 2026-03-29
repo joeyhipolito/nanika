@@ -40,7 +40,7 @@ func runStatus() error {
 		return fmt.Errorf("getting stats: %w", err)
 	}
 
-	fmt.Printf("scheduler-cli status\n")
+	fmt.Printf("scheduler status\n")
 	fmt.Printf("  jobs (total/enabled) : %d / %d\n", stats.TotalJobs, stats.EnabledJobs)
 	fmt.Printf("  runs total           : %d\n", stats.TotalRuns)
 	if stats.RunningRuns > 0 {

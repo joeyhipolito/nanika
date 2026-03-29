@@ -12,7 +12,7 @@ func newLogsCmd() *cobra.Command {
 		Use:     "logs <job-id>",
 		Short:   "Show execution history for a job",
 		Args:    cobra.ExactArgs(1),
-		Example: "  scheduler-cli logs 3\n  scheduler-cli logs 3 --limit 5",
+		Example: "  scheduler logs 3\n  scheduler logs 3 --limit 5",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			limit, _ := cmd.Flags().GetInt("limit")
 			return runLogs(args[0], limit)
@@ -47,7 +47,7 @@ func runLogs(idStr string, limit int) error {
 	fmt.Printf("logs for job %d (%s):\n\n", job.ID, job.Name)
 
 	if len(runs) == 0 {
-		fmt.Println("  no runs recorded — use 'scheduler-cli run <job-id>' to execute now")
+		fmt.Println("  no runs recorded — use 'scheduler run <job-id>' to execute now")
 		return nil
 	}
 

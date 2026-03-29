@@ -16,7 +16,7 @@ func newConfigureCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "configure",
 		Short: "Interactive configuration setup",
-		Long: `Walk through scheduler-cli settings and write them to ~/.alluka/scheduler/config.
+		Long: `Walk through scheduler settings and write them to ~/.alluka/scheduler/config.
 
 Existing values are shown as defaults; press Enter to keep them.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -39,7 +39,7 @@ Existing values are shown as defaults; press Enter to keep them.`,
 func runConfigure() error {
 	reader := bufio.NewReader(os.Stdin)
 
-	fmt.Println("scheduler-cli Configuration")
+	fmt.Println("scheduler Configuration")
 	fmt.Println("===========================")
 	fmt.Println()
 
@@ -114,7 +114,7 @@ func runConfigure() error {
 	fmt.Printf("Configuration saved to %s\n", config.Path())
 	fmt.Println()
 	fmt.Println("Next steps:")
-	fmt.Println("  scheduler-cli doctor        # validate setup")
+	fmt.Println("  scheduler doctor        # validate setup")
 	return nil
 }
 
@@ -126,7 +126,7 @@ func runConfigureShow() error {
 
 	if !config.Exists() {
 		fmt.Printf("No configuration file found at %s\n", config.Path())
-		fmt.Println("Run 'scheduler-cli configure' to create one.")
+		fmt.Println("Run 'scheduler configure' to create one.")
 		return nil
 	}
 

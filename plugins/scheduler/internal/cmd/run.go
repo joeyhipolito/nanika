@@ -18,7 +18,7 @@ func newRunCmd() *cobra.Command {
 		Use:     "run <job-id>",
 		Short:   "Execute a job immediately (ignores schedule)",
 		Args:    cobra.ExactArgs(1),
-		Example: "  scheduler-cli run 3",
+		Example: "  scheduler run 3",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runJobNow(args[0])
 		},

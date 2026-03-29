@@ -29,9 +29,9 @@ func newJobsCmd() *cobra.Command {
 	addCmd := &cobra.Command{
 		Use:   "add",
 		Short: "Add a new scheduled job",
-		Example: `  scheduler-cli jobs add --name "daily-backup" --cron "0 2 * * *" --command "tar czf /tmp/backup.tgz ~/docs"
-  scheduler-cli jobs add --name "health-check" --cron "*/5 * * * *" --command "curl -s localhost:8080/health"
-  scheduler-cli jobs add --name "health-sweep" --cron "0 */4 * * *" --command "shu evaluate"`,
+		Example: `  scheduler jobs add --name "daily-backup" --cron "0 2 * * *" --command "tar czf /tmp/backup.tgz ~/docs"
+  scheduler jobs add --name "health-check" --cron "*/5 * * * *" --command "curl -s localhost:8080/health"
+  scheduler jobs add --name "health-sweep" --cron "0 */4 * * *" --command "shu evaluate"`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			name, _ := cmd.Flags().GetString("name")
 			schedule, _ := cmd.Flags().GetString("cron")
@@ -59,7 +59,7 @@ func newJobsCmd() *cobra.Command {
 		Use:     "remove <job-id>",
 		Short:   "Remove a job by ID (cascades to run history)",
 		Args:    cobra.ExactArgs(1),
-		Example: "  scheduler-cli jobs remove 3",
+		Example: "  scheduler jobs remove 3",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runJobsRemove(args[0])
 		},
@@ -69,7 +69,7 @@ func newJobsCmd() *cobra.Command {
 		Use:     "enable <job-id>",
 		Short:   "Enable a job",
 		Args:    cobra.ExactArgs(1),
-		Example: "  scheduler-cli jobs enable 3",
+		Example: "  scheduler jobs enable 3",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runJobsSetEnabled(args[0], true)
 		},
@@ -79,7 +79,7 @@ func newJobsCmd() *cobra.Command {
 		Use:     "disable <job-id>",
 		Short:   "Disable a job (won't run until re-enabled)",
 		Args:    cobra.ExactArgs(1),
-		Example: "  scheduler-cli jobs disable 3",
+		Example: "  scheduler jobs disable 3",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runJobsSetEnabled(args[0], false)
 		},
@@ -113,7 +113,7 @@ func runJobsList() error {
 	}
 
 	if len(jobs) == 0 {
-		fmt.Println("no jobs — add one with: scheduler-cli jobs add --name <name> --cron '<expr>' --command '<cmd>'")
+		fmt.Println("no jobs — add one with: scheduler jobs add --name <name> --cron '<expr>' --command '<cmd>'")
 		return nil
 	}
 

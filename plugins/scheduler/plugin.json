@@ -1,12 +1,12 @@
 {
   "name": "scheduler",
   "version": "1.0.0",
-  "description": "Local job scheduler and social content publisher. Schedules posts to LinkedIn, Reddit, and Substack at optimal times. Manages recurring shell jobs with cron expressions.",
+  "description": "Local job scheduler. Manages recurring shell jobs with cron expressions and random daily windows.",
   "icon": "Calendar",
   "binary": "scheduler",
   "build": "go build -ldflags \"-s -w\" -o bin/scheduler ./cmd/scheduler-cli",
   "install": "ln -sf $(pwd)/bin/scheduler ~/bin/scheduler",
-  "tags": ["scheduler", "cron", "jobs", "social", "linkedin", "reddit", "substack", "content", "daemon", "pipeline", "init", "history"],
+  "tags": ["scheduler", "cron", "jobs", "daemon", "init", "history"],
   "repository": {
     "type": "git",
     "url": "https://github.com/joeyhipolito/nanika",

@@ -1,4 +1,4 @@
-// Package cmd contains all cobra command definitions for scheduler-cli.
+// Package cmd contains all cobra command definitions for scheduler.
 package cmd
 
 import (
@@ -13,12 +13,12 @@ const version = "1.0.0"
 
 // rootCmd is the top-level cobra command.
 var rootCmd = &cobra.Command{
-	Use:   "scheduler-cli",
+	Use:   "scheduler",
 	Short: "A local job scheduler",
-	Long: `scheduler-cli — run and track scheduled commands on your machine.
+	Long: `scheduler — run and track scheduled commands on your machine.
 
 Jobs are defined with a cron expression, stored in SQLite, and executed
-by the scheduler daemon. Use 'scheduler-cli configure' to get started.`,
+by the scheduler daemon. Use 'scheduler configure' to get started.`,
 	SilenceUsage:  true,
 	SilenceErrors: true,
 	Version:       version,
