@@ -77,6 +77,50 @@ header() {
   echo ""
 }
 
+# ── Spinner ──────────────────────────────────────────────────────────────────
+
+# spin LABEL CMD
+# Runs CMD in background with a braille spinner. On completion prints ✓ or ✗
+# plus elapsed time. Degrades to a plain label line in non-TTY or JSON mode.
+spin() {
+  local label="$1" cmd="$2"
+  local frames=("⠋" "⠙" "⠹" "⠸" "⠼" "⠴" "⠦" "⠧" "⠇" "⠏")
+  local n=${#frames[@]}
+
+  # Non-TTY or JSON: run silently, print minimal result
+  if [[ "$IS_TTY" -eq 0 ]] || [[ "$JSON_OUTPUT" -eq 1 ]]; then
+    if [[ "$JSON_OUTPUT" -eq 0 ]]; then
+      printf "  %s\n" "$label"
+    fi
+    bash -c "$cmd" >/dev/null 2>&1
+    return $?
+  fi
+
+  local start
+  start=$(date +%s)
+
+  bash -c "$cmd" >/dev/null 2>&1 &
+  local pid=$!
+
+  local i=0
+  while kill -0 "$pid" 2>/dev/null; do
+    printf "\r  ${CYAN}%s${RESET} %s" "${frames[$((i % n))]}" "$label"
+    sleep 0.1
+    i=$((i + 1))
+  done
+
+  wait "$pid"
+  local rc=$?
+  local elapsed=$(( $(date +%s) - start ))
+
+  if [[ $rc -eq 0 ]]; then
+    printf "\r  ${GREEN}✓${RESET} %-38s ${DIM}%ds${RESET}\n" "$label" "$elapsed"
+  else
+    printf "\r  ${RED}✗${RESET} %-38s ${DIM}%ds${RESET}\n" "$label" "$elapsed"
+  fi
+  return $rc
+}
+
 # ── Version Helpers ──────────────────────────────────────────────────────────
 
 version_gte() { [[ "$1" -ge "$2" ]]; }
@@ -671,12 +715,9 @@ build_item() {
       FAILED_PLUGINS+=("$name")
     fi
   else
-    printf "  Building %-24s" "$name..."
-    if bash -c "$cmd" >/dev/null 2>&1; then
-      echo -e " ${GREEN}✓${RESET}"
+    if spin "Building $name" "$cmd"; then
       INSTALLED_PLUGINS+=("$name")
     else
-      echo -e " ${RED}✗${RESET}"
       FAILED_PLUGINS+=("$name")
     fi
   fi
@@ -759,10 +800,10 @@ install_all() {
     install_cmd=$(read_plugin_json "$plugin_dir" "install" 2>/dev/null || echo "")
     [[ -z "$install_cmd" ]] && continue
 
-    if (cd "$plugin_dir" && bash -c "$install_cmd") >/dev/null 2>&1; then
-      ok "$plugin"
+    if spin "Installing $plugin" "cd '$plugin_dir' && $install_cmd"; then
+      : # spin already printed ✓
     else
-      fail "$plugin  (install failed)"
+      : # spin already printed ✗
     fi
   done
 
