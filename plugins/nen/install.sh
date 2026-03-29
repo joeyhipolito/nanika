@@ -34,7 +34,7 @@ mkdir -p "$SCANNERS_DIR"
 
 for scanner in gyo en ryu; do
     echo "  building $scanner..."
-    go build -o "${SCANNERS_DIR}/${scanner}" "./cmd/${scanner}"
+    GOWORK=off go build -o "${SCANNERS_DIR}/${scanner}" "./cmd/${scanner}"
     chmod +x "${SCANNERS_DIR}/${scanner}"
     echo "  installed: ${SCANNERS_DIR}/${scanner}"
 done
@@ -44,13 +44,19 @@ echo "  installed: ${CONFIG_DIR}/nen/plugin.json"
 
 echo ""
 echo "Building shu evaluator..."
-go build -o "${CONFIG_DIR}/bin/shu" "./cmd/shu"
+GOWORK=off go build -o "${CONFIG_DIR}/bin/shu" "./cmd/shu"
 chmod +x "${CONFIG_DIR}/bin/shu"
 echo "  installed: ${CONFIG_DIR}/bin/shu"
 
 echo ""
+echo "Building ko evaluator..."
+GOWORK=off go build -o "${CONFIG_DIR}/bin/ko" "./cmd/ko"
+chmod +x "${CONFIG_DIR}/bin/ko"
+echo "  installed: ${CONFIG_DIR}/bin/ko"
+
+echo ""
 echo "Building nen-daemon..."
-go build -o "${CONFIG_DIR}/bin/nen-daemon" "./cmd/nen-daemon"
+GOWORK=off go build -o "${CONFIG_DIR}/bin/nen-daemon" "./cmd/nen-daemon"
 chmod +x "${CONFIG_DIR}/bin/nen-daemon"
 echo "  installed: ${CONFIG_DIR}/bin/nen-daemon"
 

@@ -3,7 +3,7 @@
   "version": "1.1.0",
   "api_version": 1,
   "binary": "shu",
-  "build": "go build -ldflags \"-s -w\" -o bin/shu ./cmd/shu && go build -ldflags \"-s -w\" -o bin/gyo ./cmd/gyo && go build -ldflags \"-s -w\" -o bin/en ./cmd/en && go build -ldflags \"-s -w\" -o bin/ryu ./cmd/ryu && go build -ldflags \"-s -w\" -o bin/nen-daemon ./cmd/nen-daemon",
+  "build": "go build -ldflags \"-s -w\" -o bin/shu ./cmd/shu && go build -ldflags \"-s -w\" -o bin/ko ./cmd/ko && go build -ldflags \"-s -w\" -o bin/gyo ./cmd/gyo && go build -ldflags \"-s -w\" -o bin/en ./cmd/en && go build -ldflags \"-s -w\" -o bin/ryu ./cmd/ryu && go build -ldflags \"-s -w\" -o bin/nen-daemon ./cmd/nen-daemon",
   "tags": ["nen", "scanner", "health", "metrics", "cost", "orchestrator"],
   "repository": {
     "type": "git",
