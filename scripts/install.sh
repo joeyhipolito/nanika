@@ -935,6 +935,16 @@ post_install() {
     fi
   fi
 
+  # Self-improvement loop setup (idempotent)
+  if command -v shu >/dev/null 2>&1 && command -v scheduler >/dev/null 2>&1; then
+    step "Setting up self-improvement loop"
+    if shu propose --init 2>/dev/null; then
+      ok "shu propose --init OK (scheduler jobs registered)"
+    else
+      warn "shu propose --init returned non-zero (jobs may already exist)"
+    fi
+  fi
+
   # Run doctor on each installed plugin
   step "Running health checks"
   local plugin binary
