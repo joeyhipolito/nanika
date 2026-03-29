@@ -10,8 +10,8 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 CORE_SKILLS=(orchestrator)
 CORE_PLUGINS=(nen tracker scheduler)
-OPTIONAL_PLUGINS=(discord telegram dashboard)
-ALL_PLUGINS=(nen tracker scheduler discord telegram dashboard)
+OPTIONAL_PLUGINS=(discord telegram)
+ALL_PLUGINS=(nen tracker scheduler discord telegram)
 
 plugin_desc() {
   case "$1" in
@@ -22,7 +22,6 @@ plugin_desc() {
     scheduler)    echo "Cron jobs + dispatch loop" ;;
     discord)      echo "Channel notifications + voice messages" ;;
     telegram)     echo "Channel notifications + voice messages" ;;
-    dashboard)    echo "Desktop dashboard (requires Wails + Node.js)" ;;
     *) echo "" ;;
   esac
 }
@@ -30,7 +29,6 @@ plugin_desc() {
 plugin_required_prereqs() {
   case "$1" in
     tracker)   echo "cargo" ;;
-    dashboard) echo "wails node" ;;
     *) echo "" ;;
   esac
 }
@@ -257,14 +255,14 @@ interactive_select() {
   if [[ "$USE_GUM" -eq 1 ]]; then
     choice=$(gum choose --cursor="● " \
       "Core          orchestrator + nen + tracker + scheduler" \
-      "Everything    Core + discord, telegram, dashboard (requires Rust, Wails)" \
+      "Everything    Core + discord, telegram (requires Rust)" \
       "Custom        Choose individual plugins")
     choice=$(echo "$choice" | awk '{print $1}' | tr '[:upper:]' '[:lower:]')
   else
     echo "  What would you like to install?"
     echo ""
     echo "  1) Core           orchestrator + nen + tracker + scheduler"
-    echo "  2) Everything     Core + discord, telegram, dashboard"
+    echo "  2) Everything     Core + discord, telegram"
     echo "  3) Custom         Choose individual plugins"
     echo ""
     read -rp "  Choice [1]: " choice
@@ -768,7 +766,7 @@ install_all() {
     fi
   done
 
-  export PATH="$HOME/bin:$PATH"
+  export PATH="$HOME/bin:$HOME/.alluka/bin:$PATH"
 }
 
 # ── launchd Setup (macOS only) ───────────────────────────────────────────────
@@ -965,6 +963,16 @@ post_install() {
   info "    ${DIM}Browse https://skill.sh for domain skills (Go, security, React, etc.)${RESET}"
   info "    ${DIM}Workers automatically use installed skills during missions.${RESET}"
   echo ""
+
+  # PATH hint
+  local needs_path=0
+  echo '$PATH' | grep -q "$HOME/bin" || needs_path=1
+  echo '$PATH' | grep -q "$HOME/.alluka/bin" || needs_path=1
+  if [[ "$needs_path" -eq 1 ]]; then
+    info "  Add to your shell profile (${DIM}~/.zshrc${RESET} or ${DIM}~/.bashrc${RESET}):"
+    info "    ${CYAN}export PATH=\"\$HOME/bin:\$HOME/.alluka/bin:\$PATH\"${RESET}"
+    echo ""
+  fi
 
   # Get started
   info "  Get started:"
