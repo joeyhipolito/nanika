@@ -31,7 +31,7 @@ func newJobsCmd() *cobra.Command {
 		Short: "Add a new scheduled job",
 		Example: `  scheduler-cli jobs add --name "daily-backup" --cron "0 2 * * *" --command "tar czf /tmp/backup.tgz ~/docs"
   scheduler-cli jobs add --name "health-check" --cron "*/5 * * * *" --command "curl -s localhost:8080/health"
-  scheduler-cli jobs add --name "engage-post" --random-daily "8:00-20:00" --command "engage post-scheduled --count 3"`,
+  scheduler-cli jobs add --name "health-sweep" --cron "0 */4 * * *" --command "shu evaluate"`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			name, _ := cmd.Flags().GetString("name")
 			schedule, _ := cmd.Flags().GetString("cron")

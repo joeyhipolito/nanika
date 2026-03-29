@@ -18,36 +18,16 @@ type defaultJob struct {
 	command  string
 }
 
-// defaultJobs defines the nanika publishing pipeline schedule.
-var defaultJobs = []defaultJob{
-	{
-		name:     "daily-scout",
-		schedule: "0 8 * * *",
-		command:  "scout gather",
-	},
-	{
-		name:     "daily-engage",
-		schedule: "0 9 * * *",
-		command:  "engage scan && engage draft --reschedule-post",
-	},
-	{
-		name:     "weekly-brief",
-		schedule: "0 10 * * 1",
-		command:  "scout intel",
-	},
-}
+// defaultJobs is empty — users add their own jobs via `scheduler jobs add`.
+// The self-improvement loop jobs are registered by `shu propose --init`.
+var defaultJobs = []defaultJob{}
 
 func newInitCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "init",
-		Short: "Create default nanika publishing pipeline jobs",
-		Long: `Creates three default cron jobs for the nanika publishing pipeline:
-
-  daily-scout   — 8 AM daily    scout gather
-  daily-engage  — 9 AM daily    engage scan && engage draft --reschedule-post
-  weekly-brief  — Monday 10 AM  scout intel
-
-Jobs that already exist by name are skipped. Use --force to replace them.
+		Short: "Initialize scheduler database",
+		Long: `Creates the scheduler database and registers any default jobs.
+Use 'scheduler jobs add' to add your own cron jobs.
 Run 'scheduler jobs' afterward to verify.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			force, _ := cmd.Flags().GetBool("force")

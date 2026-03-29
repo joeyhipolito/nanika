@@ -54,10 +54,6 @@ func (d *DB) migrate() error {
 	if _, err := d.db.Exec(schema); err != nil {
 		return fmt.Errorf("applying schema: %w", err)
 	}
-	if _, err := d.db.Exec(seedSQL); err != nil {
-		return fmt.Errorf("seeding optimal_times: %w", err)
-	}
-
 	// Add interval column if missing (v2 → v3 migration).
 	if err := d.migrateIntervalColumn(); err != nil {
 		return fmt.Errorf("migrating interval column: %w", err)
@@ -71,16 +67,6 @@ func (d *DB) migrate() error {
 	// Add random_window column to jobs if missing.
 	if err := d.migrateRandomWindowColumn(); err != nil {
 		return fmt.Errorf("migrating random_window column: %w", err)
-	}
-
-	// Seed substack_engage optimal times if missing.
-	if _, err := d.db.Exec(seedSubstackEngageSQL); err != nil {
-		return fmt.Errorf("seeding substack_engage times: %w", err)
-	}
-
-	// Seed X optimal times if missing.
-	if _, err := d.db.Exec(seedXSQL); err != nil {
-		return fmt.Errorf("seeding x times: %w", err)
 	}
 
 	return nil
