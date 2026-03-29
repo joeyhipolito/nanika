@@ -14,6 +14,12 @@
         <string>start</string>
     </array>
 
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>__HOME__/bin:__HOME__/.alluka/bin:/usr/local/bin:/usr/bin:/bin</string>
+    </dict>
+
     <!-- Redirect stdout/stderr to log files under ~/.alluka/logs/ -->
     <key>StandardOutPath</key>
     <string>__HOME__/.alluka/logs/orchestrator-daemon.log</string>

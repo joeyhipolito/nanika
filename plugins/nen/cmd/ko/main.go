@@ -2,13 +2,11 @@ package main
 
 import (
 	"bufio"
-	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/json"
 	"flag"
 	"fmt"
-	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -255,25 +253,18 @@ func cmdEvaluate(ctx context.Context, args []string) error {
 
 	runner := ko.NewRunner(cfg, opts)
 	results, err := runner.Run(ctx, func(ctx context.Context, prompt string) (string, error) {
-		if *useCli {
-			// CLI mode: call claude directly, no caching or usage tracking
-			return ko.CallLLM(ctx, modelToUse, prompt)
-		}
-
-		// API mode: use Anthropic API with optional caching
+		// Check cache first
 		if cache != nil {
 			key := ko.CacheKey(*model, prompt)
 			if cached, ok, cErr := cache.Get(ctx, key); cErr == nil && ok {
-				// Signal cache hit via context so runTest picks it up.
 				ko.RecordCacheHit(ctx)
 				return cached, nil
 			}
 		}
-		text, usage, qErr := queryAnthropicWithUsage(ctx, *model, prompt)
+		text, qErr := ko.CallLLM(ctx, modelToUse, prompt)
 		if qErr != nil {
 			return "", qErr
 		}
-		ko.RecordUsage(ctx, usage)
 		if cache != nil {
 			key := ko.CacheKey(*model, prompt)
 			if sErr := cache.Set(ctx, key, *model, text); sErr != nil {
@@ -434,7 +425,7 @@ func cmdImprove(ctx context.Context, args []string) error {
 	sb.WriteString("3. Improvements to test variables if inputs are ambiguous\n\n")
 	sb.WriteString("Quote the exact assertion values and show what you would change them to.\n")
 
-	suggestion, err := queryAnthropic(ctx, *model, sb.String())
+	suggestion, err := ko.CallLLM(ctx, *model, sb.String())
 	if err != nil {
 		return fmt.Errorf("query claude: %w", err)
 	}
@@ -604,89 +595,7 @@ func setDualRecursive(a *ko.AssertionConfig) {
 
 // ── Anthropic API ─────────────────────────────────────────────────────────────
 
-type anthropicRequest struct {
-	Model     string             `json:"model"`
-	MaxTokens int                `json:"max_tokens"`
-	Messages  []anthropicMessage `json:"messages"`
-}
 
-type anthropicMessage struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
-}
-
-type anthropicResponse struct {
-	Content []struct {
-		Type string `json:"type"`
-		Text string `json:"text"`
-	} `json:"content"`
-	Usage *struct {
-		InputTokens  int `json:"input_tokens"`
-		OutputTokens int `json:"output_tokens"`
-	} `json:"usage"`
-	Error *struct {
-		Type    string `json:"type"`
-		Message string `json:"message"`
-	} `json:"error"`
-}
-
-// queryAnthropicWithUsage calls the Anthropic Messages API and returns the
-// response text along with token usage from the response body.
-func queryAnthropicWithUsage(ctx context.Context, model, prompt string) (string, ko.TokenUsage, error) {
-	apiKey := os.Getenv("ANTHROPIC_API_KEY")
-	if apiKey == "" {
-		return "", ko.TokenUsage{}, fmt.Errorf("ANTHROPIC_API_KEY not set")
-	}
-
-	baseURL := os.Getenv("ANTHROPIC_BASE_URL")
-	if baseURL == "" {
-		baseURL = "https://api.anthropic.com"
-	}
-
-	body, _ := json.Marshal(anthropicRequest{
-		Model:     model,
-		MaxTokens: 4096,
-		Messages:  []anthropicMessage{{Role: "user", Content: prompt}},
-	})
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
-		baseURL+"/v1/messages", bytes.NewReader(body))
-	if err != nil {
-		return "", ko.TokenUsage{}, err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("x-api-key", apiKey)
-	req.Header.Set("anthropic-version", "2023-06-01")
-
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return "", ko.TokenUsage{}, fmt.Errorf("http: %w", err)
-	}
-	defer resp.Body.Close()
-
-	var result anthropicResponse
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return "", ko.TokenUsage{}, fmt.Errorf("decode response: %w", err)
-	}
-	if result.Error != nil {
-		return "", ko.TokenUsage{}, fmt.Errorf("api error: %s", result.Error.Message)
-	}
-	if len(result.Content) == 0 {
-		return "", ko.TokenUsage{}, fmt.Errorf("empty response from API (status %d)", resp.StatusCode)
-	}
-
-	var usage ko.TokenUsage
-	if result.Usage != nil {
-		usage.InputTokens = result.Usage.InputTokens
-		usage.OutputTokens = result.Usage.OutputTokens
-	}
-	return result.Content[0].Text, usage, nil
-}
-
-func queryAnthropic(ctx context.Context, model, prompt string) (string, error) {
-	text, _, err := queryAnthropicWithUsage(ctx, model, prompt)
-	return text, err
-}
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 

@@ -1,12 +1,9 @@
 package ko
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
-	"net/http"
-	"os"
 	"os/exec"
 	"strings"
 )
@@ -29,71 +26,22 @@ type judgeJSON struct {
 const judgeSystemPrompt = `You are an impartial LLM evaluator. Respond ONLY with a JSON object, no markdown fences, no extra text.
 Format: {"pass": <true|false>, "reasoning": "<one or two sentence explanation>"}`
 
-// judgeCallAPI calls claude-haiku via the Anthropic Messages API.
-func judgeCallAPI(ctx context.Context, userPrompt string) (*judgeVerdict, error) {
-	apiKey := os.Getenv("ANTHROPIC_API_KEY")
-	if apiKey == "" {
-		return nil, fmt.Errorf("ANTHROPIC_API_KEY not set")
-	}
-
-	baseURL := os.Getenv("ANTHROPIC_BASE_URL")
-	if baseURL == "" {
-		baseURL = "https://api.anthropic.com"
-	}
-
-	type msg struct {
-		Role    string `json:"role"`
-		Content string `json:"content"`
-	}
-	type req struct {
-		Model     string `json:"model"`
-		MaxTokens int    `json:"max_tokens"`
-		System    string `json:"system"`
-		Messages  []msg  `json:"messages"`
-	}
-	body, _ := json.Marshal(req{
-		Model:     judgeModel,
-		MaxTokens: 256,
-		System:    judgeSystemPrompt,
-		Messages:  []msg{{Role: "user", Content: userPrompt}},
-	})
-
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost,
-		baseURL+"/v1/messages", bytes.NewReader(body))
+// judgeCallCLI calls claude-haiku via the Claude CLI for judge evaluation.
+func judgeCallCLI(ctx context.Context, userPrompt string) (*judgeVerdict, error) {
+	fullPrompt := judgeSystemPrompt + "\n\n" + userPrompt
+	cmd := exec.CommandContext(ctx, "claude",
+		"--model", judgeModel,
+		"--print",
+		"--output-format", "text",
+		"--max-turns", "1",
+		"--dangerously-skip-permissions",
+		"-p", fullPrompt,
+	)
+	out, err := cmd.Output()
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("claude CLI: %w", err)
 	}
-	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("x-api-key", apiKey)
-	httpReq.Header.Set("anthropic-version", "2023-06-01")
-
-	resp, err := http.DefaultClient.Do(httpReq)
-	if err != nil {
-		return nil, fmt.Errorf("http: %w", err)
-	}
-	defer resp.Body.Close()
-
-	type apiResp struct {
-		Content []struct {
-			Type string `json:"type"`
-			Text string `json:"text"`
-		} `json:"content"`
-		Error *struct {
-			Message string `json:"message"`
-		} `json:"error"`
-	}
-	var ar apiResp
-	if err := json.NewDecoder(resp.Body).Decode(&ar); err != nil {
-		return nil, fmt.Errorf("decode response: %w", err)
-	}
-	if ar.Error != nil {
-		return nil, fmt.Errorf("api error: %s", ar.Error.Message)
-	}
-	if len(ar.Content) == 0 {
-		return nil, fmt.Errorf("empty response (status %d)", resp.StatusCode)
-	}
-
-	return parseJudgeJSON(ar.Content[0].Text)
+	return parseJudgeJSON(string(out))
 }
 
 // judgeCallCodex calls the `codex exec` CLI as a secondary judge.
@@ -137,7 +85,7 @@ func parseJudgeJSON(raw string) (*judgeVerdict, error) {
 // runJudge runs the primary judge and, when dual is true, also the Codex judge.
 // Agreement → (passed, review=false). Disagreement → (false, review=true).
 func runJudge(ctx context.Context, prompt string, dual bool) (passed, review bool, reasoning string, err error) {
-	primary, err := judgeCallAPI(ctx, prompt)
+	primary, err := judgeCallCLI(ctx, prompt)
 	if err != nil {
 		return false, false, "", fmt.Errorf("primary judge: %w", err)
 	}

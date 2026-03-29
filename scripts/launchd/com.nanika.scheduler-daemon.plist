@@ -5,12 +5,12 @@
 <plist version="1.0">
 <dict>
     <key>Label</key>
-    <string>com.nanika.nen-daemon</string>
+    <string>com.nanika.scheduler-daemon</string>
 
     <key>ProgramArguments</key>
     <array>
-        <string>__HOME__/.alluka/bin/nen-daemon</string>
-        <string>start</string>
+        <string>__HOME__/bin/scheduler</string>
+        <string>daemon</string>
     </array>
 
     <key>EnvironmentVariables</key>
@@ -21,11 +21,11 @@
 
     <!-- Redirect stdout/stderr to log files under ~/.alluka/logs/ -->
     <key>StandardOutPath</key>
-    <string>__HOME__/.alluka/logs/nen-daemon.log</string>
+    <string>__HOME__/.alluka/logs/scheduler-daemon.log</string>
     <key>StandardErrorPath</key>
-    <string>__HOME__/.alluka/logs/nen-daemon.log</string>
+    <string>__HOME__/.alluka/logs/scheduler-daemon.log</string>
 
-    <!-- launchd restarts the daemon on any exit (including SIGTERM from `nen-daemon stop`) -->
+    <!-- launchd restarts the daemon on any exit -->
     <key>KeepAlive</key>
     <true/>
 

@@ -1,13 +1,12 @@
 package audit
 
 import (
-	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
-	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -485,68 +484,22 @@ func truncateTask(task string) string {
 	return task
 }
 
-// ── LLM API ──────────────────────────────────────────────────────────────────
-
-type llmRequest struct {
-	Model     string       `json:"model"`
-	MaxTokens int          `json:"max_tokens"`
-	Messages  []llmMessage `json:"messages"`
-}
-
-type llmMessage struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
-}
-
-type llmResponse struct {
-	Content []struct {
-		Type string `json:"type"`
-		Text string `json:"text"`
-	} `json:"content"`
-	Error *struct {
-		Type    string `json:"type"`
-		Message string `json:"message"`
-	} `json:"error"`
-}
+// ── LLM via Claude CLI ──────────────────────────────────────────────────────
 
 func queryLLM(ctx context.Context, model, prompt string) (string, error) {
-	apiKey := os.Getenv("ANTHROPIC_API_KEY")
-	if apiKey == "" {
-		return "", fmt.Errorf("ANTHROPIC_API_KEY not set")
-	}
-
-	body, _ := json.Marshal(llmRequest{
-		Model:     model,
-		MaxTokens: 8192,
-		Messages:  []llmMessage{{Role: "user", Content: prompt}},
-	})
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
-		"https://api.anthropic.com/v1/messages", bytes.NewReader(body))
+	cmd := exec.CommandContext(ctx, "claude",
+		"--model", model,
+		"--print",
+		"--output-format", "text",
+		"--max-turns", "1",
+		"--dangerously-skip-permissions",
+		"-p", prompt,
+	)
+	out, err := cmd.Output()
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("claude CLI: %w", err)
 	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("x-api-key", apiKey)
-	req.Header.Set("anthropic-version", "2023-06-01")
-
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return "", fmt.Errorf("http: %w", err)
-	}
-	defer resp.Body.Close()
-
-	var result llmResponse
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return "", fmt.Errorf("decode response: %w", err)
-	}
-	if result.Error != nil {
-		return "", fmt.Errorf("api error: %s", result.Error.Message)
-	}
-	if len(result.Content) == 0 {
-		return "", fmt.Errorf("empty response from API (status %d)", resp.StatusCode)
-	}
-	return result.Content[0].Text, nil
+	return strings.TrimSpace(string(out)), nil
 }
 
 // ── Workspace resolution ─────────────────────────────────────────────────────

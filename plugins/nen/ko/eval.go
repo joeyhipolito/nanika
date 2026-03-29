@@ -421,7 +421,6 @@ func CallLLM(ctx context.Context, model, prompt string) (string, error) {
 	cmd := execCommand(ctx, "claude",
 		"--model", model,
 		"--print",
-		"--bare",
 		"--output-format", "text",
 		"--max-turns", "1",
 		"--dangerously-skip-permissions",
