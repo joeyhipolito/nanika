@@ -1,0 +1,478 @@
+package engine
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+	"time"
+
+	"github.com/joeyhipolito/orchestrator-cli/internal/config"
+	"github.com/joeyhipolito/orchestrator-cli/internal/core"
+	metricsdb "github.com/joeyhipolito/orchestrator-cli/internal/metrics"
+)
+
+// PhaseMetric captures per-phase execution data.
+type PhaseMetric struct {
+	ID                     string   `json:"id,omitempty"`
+	Name                   string   `json:"name"`
+	Persona                string   `json:"persona"`
+	Skills                 []string `json:"skills,omitempty"`
+	ParsedSkills           []string `json:"parsed_skills,omitempty"`
+	PersonaSelectionMethod string   `json:"persona_selection_method,omitempty"` // "llm" or "keyword"
+	DurationS              int      `json:"duration_s"`
+	Status                 string   `json:"status"`
+	Retries                int      `json:"retries,omitempty"`
+	GatePassed             bool     `json:"gate_passed"`
+	OutputLen              int      `json:"output_len"`
+	LearningsRetrieved     int      `json:"learnings_retrieved,omitempty"`
+	// Cost attribution (populated from Claude CLI session output)
+	Provider  string  `json:"provider,omitempty"`   // always "anthropic"
+	Model     string  `json:"model,omitempty"`      // resolved model ID
+	TokensIn  int     `json:"tokens_in,omitempty"`  // input tokens (accumulated across retries)
+	TokensOut int     `json:"tokens_out,omitempty"` // output tokens (accumulated across retries)
+	CostUSD   float64 `json:"cost_usd,omitempty"`   // total cost in USD
+}
+
+// MissionMetrics captures observability data for a single mission execution.
+type MissionMetrics struct {
+	WorkspaceID        string        `json:"workspace_id"`
+	Domain             string        `json:"domain"`
+	Task               string        `json:"task,omitempty"`
+	StartedAt          time.Time     `json:"started_at"`
+	FinishedAt         time.Time     `json:"finished_at"`
+	DurationSec        int           `json:"duration_s"`
+	PhasesTotal        int           `json:"phases_total"`
+	PhasesCompleted    int           `json:"phases_completed"`
+	PhasesFailed       int           `json:"phases_failed"`
+	PhasesSkipped      int           `json:"phases_skipped"`
+	LearningsRetrieved int           `json:"learnings_retrieved"`
+	RetriesTotal       int           `json:"retries_total"`
+	GateFailures       int           `json:"gate_failures"`
+	OutputLenTotal     int           `json:"output_len_total"`
+	Status             string        `json:"status"`                  // success, failure, partial
+	DecompSource       string        `json:"decomp_source,omitempty"` // "predecomposed", "decomp.llm", "decomp.keyword", "template"
+	Phases             []PhaseMetric `json:"phases,omitempty"`
+	// Mission-level cost rollups (sum of all phase costs)
+	TokensInTotal  int     `json:"tokens_in_total,omitempty"`
+	TokensOutTotal int     `json:"tokens_out_total,omitempty"`
+	CostUSDTotal   float64 `json:"cost_usd_total,omitempty"`
+}
+
+// RecordMetrics appends a JSONL line to ~/.alluka/metrics.jsonl and writes to
+// the SQLite metrics database for richer queryability. The SQLite write is
+// best-effort — any error is reported to stderr so it never blocks mission
+// completion while still surfacing data-loss risk to the operator.
+func RecordMetrics(m MissionMetrics) error {
+	if err := recordMetricsDB(m); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: sqlite metrics write failed: %v\n", err)
+	}
+
+	base, err := config.Dir()
+	if err != nil {
+		return err
+	}
+
+	path := filepath.Join(base, "metrics.jsonl")
+	os.MkdirAll(filepath.Dir(path), 0700)
+
+	data, err := json.Marshal(m)
+	if err != nil {
+		return err
+	}
+	data = append(data, '\n')
+
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	_, err = f.Write(data)
+	return err
+}
+
+// recordMetricsDB writes m to the SQLite metrics database.
+// Opens a fresh connection per call — acceptable since this runs once per mission.
+func recordMetricsDB(m MissionMetrics) error {
+	db, err := metricsdb.InitDB("")
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	_, err = db.UpsertMission(ctx, toMissionRecord(m))
+	return err
+}
+
+// recordPhaseSkillsDB persists the mission row and current phase skill usage as
+// soon as a phase completes. This preserves skill metrics when a later phase or
+// mission-level metrics write fails before RecordMetrics runs.
+func recordPhaseSkillsDB(ws *core.Workspace, plan *core.Plan, phase *core.Phase, start time.Time) error {
+	if ws == nil || plan == nil || phase == nil {
+		return fmt.Errorf("workspace, plan, and phase are required")
+	}
+	if len(phase.Skills) == 0 && len(phase.ParsedSkills) == 0 {
+		return nil
+	}
+
+	db, err := metricsdb.InitDB("")
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	snapshot := toMissionRecord(buildMetrics(ws, plan, &core.ExecutionResult{
+		Plan:    plan,
+		Success: planSnapshotSucceeded(plan),
+	}, start))
+	snapshot.Phases = nil
+	return db.UpsertMissionPhaseSnapshot(ctx, snapshot, toPhaseRecord(phase))
+}
+
+func planSnapshotSucceeded(plan *core.Plan) bool {
+	if plan == nil || len(plan.Phases) == 0 {
+		return false
+	}
+	for _, p := range plan.Phases {
+		switch p.Status {
+		case core.StatusCompleted, core.StatusSkipped:
+			continue
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+func phaseRuntimeID(p *core.Phase) string {
+	if p == nil {
+		return ""
+	}
+	if p.ID != "" {
+		return p.ID
+	}
+	return p.Name
+}
+
+// appendRetryParsedSkills preserves repeated invocations within one attempt,
+// but avoids counting the same skill again when it only reappears on a later retry.
+func appendRetryParsedSkills(existing, parsed []string) []string {
+	if len(parsed) == 0 {
+		return existing
+	}
+	if len(existing) == 0 {
+		return append([]string(nil), parsed...)
+	}
+
+	seen := make(map[string]struct{}, len(existing))
+	for _, skill := range existing {
+		seen[skill] = struct{}{}
+	}
+
+	merged := append([]string(nil), existing...)
+	for _, skill := range parsed {
+		if _, ok := seen[skill]; ok {
+			continue
+		}
+		merged = append(merged, skill)
+	}
+	return merged
+}
+
+// toMissionRecord converts the engine-local MissionMetrics to the storage type.
+// The two structs are kept separate to avoid an import cycle (engine ← internal/metrics).
+func toMissionRecord(m MissionMetrics) metricsdb.MissionRecord {
+	phases := make([]metricsdb.PhaseRecord, len(m.Phases))
+	for i, p := range m.Phases {
+		phases[i] = metricsdb.PhaseRecord{
+			ID:                 p.ID,
+			Name:               p.Name,
+			Persona:            p.Persona,
+			Skills:             append([]string(nil), p.Skills...),
+			ParsedSkills:       append([]string(nil), p.ParsedSkills...),
+			SelectionMethod:    p.PersonaSelectionMethod,
+			DurationS:          p.DurationS,
+			Status:             p.Status,
+			Retries:            p.Retries,
+			GatePassed:         p.GatePassed,
+			OutputLen:          p.OutputLen,
+			LearningsRetrieved: p.LearningsRetrieved,
+			Provider:           p.Provider,
+			Model:              p.Model,
+			TokensIn:           p.TokensIn,
+			TokensOut:          p.TokensOut,
+			CostUSD:            p.CostUSD,
+		}
+	}
+	return metricsdb.MissionRecord{
+		WorkspaceID:        m.WorkspaceID,
+		Domain:             m.Domain,
+		Task:               m.Task,
+		StartedAt:          m.StartedAt,
+		FinishedAt:         m.FinishedAt,
+		DurationSec:        m.DurationSec,
+		PhasesTotal:        m.PhasesTotal,
+		PhasesCompleted:    m.PhasesCompleted,
+		PhasesFailed:       m.PhasesFailed,
+		PhasesSkipped:      m.PhasesSkipped,
+		LearningsRetrieved: m.LearningsRetrieved,
+		RetriesTotal:       m.RetriesTotal,
+		GateFailures:       m.GateFailures,
+		OutputLenTotal:     m.OutputLenTotal,
+		Status:             m.Status,
+		DecompSource:       m.DecompSource,
+		Phases:             phases,
+		TokensInTotal:      m.TokensInTotal,
+		TokensOutTotal:     m.TokensOutTotal,
+		CostUSDTotal:       m.CostUSDTotal,
+	}
+}
+
+// knownCLISkills is the set of CLI skill names the orchestrator recognises in worker output.
+var knownCLISkills = map[string]struct{}{
+	"scout": {}, "engage": {}, "gmail": {}, "linkedin": {}, "reddit": {},
+	"substack": {}, "contentkit": {}, "elevenlabs": {}, "obsidian": {},
+	"todoist": {}, "ynab": {}, "scheduler": {}, "publish": {}, "orchestrator": {},
+	"watermark": {}, "tracker": {}, "discord": {}, "telegram": {}, "youtube": {},
+}
+
+// ParseSkillInvocations scans a worker output transcript for Bash tool calls that
+// invoke known CLI skill names. Returns one entry per invocation (duplicates included).
+//
+// Recognised transcript formats:
+//
+//	"⏺ Bash(scout gather \"topic\")"   — Claude Code tool indicator
+//	"Bash(scout gather \"topic\")"      — without indicator prefix
+//	"$ scout gather topic"             — shell prompt
+func ParseSkillInvocations(output string) []string {
+	var found []string
+	for _, line := range strings.Split(output, "\n") {
+		cmd := bashCommandFromLine(line)
+		if cmd == "" {
+			continue
+		}
+		fields := strings.Fields(cmd)
+		if len(fields) == 0 {
+			continue
+		}
+		if _, ok := knownCLISkills[fields[0]]; ok {
+			found = append(found, fields[0])
+		}
+	}
+	return found
+}
+
+// bashCommandFromLine extracts the command string from a line that contains a Bash
+// tool call or shell prompt in a Claude Code transcript. Returns "" if no match.
+func bashCommandFromLine(line string) string {
+	line = strings.TrimSpace(line)
+
+	// Bash(cmd) format — e.g. "⏺ Bash(scout gather \"topic\")"
+	if i := strings.Index(line, "Bash("); i >= 0 {
+		rest := line[i+5:]
+		if inner, ok := bashCallBody(rest); ok {
+			// Strip matching outer quotes: Bash("cmd") or Bash('cmd')
+			if len(inner) >= 2 && (inner[0] == '"' || inner[0] == '\'') && inner[len(inner)-1] == inner[0] {
+				inner = inner[1 : len(inner)-1]
+			}
+			return inner
+		}
+		return ""
+	}
+
+	// WorkerOutput tool summary format emitted by worker.Execute:
+	// "[tool: Bash scout gather \"topic\"]"
+	const toolPrefix = "[tool: Bash "
+	if strings.HasPrefix(line, toolPrefix) && strings.HasSuffix(line, "]") {
+		cmd := strings.TrimSuffix(strings.TrimPrefix(line, toolPrefix), "]")
+		if cmd != "" {
+			return cmd
+		}
+	}
+
+	// Shell prompt format: "$ cmd"
+	if strings.HasPrefix(line, "$ ") {
+		return line[2:]
+	}
+
+	return ""
+}
+
+func bashCallBody(rest string) (string, bool) {
+	depth := 0
+	var quote byte
+	escaped := false
+
+	for i := 0; i < len(rest); i++ {
+		ch := rest[i]
+		if quote != 0 {
+			if escaped {
+				escaped = false
+				continue
+			}
+			if ch == '\\' {
+				escaped = true
+				continue
+			}
+			if ch == quote {
+				quote = 0
+			}
+			continue
+		}
+
+		switch ch {
+		case '"', '\'':
+			quote = ch
+		case '(':
+			depth++
+		case ')':
+			if depth == 0 {
+				return rest[:i], true
+			}
+			depth--
+		}
+	}
+
+	return "", false
+}
+
+func phaseParsedSkills(p *core.Phase) []string {
+	if len(p.ParsedSkills) > 0 {
+		return append([]string(nil), p.ParsedSkills...)
+	}
+	return ParseSkillInvocations(p.Output)
+}
+
+func toPhaseRecord(p *core.Phase) metricsdb.PhaseRecord {
+	durS := 0
+	if p.StartTime != nil && p.EndTime != nil {
+		durS = int(p.EndTime.Sub(*p.StartTime).Seconds())
+	}
+
+	return metricsdb.PhaseRecord{
+		ID:                 phaseRuntimeID(p),
+		Name:               p.Name,
+		Persona:            p.Persona,
+		Skills:             append([]string(nil), p.Skills...),
+		ParsedSkills:       append([]string(nil), p.ParsedSkills...),
+		SelectionMethod:    p.PersonaSelectionMethod,
+		DurationS:          durS,
+		Status:             string(p.Status),
+		Retries:            p.Retries,
+		GatePassed:         p.GatePassed,
+		OutputLen:          p.OutputLen,
+		LearningsRetrieved: p.LearningsRetrieved,
+		Provider:           providerForPhase(p),
+		Model:              p.Model,
+		TokensIn:           p.TokensIn,
+		TokensOut:          p.TokensOut,
+		CostUSD:            p.CostUSD,
+	}
+}
+
+func providerForPhase(p *core.Phase) string {
+	if p.Model != "" {
+		return "anthropic"
+	}
+	return ""
+}
+
+// buildMetrics constructs a MissionMetrics from execution state.
+func buildMetrics(ws *core.Workspace, plan *core.Plan, result *core.ExecutionResult, start time.Time) MissionMetrics {
+	var completed, failed, skipped int
+	var retriesTotal, gateFailures, learningsRetrieved, outputLenTotal int
+	var tokensInTotal, tokensOutTotal int
+	var costUSDTotal float64
+	var phaseDetails []PhaseMetric
+
+	for _, p := range plan.Phases {
+		switch p.Status {
+		case core.StatusCompleted:
+			completed++
+		case core.StatusFailed:
+			failed++
+		case core.StatusSkipped:
+			skipped++
+		}
+
+		retriesTotal += p.Retries
+		if !p.GatePassed && p.Status == core.StatusCompleted {
+			gateFailures++
+		}
+		learningsRetrieved += p.LearningsRetrieved
+		outputLenTotal += p.OutputLen
+
+		// Accumulate cost rollups
+		tokensInTotal += p.TokensIn
+		tokensOutTotal += p.TokensOut
+		costUSDTotal += p.CostUSD
+
+		// Per-phase duration
+		durS := 0
+		if p.StartTime != nil && p.EndTime != nil {
+			durS = int(p.EndTime.Sub(*p.StartTime).Seconds())
+		}
+
+		phaseDetails = append(phaseDetails, PhaseMetric{
+			ID:                     phaseRuntimeID(p),
+			Name:                   p.Name,
+			Persona:                p.Persona,
+			Skills:                 append([]string(nil), p.Skills...),
+			ParsedSkills:           phaseParsedSkills(p),
+			PersonaSelectionMethod: p.PersonaSelectionMethod,
+			DurationS:              durS,
+			Status:                 string(p.Status),
+			Retries:                p.Retries,
+			GatePassed:             p.GatePassed,
+			OutputLen:              p.OutputLen,
+			LearningsRetrieved:     p.LearningsRetrieved,
+			Provider:               providerForPhase(p),
+			Model:                  p.Model,
+			TokensIn:               p.TokensIn,
+			TokensOut:              p.TokensOut,
+			CostUSD:                p.CostUSD,
+		})
+	}
+
+	status := "success"
+	if !result.Success {
+		if completed > 0 {
+			status = "partial"
+		} else {
+			status = "failure"
+		}
+	}
+
+	end := time.Now()
+	return MissionMetrics{
+		WorkspaceID:        ws.ID,
+		Domain:             ws.Domain,
+		Task:               plan.Task,
+		StartedAt:          start,
+		FinishedAt:         end,
+		DurationSec:        int(end.Sub(start).Seconds()),
+		PhasesTotal:        len(plan.Phases),
+		PhasesCompleted:    completed,
+		PhasesFailed:       failed,
+		PhasesSkipped:      skipped,
+		LearningsRetrieved: learningsRetrieved,
+		RetriesTotal:       retriesTotal,
+		GateFailures:       gateFailures,
+		OutputLenTotal:     outputLenTotal,
+		Status:             status,
+		DecompSource:       plan.DecompSource,
+		Phases:             phaseDetails,
+		TokensInTotal:      tokensInTotal,
+		TokensOutTotal:     tokensOutTotal,
+		CostUSDTotal:       costUSDTotal,
+	}
+}

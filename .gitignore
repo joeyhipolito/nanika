@@ -1,0 +1,32 @@
+bin/
+node_modules/
+
+# Go workspace (developer-local)
+go.work
+
+# Backup files
+*.bak
+
+# Installed skills — core is tracked, everything else is user-installed
+skills/*/
+!skills/orchestrator/
+!skills/decomposer/
+
+# Installed skill definitions — core is tracked, rest is user-installed
+.claude/skills/*/
+!.claude/skills/orchestrator/
+!.claude/skills/decomposer/
+!.claude/skills/channels/
+
+# Private docs (evaluations, audits, business planning)
+private/
+
+# Claude Code local state
+.agents/
+.claude/settings.json
+skills-lock.json
+
+# Generated files
+go.work.sum
+AGENTS.md
+.claude/worktrees/

@@ -1,0 +1,86 @@
+Pick the single best persona for this task. Reply with ONLY the persona name, nothing else.
+
+## Available Personas
+- **academic-researcher**: Academic Researcher — Distinguishes what we know from what we assume
+  - Conducting literature reviews for papers, theses, or research-backed technical questions
+  - Evaluating the evidence behind a technical claim, methodology, or research finding
+  - Synthesizing findings across multiple studies, papers, or primary sources
+  - Identifying research gaps or formulating research questions
+  - Assessing the quality of a study's methodology or experimental design
+  - Any task that explicitly requires scholarly rigor, citations, and evidence weighting
+  Hands off to: architect, data-analyst, senior-backend-engineer, technical-writer
+- **architect**: System Architect — Designs systems worth building twice
+  - Greenfield system design or major feature additions
+  - Breaking a monolith into components or defining package boundaries
+  - Choosing between storage engines, protocols, or architectural patterns
+  - Comparing frameworks, APIs, vendor tools, or technical approaches to recommend one
+  - Designing plugin/extension systems
+  - Any decision that constrains future decisions
+  Hands off to: qa-engineer, senior-backend-engineer, staff-code-reviewer
+- **data-analyst**: Data Analyst — Finds the signal in the noise
+  - Analyzing usage patterns from logs or databases
+  - Summarizing learning database statistics and trends
+  - Investigating performance data or error rates
+  - Comparing before/after metrics for a change
+  - Exploring dataset quality or coverage
+  - Any question that starts with "how many," "how often," or "what's trending"
+  Hands off to: academic-researcher, architect, senior-backend-engineer, technical-writer
+- **devops-engineer**: DevOps Engineer — Makes deployment boring
+  - Setting up CI/CD for a new project
+  - Containerizing a Go service or web application
+  - Automating releases and binary distribution
+  - Configuring deployment pipelines
+  - Setting up monitoring, health checks, or alerting
+  - Any infrastructure or deployment automation task
+  Hands off to: architect, senior-backend-engineer, staff-code-reviewer
+- **qa-engineer**: QA Engineer — Tests what the developer assumed would work
+  - Designing test strategy for a new feature or module
+  - Writing test suites for existing untested code
+  - Reviewing test quality and identifying coverage gaps
+  - Setting up test infrastructure (fixtures, helpers, test databases)
+  - Diagnosing flaky tests
+  Hands off to: devops-engineer, senior-backend-engineer, staff-code-reviewer
+- **security-auditor**: Security Auditor — Thinks like an attacker, writes like a defender
+  - Security audits of new code or features
+  - Threat modeling before implementing authentication/authorization
+  - Reviewing credential handling and secret management
+  - Auditing API endpoints for injection or access control issues
+  - Checking file operations for path traversal vulnerabilities
+  - Any task where security is the primary concern
+  Hands off to: architect, qa-engineer, senior-backend-engineer, staff-code-reviewer
+- **senior-backend-engineer**: Senior Backend Engineer — Builds boring, reliable backends
+  - Implementing backend services, CLI tools, or daemon processes
+  - Adding commands or subcommands to existing CLIs
+  - Writing HTTP handlers, middleware, or API clients
+  - Database operations (SQLite queries, migrations, schema changes)
+  - Backend implementation work in Go, Python, Rust, or adjacent service code
+  Hands off to: architect, devops-engineer, qa-engineer, senior-frontend-engineer
+- **senior-frontend-engineer**: Senior Frontend Engineer — Builds interfaces that stay maintainable
+  - Building new pages, components, or interactive features
+  - Implementing responsive layouts with Tailwind
+  - Adding client-side interactivity or form handling
+  - Integrating frontend with API endpoints or Server Actions
+  - Fixing UI bugs or accessibility issues
+  Hands off to: architect, qa-engineer, senior-backend-engineer
+- **staff-code-reviewer**: Staff Code Reviewer — Catches what the compiler can't
+  - Reviewing pull requests or code changes before merge
+  - Auditing existing code for security vulnerabilities
+  - Evaluating architectural changes for hidden risks
+  - Reviewing API contracts for breaking changes
+  - Any time code quality or correctness needs a second pair of eyes
+  Hands off to: academic-researcher, architect, qa-engineer, senior-backend-engineer
+- **technical-writer**: Technical Writer — Writes docs people actually read
+  - README files, developer documentation, or technical documentation updates
+  - API reference documentation, API docs, or endpoint documentation
+  - SKILL.md documentation, plugin documentation, or Via ecosystem documentation
+  - Developer guides, setup instructions, technical runbooks, or onboarding documentation
+  - Architecture decision records, ADRs, or design documentation
+  - Technical explainers or article-style synthesis for a developer audience when clarity matters more than narrative voice
+  - Any documentation that developers need to read or reference
+  Hands off to: architect, senior-backend-engineer
+
+
+## Task
+{{task}}
+
+Reply with just the persona name (e.g., "senior-backend-engineer"):

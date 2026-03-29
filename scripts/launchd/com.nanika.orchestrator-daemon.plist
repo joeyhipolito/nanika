@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+    "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Template: install.sh replaces __HOME__ with the user's actual $HOME path. -->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.nanika.orchestrator-daemon</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>__HOME__/bin/orchestrator</string>
+        <string>daemon</string>
+        <string>start</string>
+    </array>
+
+    <!-- Redirect stdout/stderr to log files under ~/.alluka/logs/ -->
+    <key>StandardOutPath</key>
+    <string>__HOME__/.alluka/logs/orchestrator-daemon.log</string>
+    <key>StandardErrorPath</key>
+    <string>__HOME__/.alluka/logs/orchestrator-daemon.log</string>
+
+    <!-- launchd restarts the daemon on any exit (including SIGTERM from `orchestrator daemon stop`) -->
+    <key>KeepAlive</key>
+    <true/>
+
+    <!-- Minimum seconds between restarts; prevents tight crash loops -->
+    <key>ThrottleInterval</key>
+    <integer>5</integer>
+
+    <!-- Start when the agent is bootstrapped / user logs in -->
+    <key>RunAtLoad</key>
+    <true/>
+
+    <!-- Working directory must exist before start -->
+    <key>WorkingDirectory</key>
+    <string>__HOME__/.alluka</string>
+</dict>
+</plist>

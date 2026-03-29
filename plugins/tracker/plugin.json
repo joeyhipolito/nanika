@@ -1,0 +1,23 @@
+{
+  "name": "tracker",
+  "version": "0.1.0",
+  "description": "Local issue tracker with hierarchical relationships, blocking links, and ready-issue detection. Query-based plugin with React kanban UI.",
+  "icon": "ListCheck",
+  "binary": "tracker",
+  "build": "cargo build --release",
+  "install": "cp target/release/tracker ~/bin/tracker",
+  "tags": ["issue-tracking", "task-management", "project-management"],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/joeyhipolito/nanika",
+    "path": "plugins/tracker"
+  },
+  "api_version": 1,
+  "provides": ["status", "items", "actions"],
+  "actions": {
+    "status": "tracker query status --json",
+    "items": "tracker query items --json",
+    "actions": "tracker query actions --json"
+  },
+  "ui": true
+}

@@ -1,0 +1,113 @@
+description: "Via persona-routing eval — current 10-persona catalog"
+
+sharing: false
+
+providers:
+  - file://providers/claude-cli.mjs
+
+prompts:
+  - file://prompts/persona-selector.txt
+
+defaultTest:
+  assert:
+    - type: matches
+      value: "^[a-z][a-z0-9-]+$"
+
+tests:
+  - description: "Go backend implementation routes to senior-backend-engineer"
+    vars:
+      task: "Implement a goroutine-safe in-memory cache in Go with TTL expiry and a clean public API"
+    assert:
+      - type: equals
+        value: "senior-backend-engineer"
+
+  - description: "React/TypeScript UI routes to senior-frontend-engineer"
+    vars:
+      task: "Build a sortable data table component in React with TypeScript and Tailwind CSS"
+    assert:
+      - type: equals
+        value: "senior-frontend-engineer"
+
+  - description: "Security audit routes to security-auditor"
+    vars:
+      task: "Audit the authentication middleware for session token leakage, CSRF, and privilege escalation vulnerabilities"
+    assert:
+      - type: equals
+        value: "security-auditor"
+
+  - description: "CI/CD pipeline routes to devops-engineer"
+    vars:
+      task: "Set up a GitHub Actions CI pipeline that builds the Go binary, runs tests, and publishes a release on tag push"
+    assert:
+      - type: equals
+        value: "devops-engineer"
+
+  - description: "System design routes to architect"
+    vars:
+      task: "Design the package boundary and API contract between the orchestrator core engine and router subsystem"
+    assert:
+      - type: equals
+        value: "architect"
+
+  - description: "Test suite routes to qa-engineer"
+    vars:
+      task: "Write table-driven integration tests for the HTTP handler package covering boundary inputs and error paths"
+    assert:
+      - type: equals
+        value: "qa-engineer"
+
+  - description: "Log analysis routes to data-analyst"
+    vars:
+      task: "Analyze the past week of error logs to find which API endpoint has the highest 500 error rate and what the trend looks like"
+    assert:
+      - type: equals
+        value: "data-analyst"
+
+  - description: "Literature review routes to academic-researcher"
+    vars:
+      task: "Conduct a literature review on multi-agent coordination algorithms and identify the key open research questions"
+    assert:
+      - type: equals
+        value: "academic-researcher"
+
+  - description: "Code review routes to staff-code-reviewer"
+    vars:
+      task: "Review this pull request for correctness, hidden security issues, and API breaking changes before it merges"
+    assert:
+      - type: equals
+        value: "staff-code-reviewer"
+
+  - description: "Developer documentation routes to technical-writer"
+    vars:
+      task: "Write the README and API reference documentation for the new plugin system"
+    assert:
+      - type: equals
+        value: "technical-writer"
+
+  - description: "Technical article-style synthesis routes to technical-writer"
+    vars:
+      task: "Turn my experience shipping the orchestrator into a publishable technical article for a developer audience"
+    assert:
+      - type: equals
+        value: "technical-writer"
+
+  - description: "Technical comparison research routes to architect, not academic-researcher"
+    vars:
+      task: "Research and compare the best Go frameworks for building REST APIs in a solo-maintained tool"
+    assert:
+      - type: equals
+        value: "architect"
+
+  - description: "Rust backend implementation still routes to senior-backend-engineer"
+    vars:
+      task: "Implement an async Rust service using tokio and axum with structured error handling via thiserror"
+    assert:
+      - type: equals
+        value: "senior-backend-engineer"
+
+  - description: "Ambiguous add-logging task stays on implementation personas"
+    vars:
+      task: "Add structured logging to the orchestrator daemon so we can trace each mission from start to finish"
+    assert:
+      - type: matches
+        value: "^(senior-backend-engineer|devops-engineer)$"

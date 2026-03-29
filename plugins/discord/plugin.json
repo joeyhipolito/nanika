@@ -1,0 +1,29 @@
+{
+  "name": "discord",
+  "version": "0.1.0",
+  "api_version": 1,
+  "description": "Send text and native voice messages to Discord channels. Requires a bot token in ~/.alluka/channels/discord.json.",
+  "icon": "ChatRoundDots",
+  "binary": "discord",
+  "build": "go build -ldflags \"-s -w\" -o bin/discord ./cmd/discord-cli",
+  "install": "ln -sf $(pwd)/bin/discord ~/bin/discord",
+  "tags": ["discord", "messaging", "voice"],
+  "ui": true,
+  "actions": {
+    "query status": {
+      "command": "discord query status --json",
+      "description": "Bot token and channel config status",
+      "output": "status"
+    },
+    "query items": {
+      "command": "discord query items --json",
+      "description": "List configured Discord channels",
+      "output": "items"
+    },
+    "query actions": {
+      "command": "discord query actions --json",
+      "description": "Available CLI actions",
+      "output": "actions"
+    }
+  }
+}

@@ -1,0 +1,117 @@
+description: "Review-findings contract eval — ParseReviewFindings format compliance (V-95)"
+
+# Privacy: all evals run locally; no results are shared to promptfoo cloud.
+sharing: false
+
+providers:
+  - file://providers/claude-cli.mjs
+
+prompts:
+  - file://prompts/review-gate.txt
+
+# Every response must contain both section headers — ParseReviewFindings requires
+# exactly "### Blockers" and "### Warnings" to extract structured findings.
+defaultTest:
+  assert:
+    - type: contains
+      value: "### Blockers"
+    - type: contains
+      value: "### Warnings"
+
+tests:
+  - description: "Output is parseable: both sections present and items use - **[** prefix"
+    vars:
+      code: |
+        // store.go
+        func GetRecord(id string) *Record {
+            row, _ := db.Query("SELECT * FROM records WHERE id = " + id)
+            var r Record
+            row.Scan(&r.ID, &r.Name)
+            return &r
+        }
+    assert:
+      - type: regex
+        value: "- \\*\\*\\[.+\\]\\*\\*"
+      - type: llm-rubric
+        value: >
+          The response contains a ### Blockers section and a ### Warnings section.
+          At least one finding item uses the exact prefix notation - **[location]**
+          where location is a file:line reference or function name.
+          The response does not implement any fixes — it only reports findings.
+
+  - description: "Critical defect (SQL injection + ignored error) is classified as a blocker"
+    vars:
+      code: |
+        // handler.go
+        func QueryUser(w http.ResponseWriter, r *http.Request) {
+            id := r.URL.Query().Get("id")
+            rows, _ := db.Query("SELECT * FROM users WHERE id = " + id)
+            defer rows.Close()
+            var u User
+            rows.Scan(&u.ID, &u.Name)
+            json.NewEncoder(w).Encode(u)
+        }
+    assert:
+      - type: llm-rubric
+        value: >
+          The SQL string concatenation vulnerability (unsanitized user input concatenated
+          into a SQL query) appears under ### Blockers, not under ### Warnings.
+          The blocker item references a location in handler.go using **[handler.go:line]**
+          or **[QueryUser]** bracket notation.
+
+  - description: "Missing godoc on exported function is classified as a warning, not a blocker"
+    vars:
+      code: |
+        // util.go
+        package util
+
+        import "strings"
+
+        // getUser fetches a user by id using a parameterized query.
+        func getUser(db DB, id string) (*User, error) {
+            row := db.QueryRow("SELECT id, name FROM users WHERE id = ?", id)
+            var u User
+            if err := row.Scan(&u.ID, &u.Name); err != nil {
+                return nil, err
+            }
+            return &u, nil
+        }
+
+        func FormatName(name string) string {
+            return strings.TrimSpace(name)
+        }
+    assert:
+      - type: llm-rubric
+        value: >
+          The missing godoc comment on the exported FormatName function is reported
+          under ### Warnings (not ### Blockers), because it is a style issue and not
+          a correctness or security defect.
+          The ### Blockers section is empty (contains "(none)" or no items) given
+          that the implementation uses a parameterised query and handles errors.
+
+  - description: "Every finding item carries a specific code location reference"
+    vars:
+      code: |
+        // order.go
+        package order
+
+        import (
+            "fmt"
+            "net/http"
+        )
+
+        func ProcessOrder(w http.ResponseWriter, r *http.Request) {
+            orderID := r.URL.Query().Get("id")
+            data, _ := db.Query("SELECT * FROM orders WHERE id = " + orderID)
+            w.Write([]byte(fmt.Sprintf("<div>%s</div>", data)))
+        }
+    assert:
+      - type: regex
+        value: "- \\*\\*\\[.+\\]\\*\\*"
+      - type: llm-rubric
+        value: >
+          Every finding item in both ### Blockers and ### Warnings includes a location
+          reference in **[location]** bracket notation immediately after the "- " bullet.
+          No finding is listed without a bracket-enclosed location. The SQL injection
+          (string concatenation) and the unescaped HTML output are each referenced
+          with a location pointing to order.go.

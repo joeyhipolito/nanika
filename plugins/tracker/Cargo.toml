@@ -1,0 +1,18 @@
+[package]
+name = "tracker"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "tracker"
+path = "src/main.rs"
+
+[dependencies]
+clap = { version = "4", features = ["derive", "env"] }
+rusqlite = { version = "0.31", features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+chrono = { version = "0.4", features = ["serde"] }
+comfy-table = "7"
+sha2 = "0.10"
+hex = "0.4"

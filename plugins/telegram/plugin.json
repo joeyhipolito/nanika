@@ -1,0 +1,29 @@
+{
+  "name": "telegram",
+  "version": "0.1.0",
+  "api_version": 1,
+  "description": "Send text and voice messages to Telegram chats. Requires a bot token in ~/.alluka/channels/telegram.json.",
+  "icon": "ChatRoundDots",
+  "binary": "telegram",
+  "build": "go build -ldflags \"-s -w\" -o bin/telegram ./cmd/telegram-cli",
+  "install": "ln -sf $(pwd)/bin/telegram ~/bin/telegram",
+  "tags": ["telegram", "messaging", "voice"],
+  "ui": true,
+  "actions": {
+    "query status": {
+      "command": "telegram query status --json",
+      "description": "Bot token and chat config status",
+      "output": "status"
+    },
+    "query items": {
+      "command": "telegram query items --json",
+      "description": "List configured Telegram chats",
+      "output": "items"
+    },
+    "query actions": {
+      "command": "telegram query actions --json",
+      "description": "Available CLI actions",
+      "output": "actions"
+    }
+  }
+}

@@ -1,0 +1,376 @@
+package engine
+
+import (
+	"context"
+	"fmt"
+	"strings"
+
+	"github.com/joeyhipolito/orchestrator-cli/internal/core"
+	"github.com/joeyhipolito/orchestrator-cli/internal/event"
+	"github.com/joeyhipolito/orchestrator-cli/internal/persona"
+)
+
+// ReviewFindings holds structured output parsed from a staff-code-reviewer phase.
+// The raw review text is not stored here — it reaches the fix phase automatically
+// via the sequential executor's priorContext chain (outputs slice in engine.go).
+type ReviewFindings struct {
+	Blockers []ReviewItem // BLOCKER-severity findings
+	Warnings []ReviewItem // WARNING-severity findings
+}
+
+// Passed reports whether the review found no blockers.
+func (f ReviewFindings) Passed() bool { return len(f.Blockers) == 0 }
+
+// ReviewItem is a single finding from a code review.
+type ReviewItem struct {
+	Location    string // "file.go:42" or empty
+	Description string // the full finding text
+}
+
+// ParseReviewFindings extracts structured findings from a staff-code-reviewer
+// output. It looks for "### Blockers" and "### Warnings" sections and collects
+// "- **[" prefixed items until the next "###" header or end of string.
+//
+// Parsing is fail-open: malformed or empty output returns Passed()==true so
+// a mis-formatted review never injects a spurious fix phase.
+func ParseReviewFindings(output string) ReviewFindings {
+	var f ReviewFindings
+	if output == "" {
+		return f
+	}
+
+	lines := strings.Split(output, "\n")
+	f.Blockers = parseSection(lines, "### Blockers")
+	f.Warnings = parseSection(lines, "### Warnings")
+	return f
+}
+
+func reviewOutputLooksMalformed(output string, findings ReviewFindings) bool {
+	trimmed := strings.TrimSpace(output)
+	if trimmed == "" {
+		return false
+	}
+	if len(findings.Blockers) > 0 || len(findings.Warnings) > 0 {
+		return false
+	}
+	return !strings.Contains(trimmed, "### Blockers") && !strings.Contains(trimmed, "### Warnings")
+}
+
+// parseSection scans lines for a header matching sectionHeader, then collects
+// "- **[" prefixed items until the next "###" header or end of slice.
+// Each item may span multiple lines (e.g., "Fix:" continuations).
+func parseSection(lines []string, sectionHeader string) []ReviewItem {
+	var items []ReviewItem
+	inSection := false
+	var current *ReviewItem
+
+	flush := func() {
+		if current != nil {
+			current.Description = strings.TrimSpace(current.Description)
+			items = append(items, *current)
+			current = nil
+		}
+	}
+
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+
+		if strings.HasPrefix(trimmed, "### ") {
+			if inSection {
+				// Leaving the section — flush any in-progress item and stop.
+				flush()
+				break
+			}
+			if trimmed == sectionHeader {
+				inSection = true
+			}
+			continue
+		}
+
+		if !inSection {
+			continue
+		}
+
+		if strings.HasPrefix(trimmed, "- **[") {
+			flush()
+			loc, desc := parseItemLine(trimmed)
+			current = &ReviewItem{Location: loc, Description: desc}
+			continue
+		}
+
+		// Continuation line for the current item (e.g., Fix: …, Why: …)
+		if current != nil && trimmed != "" {
+			current.Description += " " + trimmed
+		}
+	}
+	flush()
+	return items
+}
+
+// parseItemLine extracts the location and description from a line like:
+//
+//   - **[file.go:42]** Description text.
+//
+// Returns ("", trimmed) when the bracket notation is absent.
+func parseItemLine(line string) (location, description string) {
+	// Strip leading "- "
+	line = strings.TrimPrefix(line, "- ")
+
+	// Extract **[location]** prefix if present.
+	if strings.HasPrefix(line, "**[") {
+		end := strings.Index(line, "]**")
+		if end > 0 {
+			location = line[3:end]
+			description = strings.TrimSpace(line[end+3:])
+			return
+		}
+	}
+	description = line
+	return
+}
+
+// IsReviewGate reports whether p should trigger the autonomous review loop.
+// There are two supported forms:
+//   - auto-injected required review gates
+//   - explicit reviewer phases authored in predecomposed missions, but only
+//     when they are real code-review steps over implementation output
+//
+// The explicit path is intentionally narrow so standalone review-only missions
+// or advisory phases do not unexpectedly start injecting fix loops.
+func (e *Engine) IsReviewGate(p *core.Phase) bool {
+	if p == nil {
+		return false
+	}
+	if p.PersonaSelectionMethod == core.SelectionRequiredReview {
+		return true
+	}
+	if !isLoopableReviewPersona(p.Persona) || p.Role != core.RoleReviewer {
+		return false
+	}
+	for _, depID := range p.Dependencies {
+		dep, ok := e.phases[depID]
+		if ok && dep != nil && dep.Role == core.RoleImplementer {
+			return true
+		}
+	}
+	return false
+}
+
+func isLoopableReviewPersona(name string) bool {
+	// Primary: check frontmatter role=reviewer with code review capability.
+	// Only personas with "code review" capability produce structured output
+	// (### Blockers / ### Warnings) that the fix loop can parse and act on.
+	if persona.HasRole(name, "reviewer") && persona.HasCapability(name, "code review") {
+		return true
+	}
+	// Fallback: hardcoded slug for personas without frontmatter.
+	return strings.ToLower(name) == "staff-code-reviewer"
+}
+
+// defaultMaxReviewLoops is the loop bound used when Phase.MaxReviewLoops == 0.
+const defaultMaxReviewLoops = 2
+const maxFixObjectiveSummaryLen = 1200
+
+// injectFixPhase creates a fix phase and appends it to e.plan.Phases.
+// Returns the new phase, or nil when:
+//   - findings.Passed() (no blockers)
+//   - reviewPhase.ReviewIteration >= effective max loops
+//   - reviewPhase has no implementation dependencies to copy persona from
+//
+// The fix phase:
+//   - Uses the persona of the first implementation dependency of the review phase.
+//   - Has a concise objective listing blocker summaries (the full review arrives
+//     via the prior context system — no need to duplicate it here).
+//   - Inherits TargetDir and Skills from the implementation phase.
+//   - Depends on the review phase so it receives review output as prior context.
+func (e *Engine) injectFixPhase(reviewPhase *core.Phase, findings ReviewFindings) *core.Phase {
+	if findings.Passed() {
+		return nil
+	}
+
+	maxLoops := reviewPhase.MaxReviewLoops
+	if maxLoops <= 0 {
+		maxLoops = defaultMaxReviewLoops
+	}
+	if reviewPhase.ReviewIteration >= maxLoops {
+		return nil
+	}
+
+	// Find the first implementation dependency to inherit persona/skills/target.
+	var implPhase *core.Phase
+	for _, depID := range reviewPhase.Dependencies {
+		if dep, ok := e.phases[depID]; ok {
+			implPhase = dep
+			break
+		}
+	}
+	if implPhase == nil {
+		return nil
+	}
+
+	// Build a concise objective: "Fix the following blockers: <summaries>."
+	// Full review content arrives via the prior context plumbing, so we only
+	// need a short reference here to avoid double-injecting the review.
+	var summaries []string
+	for _, b := range findings.Blockers {
+		s := b.Description
+		if b.Location != "" {
+			s = fmt.Sprintf("[%s] %s", b.Location, b.Description)
+		}
+		summaries = append(summaries, truncateReviewSummary(s))
+	}
+	joinedSummaries := strings.Join(summaries, "; ")
+	if len(joinedSummaries) > maxFixObjectiveSummaryLen {
+		joinedSummaries = joinedSummaries[:maxFixObjectiveSummaryLen] + "..."
+	}
+	objective := fmt.Sprintf(
+		"Fix the following code review blockers identified in the prior review phase: %s",
+		joinedSummaries,
+	)
+
+	fixPhase := &core.Phase{
+		ID:              fmt.Sprintf("phase-%d", len(e.plan.Phases)+1),
+		Name:            "fix",
+		Objective:       objective,
+		Persona:         implPhase.Persona,
+		ModelTier:       implPhase.ModelTier,
+		Runtime:         implPhase.Runtime,
+		Skills:          append([]string{}, implPhase.Skills...), // defensive copy
+		TargetDir:       implPhase.TargetDir,
+		Dependencies:    []string{reviewPhase.ID},
+		Status:          core.StatusPending,
+		Role:            core.RoleImplementer, // fix phases are always implementer work
+		ReviewIteration: reviewPhase.ReviewIteration + 1,
+		OriginPhaseID:   implPhase.ID,
+		MaxReviewLoops:  reviewPhase.MaxReviewLoops, // unused in fix phases; propagated for inspection
+	}
+
+	e.plan.Phases = append(e.plan.Phases, fixPhase)
+	return fixPhase
+}
+
+func truncateReviewSummary(summary string) string {
+	const maxSummaryLen = 240
+	summary = strings.TrimSpace(summary)
+	if len(summary) <= maxSummaryLen {
+		return summary
+	}
+	return summary[:maxSummaryLen] + "..."
+}
+
+func flattenReviewItems(items []ReviewItem) []string {
+	out := make([]string, len(items))
+	for i, item := range items {
+		if item.Location != "" {
+			out[i] = fmt.Sprintf("[%s] %s", item.Location, item.Description)
+		} else {
+			out[i] = item.Description
+		}
+	}
+	return out
+}
+
+// injectRetryReviewPhase creates a retry review gate when the original review
+// returned non-empty but unstructured output (missing ### Blockers / ### Warnings
+// sections). The retry depends on the same phases as the original review so the
+// reviewer sees the same implementation output without any fix being applied.
+//
+// Returns nil when the loop bound is already exhausted (ReviewIteration >= max).
+func (e *Engine) injectRetryReviewPhase(review *core.Phase) *core.Phase {
+	maxLoops := review.MaxReviewLoops
+	if maxLoops <= 0 {
+		maxLoops = defaultMaxReviewLoops
+	}
+	if review.ReviewIteration >= maxLoops {
+		return nil
+	}
+
+	retry := &core.Phase{
+		ID: fmt.Sprintf("phase-%d", len(e.plan.Phases)+1),
+		Name: "re-review",
+		Objective: fmt.Sprintf(
+			"Re-attempt the code review for phase %q. The previous review output was malformed "+
+				"(missing ### Blockers / ### Warnings sections). Produce properly structured output "+
+				"with ### Blockers and ### Warnings sections, listing each finding as a '- **[location]** description' item.",
+			review.Name,
+		),
+		Persona:                review.Persona,
+		ModelTier:              review.ModelTier,
+		Runtime:                review.Runtime,
+		Dependencies:           append([]string{}, review.Dependencies...),
+		Status:                 core.StatusPending,
+		Role:                   core.RoleReviewer,
+		PersonaSelectionMethod: core.SelectionRequiredReview,
+		ReviewIteration:        review.ReviewIteration + 1,
+		MaxReviewLoops:         review.MaxReviewLoops,
+		OriginPhaseID:          review.ID,
+	}
+
+	e.plan.Phases = append(e.plan.Phases, retry)
+	return retry
+}
+
+// injectReReviewPhase creates a follow-up review gate after a fix phase,
+// continuing the bounded reviewer–implementer loop. The re-review:
+//   - Uses the original review phase's persona and MaxReviewLoops.
+//   - Sets PersonaSelectionMethod = SelectionRequiredReview so the engine
+//     recognises it as a review gate and calls handleReviewLoop on completion.
+//   - Depends on fixPhase so it receives the fix output as prior context.
+//   - Carries the same ReviewIteration as fixPhase so injectFixPhase's loop
+//     bound is evaluated correctly if blockers persist after the fix.
+//
+// injectReReviewPhase always injects the re-review (no early exit on loop
+// exhaustion): even when no further fix can be injected, the re-review
+// provides a final quality signal and ensures any remaining findings are
+// emitted via emitReviewFindings.
+func (e *Engine) injectReReviewPhase(originReview *core.Phase, fixPhase *core.Phase) *core.Phase {
+	reReview := &core.Phase{
+		ID:   fmt.Sprintf("phase-%d", len(e.plan.Phases)+1),
+		Name: "re-review",
+		Objective: fmt.Sprintf(
+			"Re-review the changes made in response to the previous code review (fix iteration %d of %d). "+
+				"Produce the same structured ### Blockers / ### Warnings output so the engine can evaluate convergence.",
+			fixPhase.ReviewIteration, func() int {
+				m := originReview.MaxReviewLoops
+				if m <= 0 {
+					return defaultMaxReviewLoops
+				}
+				return m
+			}(),
+		),
+		Persona:                originReview.Persona,
+		ModelTier:              originReview.ModelTier,
+		Runtime:                originReview.Runtime,
+		Dependencies:           []string{fixPhase.ID},
+		Status:                 core.StatusPending,
+		Role:                   core.RoleReviewer,
+		PersonaSelectionMethod: core.SelectionRequiredReview,
+		ReviewIteration:        fixPhase.ReviewIteration,
+		MaxReviewLoops:         originReview.MaxReviewLoops,
+		OriginPhaseID:          originReview.ID,
+	}
+
+	e.plan.Phases = append(e.plan.Phases, reReview)
+	return reReview
+}
+
+// emitReviewFindings emits a review.findings_emitted event carrying all parsed
+// findings from a review gate. Called unconditionally from handleReviewLoop so
+// that:
+//   - Non-blocking warnings are never silently discarded.
+//   - Unresolved blockers at loop-exhaustion are preserved in the event log.
+//   - Callers polling the event stream always see the full finding set.
+func (e *Engine) emitReviewFindings(ctx context.Context, phase *core.Phase, findings ReviewFindings) {
+	blockerDescs := flattenReviewItems(findings.Blockers)
+	warnDescs := flattenReviewItems(findings.Warnings)
+	phase.ReviewBlockers = append([]string{}, blockerDescs...)
+	phase.ReviewWarnings = append([]string{}, warnDescs...)
+	e.emit(ctx, event.ReviewFindingsEmitted, phase.ID, "", map[string]any{
+		"blocker_count":    len(findings.Blockers),
+		"warning_count":    len(findings.Warnings),
+		"passed":           findings.Passed(),
+		"review_iteration": phase.ReviewIteration,
+		"blockers":         blockerDescs,
+		"warnings":         warnDescs,
+	})
+}

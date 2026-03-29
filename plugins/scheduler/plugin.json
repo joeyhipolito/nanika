@@ -1,0 +1,40 @@
+{
+  "name": "scheduler",
+  "version": "1.0.0",
+  "description": "Local job scheduler and social content publisher. Schedules posts to LinkedIn, Reddit, and Substack at optimal times. Manages recurring shell jobs with cron expressions.",
+  "icon": "Calendar",
+  "binary": "scheduler",
+  "build": "go build -ldflags \"-s -w\" -o bin/scheduler ./cmd/scheduler-cli",
+  "install": "ln -sf $(pwd)/bin/scheduler ~/bin/scheduler",
+  "tags": ["scheduler", "cron", "jobs", "social", "linkedin", "reddit", "substack", "content", "daemon", "pipeline", "init", "history"],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/joeyhipolito/nanika",
+    "path": "plugins/scheduler"
+  },
+  "api_version": 1,
+  "ui": true,
+  "provides": ["query status", "query items", "query action"],
+  "actions": {
+    "status": {
+      "cmd": ["scheduler", "query", "status", "--json"],
+      "description": "Daemon running state, job count, enabled count, next scheduled run time"
+    },
+    "items": {
+      "cmd": ["scheduler", "query", "items", "--json"],
+      "description": "List all jobs: id, name, schedule, enabled, last_run, next_run, last_exit_code"
+    },
+    "action_run": {
+      "cmd": ["scheduler", "query", "action", "run", "<job_id>", "--json"],
+      "description": "Execute a job immediately and return exit code, stdout, stderr"
+    },
+    "action_enable": {
+      "cmd": ["scheduler", "query", "action", "enable", "<job_id>", "--json"],
+      "description": "Enable a disabled job"
+    },
+    "action_disable": {
+      "cmd": ["scheduler", "query", "action", "disable", "<job_id>", "--json"],
+      "description": "Disable an enabled job"
+    }
+  }
+}

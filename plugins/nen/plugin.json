@@ -1,0 +1,59 @@
+{
+  "name": "nen",
+  "version": "1.1.0",
+  "api_version": 1,
+  "binary": "shu",
+  "build": "go build -ldflags \"-s -w\" -o bin/shu ./cmd/shu && go build -ldflags \"-s -w\" -o bin/gyo ./cmd/gyo && go build -ldflags \"-s -w\" -o bin/en ./cmd/en && go build -ldflags \"-s -w\" -o bin/ryu ./cmd/ryu && go build -ldflags \"-s -w\" -o bin/nen-daemon ./cmd/nen-daemon",
+  "tags": ["nen", "scanner", "health", "metrics", "cost", "orchestrator"],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/joeyhipolito/nanika",
+    "path": "plugins/nen"
+  },
+  "description": "Nen scanner plugin — three external scanner binaries (gyo, en, ryu) that plug into the orchestrator's nen scan protocol. Each binary reads --scope JSON and writes envelope JSON to stdout. Scanners are auto-discovered from the active orchestrator config dir's nen/scanners/ at scan time.",
+  "icon": "MinimalisticMagnifer",
+  "ui": true,
+  "scanners": {
+    "gyo": {
+      "ability": "orchestrator-metrics",
+      "description": "Detects mission metric anomalies (z-score over 7d baseline) and silent worker failures (worker.failed without phase.failed).",
+      "mode": "watch",
+      "watch_events": "mission\\.(started|completed|failed|cancelled)"
+    },
+    "en": {
+      "ability": "system-health",
+      "description": "Checks orchestrator binary freshness, stale workspaces, learnings.db embedding coverage, daemon socket health, and metrics.db routing quality.",
+      "mode": "watch",
+      "watch_events": ".*"
+    },
+    "ryu": {
+      "ability": "cost-analysis",
+      "description": "Surfaces cost trends, model efficiency gaps (Opus vs Sonnet), retry waste, minimal-output phases, and phase.retrying event counts.",
+      "mode": "watch",
+      "watch_events": "mission\\.(completed|failed|cancelled)"
+    }
+  },
+  "query": {
+    "binary": "shu",
+    "description": "Component health evaluator and nen query entry point. Run 'shu evaluate' to score all nanika components; 'shu query' to inspect the latest results.",
+    "commands": {
+      "status": "Aggregated health score (0-100 avg of all components) and critical component count (score < 50) from the latest shu evaluate run.",
+      "items": "Full component results array from the latest evaluation: component name, score, issues, and trend.",
+      "actions": "Empty array — shu is read-only."
+    },
+    "state_files": [
+      "shu-state.json",
+      "shu-findings.json"
+    ]
+  },
+  "daemon": {
+    "binary": "nen-daemon",
+    "description": "Standalone nen event subscriber. Connects to ~/.alluka/events.sock (falls back to polling ~/.alluka/events/*.jsonl) and routes events to scanner binaries. Findings are stored in ~/.alluka/nen/findings.db.",
+    "commands": {
+      "start": "Start the nen event subscriber daemon (foreground; pair with launchd or &)",
+      "stop": "Send SIGTERM to the running daemon",
+      "status": "Show daemon PID and active finding count"
+    }
+  },
+  "install": "bash install.sh"
+}

@@ -1,0 +1,162 @@
+version: 2
+
+# Nanika skill CLIs — one build entry per skill module.
+# Skipped: claude-sdk-go (library), decomposer (knowledge-only), publishing-shared (library).
+
+builds:
+  - id: ai-analyzer
+    dir: skills/ai-analyzer
+    main: ./cmd/ai-analyzer
+    binary: ai-analyzer
+    env: [CGO_ENABLED=0]
+    goos: [linux, darwin]
+    goarch: [amd64, arm64]
+
+  - id: bird
+    dir: skills/bird
+    main: ./cmd/bird-cli
+    binary: bird
+    env: [CGO_ENABLED=0]
+    goos: [linux, darwin]
+    goarch: [amd64, arm64]
+
+  - id: contentkit
+    dir: skills/contentkit
+    main: ./cmd/contentkit-cli
+    binary: contentkit
+    env: [CGO_ENABLED=0]
+    goos: [linux, darwin]
+    goarch: [amd64, arm64]
+
+  - id: elevenlabs
+    dir: skills/elevenlabs
+    main: ./cmd/elevenlabs-cli
+    binary: elevenlabs
+    env: [CGO_ENABLED=0]
+    goos: [linux, darwin]
+    goarch: [amd64, arm64]
+
+  - id: engage
+    dir: skills/engage
+    main: ./cmd/engage-cli
+    binary: engage
+    env: [CGO_ENABLED=0]
+    goos: [linux, darwin]
+    goarch: [amd64, arm64]
+
+  - id: gmail
+    dir: skills/gmail
+    main: ./cmd/gmail-cli
+    binary: gmail
+    env: [CGO_ENABLED=0]
+    goos: [linux, darwin]
+    goarch: [amd64, arm64]
+
+  - id: gyo
+    dir: skills/gyo
+    main: ./cmd/gyo
+    binary: gyo
+    env: [CGO_ENABLED=0]
+    goos: [linux, darwin]
+    goarch: [amd64, arm64]
+
+  - id: linkedin
+    dir: skills/linkedin
+    main: ./cmd/linkedin-cli
+    binary: linkedin
+    env: [CGO_ENABLED=0]
+    goos: [linux, darwin]
+    goarch: [amd64, arm64]
+
+  - id: obsidian
+    dir: skills/obsidian
+    main: ./cmd/obsidian-cli
+    binary: obsidian
+    env: [CGO_ENABLED=0]
+    goos: [linux, darwin]
+    goarch: [amd64, arm64]
+
+  - id: orchestrator
+    dir: skills/orchestrator
+    main: .
+    binary: orchestrator
+    env: [CGO_ENABLED=0]
+    goos: [linux, darwin]
+    goarch: [amd64, arm64]
+
+  - id: publish
+    dir: skills/publish
+    main: ./cmd/publish-cli
+    binary: publish
+    env: [CGO_ENABLED=0]
+    goos: [linux, darwin]
+    goarch: [amd64, arm64]
+
+  - id: reddit
+    dir: skills/reddit
+    main: ./cmd/reddit-cli
+    binary: reddit
+    env: [CGO_ENABLED=0]
+    goos: [linux, darwin]
+    goarch: [amd64, arm64]
+
+  - id: scheduler
+    dir: skills/scheduler
+    main: ./cmd/scheduler-cli
+    binary: scheduler
+    env: [CGO_ENABLED=0]
+    goos: [linux, darwin]
+    goarch: [amd64, arm64]
+
+  - id: scout
+    dir: skills/scout
+    main: ./cmd/scout-cli
+    binary: scout
+    env: [CGO_ENABLED=0]
+    goos: [linux, darwin]
+    goarch: [amd64, arm64]
+
+  - id: substack
+    dir: skills/substack
+    main: ./cmd/substack-cli
+    binary: substack
+    env: [CGO_ENABLED=0]
+    goos: [linux, darwin]
+    goarch: [amd64, arm64]
+
+  - id: todoist
+    dir: skills/todoist
+    main: ./cmd/todoist-cli
+    binary: todoist
+    env: [CGO_ENABLED=0]
+    goos: [linux, darwin]
+    goarch: [amd64, arm64]
+
+  - id: watermark
+    dir: skills/watermark
+    main: .
+    binary: watermark
+    env: [CGO_ENABLED=0]
+    goos: [linux, darwin]
+    goarch: [amd64, arm64]
+
+  - id: ynab
+    dir: skills/ynab
+    main: ./cmd/ynab-cli
+    binary: ynab
+    env: [CGO_ENABLED=0]
+    goos: [linux, darwin]
+    goarch: [amd64, arm64]
+
+archives:
+  - id: default
+    # One tar.gz per binary per platform: <binary>_<os>_<arch>.tar.gz
+    name_template: "{{ .Binary }}_{{ .Os }}_{{ .Arch }}"
+    format: tar.gz
+    format_overrides:
+      - goos: windows
+        format: zip
+
+checksum:
+  name_template: checksums.txt
+  algorithm: sha256
