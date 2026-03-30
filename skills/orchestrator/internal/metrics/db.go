@@ -39,8 +39,9 @@ const upsertMissionSQL = `
 		id, domain, task, started_at, finished_at, duration_s,
 		phases_total, phases_completed, phases_failed, phases_skipped,
 		learnings_retrieved, retries_total, gate_failures, output_len_total, status,
-		decomp_source, tokens_in_total, tokens_out_total, cost_usd_total
-	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		decomp_source, tokens_in_total, tokens_out_total,
+		tokens_cache_creation_total, tokens_cache_read_total, cost_usd_total
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	ON CONFLICT(id) DO UPDATE SET
 		domain = excluded.domain,
 		task = excluded.task,
@@ -62,6 +63,8 @@ const upsertMissionSQL = `
 		END,
 		tokens_in_total = excluded.tokens_in_total,
 		tokens_out_total = excluded.tokens_out_total,
+		tokens_cache_creation_total = excluded.tokens_cache_creation_total,
+		tokens_cache_read_total = excluded.tokens_cache_read_total,
 		cost_usd_total = excluded.cost_usd_total
 `
 
@@ -86,9 +89,11 @@ type MissionRecord struct {
 	DecompSource       string        `json:"decomp_source,omitempty"` // "predecomposed", "decomp.llm", "decomp.keyword", "template"
 	Phases             []PhaseRecord `json:"phases,omitempty"`
 	// Mission-level cost rollups
-	TokensInTotal  int     `json:"tokens_in_total,omitempty"`
-	TokensOutTotal int     `json:"tokens_out_total,omitempty"`
-	CostUSDTotal   float64 `json:"cost_usd_total,omitempty"`
+	TokensInTotal            int     `json:"tokens_in_total,omitempty"`
+	TokensOutTotal           int     `json:"tokens_out_total,omitempty"`
+	TokensCacheCreationTotal int     `json:"tokens_cache_creation_total,omitempty"`
+	TokensCacheReadTotal     int     `json:"tokens_cache_read_total,omitempty"`
+	CostUSDTotal             float64 `json:"cost_usd_total,omitempty"`
 }
 
 // PhaseRecord mirrors engine.PhaseMetric for storage.
@@ -109,12 +114,17 @@ type PhaseRecord struct {
 	GatePassed         bool     `json:"gate_passed"`
 	OutputLen          int      `json:"output_len"`
 	LearningsRetrieved int      `json:"learnings_retrieved,omitempty"`
+	// Error classification (only set when status == "failed")
+	ErrorType    string `json:"error_type,omitempty"`    // rate-limit, tool-error, gate-failure, timeout, unknown
+	ErrorMessage string `json:"error_message,omitempty"` // raw error string
 	// Cost attribution
-	Provider  string  `json:"provider,omitempty"`   // always "anthropic"
-	Model     string  `json:"model,omitempty"`      // resolved model ID
-	TokensIn  int     `json:"tokens_in,omitempty"`  // input tokens
-	TokensOut int     `json:"tokens_out,omitempty"` // output tokens
-	CostUSD   float64 `json:"cost_usd,omitempty"`   // cost in USD
+	Provider            string  `json:"provider,omitempty"`              // always "anthropic"
+	Model               string  `json:"model,omitempty"`                 // resolved model ID
+	TokensIn            int     `json:"tokens_in,omitempty"`             // input tokens (sum of raw + cache_creation + cache_read)
+	TokensOut           int     `json:"tokens_out,omitempty"`            // output tokens
+	TokensCacheCreation int     `json:"tokens_cache_creation,omitempty"` // cache creation tokens
+	TokensCacheRead     int     `json:"tokens_cache_read,omitempty"`     // cache read tokens
+	CostUSD             float64 `json:"cost_usd,omitempty"`              // cost in USD
 }
 
 func (p *PhaseRecord) UnmarshalJSON(data []byte) error {
@@ -132,10 +142,14 @@ func (p *PhaseRecord) UnmarshalJSON(data []byte) error {
 		GatePassed            bool     `json:"gate_passed"`
 		OutputLen             int      `json:"output_len"`
 		LearningsRetrieved    int      `json:"learnings_retrieved,omitempty"`
+		ErrorType             string   `json:"error_type,omitempty"`
+		ErrorMessage          string   `json:"error_message,omitempty"`
 		Provider              string   `json:"provider,omitempty"`
 		Model                 string   `json:"model,omitempty"`
 		TokensIn              int      `json:"tokens_in,omitempty"`
 		TokensOut             int      `json:"tokens_out,omitempty"`
+		TokensCacheCreation   int      `json:"tokens_cache_creation,omitempty"`
+		TokensCacheRead       int      `json:"tokens_cache_read,omitempty"`
 		CostUSD               float64  `json:"cost_usd,omitempty"`
 	}
 
@@ -159,10 +173,14 @@ func (p *PhaseRecord) UnmarshalJSON(data []byte) error {
 	p.GatePassed = aux.GatePassed
 	p.OutputLen = aux.OutputLen
 	p.LearningsRetrieved = aux.LearningsRetrieved
+	p.ErrorType = aux.ErrorType
+	p.ErrorMessage = aux.ErrorMessage
 	p.Provider = aux.Provider
 	p.Model = aux.Model
 	p.TokensIn = aux.TokensIn
 	p.TokensOut = aux.TokensOut
+	p.TokensCacheCreation = aux.TokensCacheCreation
+	p.TokensCacheRead = aux.TokensCacheRead
 	p.CostUSD = aux.CostUSD
 	return nil
 }
@@ -233,45 +251,51 @@ func (d *DB) initSchema() error {
 	}{
 		{"missions table", `
 			CREATE TABLE IF NOT EXISTS missions (
-				id                  TEXT PRIMARY KEY,
-				domain              TEXT NOT NULL DEFAULT '',
-				task                TEXT NOT NULL DEFAULT '',
-				started_at          DATETIME NOT NULL,
-				finished_at         DATETIME NOT NULL,
-				duration_s          INTEGER NOT NULL DEFAULT 0,
-				phases_total        INTEGER NOT NULL DEFAULT 0,
-				phases_completed    INTEGER NOT NULL DEFAULT 0,
-				phases_failed       INTEGER NOT NULL DEFAULT 0,
-				phases_skipped      INTEGER NOT NULL DEFAULT 0,
-				learnings_retrieved INTEGER NOT NULL DEFAULT 0,
-				retries_total       INTEGER NOT NULL DEFAULT 0,
-				gate_failures       INTEGER NOT NULL DEFAULT 0,
-				output_len_total    INTEGER NOT NULL DEFAULT 0,
-				status              TEXT NOT NULL DEFAULT '',
-				decomp_source       TEXT NOT NULL DEFAULT 'unknown',
-				tokens_in_total     INTEGER NOT NULL DEFAULT 0,
-				tokens_out_total    INTEGER NOT NULL DEFAULT 0,
-				cost_usd_total      REAL NOT NULL DEFAULT 0
+				id                          TEXT PRIMARY KEY,
+				domain                      TEXT NOT NULL DEFAULT '',
+				task                        TEXT NOT NULL DEFAULT '',
+				started_at                  DATETIME NOT NULL,
+				finished_at                 DATETIME NOT NULL,
+				duration_s                  INTEGER NOT NULL DEFAULT 0,
+				phases_total                INTEGER NOT NULL DEFAULT 0,
+				phases_completed            INTEGER NOT NULL DEFAULT 0,
+				phases_failed               INTEGER NOT NULL DEFAULT 0,
+				phases_skipped              INTEGER NOT NULL DEFAULT 0,
+				learnings_retrieved         INTEGER NOT NULL DEFAULT 0,
+				retries_total               INTEGER NOT NULL DEFAULT 0,
+				gate_failures               INTEGER NOT NULL DEFAULT 0,
+				output_len_total            INTEGER NOT NULL DEFAULT 0,
+				status                      TEXT NOT NULL DEFAULT '',
+				decomp_source               TEXT NOT NULL DEFAULT 'unknown',
+				tokens_in_total             INTEGER NOT NULL DEFAULT 0,
+				tokens_out_total            INTEGER NOT NULL DEFAULT 0,
+				tokens_cache_creation_total INTEGER NOT NULL DEFAULT 0,
+				tokens_cache_read_total     INTEGER NOT NULL DEFAULT 0,
+				cost_usd_total              REAL NOT NULL DEFAULT 0
 			)`},
 		{"phases table", `
 			CREATE TABLE IF NOT EXISTS phases (
-				id                  TEXT PRIMARY KEY,
-				mission_id          TEXT NOT NULL REFERENCES missions(id) ON DELETE CASCADE,
-				name                TEXT NOT NULL DEFAULT '',
-				persona             TEXT NOT NULL DEFAULT '',
-				selection_method    TEXT NOT NULL DEFAULT '',
-				duration_s          INTEGER NOT NULL DEFAULT 0,
-				status              TEXT NOT NULL DEFAULT '',
-				retries             INTEGER NOT NULL DEFAULT 0,
-				gate_passed         INTEGER NOT NULL DEFAULT 0,
-				output_len          INTEGER NOT NULL DEFAULT 0,
-				learnings_retrieved INTEGER NOT NULL DEFAULT 0,
-				provider            TEXT NOT NULL DEFAULT '',
-				model               TEXT NOT NULL DEFAULT '',
-				tokens_in           INTEGER NOT NULL DEFAULT 0,
-				tokens_out          INTEGER NOT NULL DEFAULT 0,
-				cost_usd            REAL NOT NULL DEFAULT 0,
-				parsed_skills       TEXT NOT NULL DEFAULT ''
+				id                   TEXT PRIMARY KEY,
+				mission_id           TEXT NOT NULL REFERENCES missions(id) ON DELETE CASCADE,
+				name                 TEXT NOT NULL DEFAULT '',
+				persona              TEXT NOT NULL DEFAULT '',
+				selection_method     TEXT NOT NULL DEFAULT '',
+				duration_s           INTEGER NOT NULL DEFAULT 0,
+				status               TEXT NOT NULL DEFAULT '',
+				retries              INTEGER NOT NULL DEFAULT 0,
+				gate_passed          INTEGER NOT NULL DEFAULT 0,
+				output_len           INTEGER NOT NULL DEFAULT 0,
+				learnings_retrieved  INTEGER NOT NULL DEFAULT 0,
+				error_type           TEXT NOT NULL DEFAULT '',
+				error_message        TEXT NOT NULL DEFAULT '',
+				provider             TEXT NOT NULL DEFAULT '',
+				model                TEXT NOT NULL DEFAULT '',
+				tokens_in            INTEGER NOT NULL DEFAULT 0,
+				tokens_out           INTEGER NOT NULL DEFAULT 0,
+				tokens_cache_creation INTEGER NOT NULL DEFAULT 0,
+				tokens_cache_read    INTEGER NOT NULL DEFAULT 0,
+				cost_usd             REAL NOT NULL DEFAULT 0,
+				parsed_skills        TEXT NOT NULL DEFAULT ''
 			)`},
 		{"skill_invocations table", `
 			CREATE TABLE IF NOT EXISTS skill_invocations (
@@ -305,6 +329,20 @@ func (d *DB) initSchema() error {
 	// Additive migrations — idempotent via "already has a column named" check.
 	// These handle databases created before the column was added to the DDL above.
 	migrations := []struct{ name, sql string }{
+		{"add quota_snapshots table", `CREATE TABLE IF NOT EXISTS quota_snapshots (
+			id                       INTEGER PRIMARY KEY AUTOINCREMENT,
+			captured_at              DATETIME NOT NULL,
+			mission_id               TEXT NOT NULL,
+			tokens_in                INTEGER NOT NULL DEFAULT 0,
+			tokens_out               INTEGER NOT NULL DEFAULT 0,
+			tokens_cache_read        INTEGER NOT NULL DEFAULT 0,
+			cost_usd                 REAL NOT NULL DEFAULT 0,
+			window_5h_tokens_in      INTEGER NOT NULL DEFAULT 0,
+			window_5h_tokens_out     INTEGER NOT NULL DEFAULT 0,
+			window_5h_cost_usd       REAL NOT NULL DEFAULT 0,
+			estimated_5h_utilization REAL NOT NULL DEFAULT 0,
+			model                    TEXT NOT NULL DEFAULT ''
+		)`},
 		{"add phases.selection_method", `ALTER TABLE phases ADD COLUMN selection_method TEXT NOT NULL DEFAULT ''`},
 		{"add phases.provider", `ALTER TABLE phases ADD COLUMN provider TEXT NOT NULL DEFAULT ''`},
 		{"add phases.model", `ALTER TABLE phases ADD COLUMN model TEXT NOT NULL DEFAULT ''`},
@@ -318,6 +356,12 @@ func (d *DB) initSchema() error {
 		{"add skill_invocations.source", `ALTER TABLE skill_invocations ADD COLUMN source TEXT NOT NULL DEFAULT 'declared'`},
 		{"add missions.decomp_source", `ALTER TABLE missions ADD COLUMN decomp_source TEXT NOT NULL DEFAULT 'unknown'`},
 		{"add phases.parsed_skills", `ALTER TABLE phases ADD COLUMN parsed_skills TEXT NOT NULL DEFAULT ''`},
+		{"add phases.tokens_cache_creation", `ALTER TABLE phases ADD COLUMN tokens_cache_creation INTEGER NOT NULL DEFAULT 0`},
+		{"add phases.tokens_cache_read", `ALTER TABLE phases ADD COLUMN tokens_cache_read INTEGER NOT NULL DEFAULT 0`},
+		{"add missions.tokens_cache_creation_total", `ALTER TABLE missions ADD COLUMN tokens_cache_creation_total INTEGER NOT NULL DEFAULT 0`},
+		{"add missions.tokens_cache_read_total", `ALTER TABLE missions ADD COLUMN tokens_cache_read_total INTEGER NOT NULL DEFAULT 0`},
+		{"add phases.error_type", `ALTER TABLE phases ADD COLUMN error_type TEXT NOT NULL DEFAULT ''`},
+		{"add phases.error_message", `ALTER TABLE phases ADD COLUMN error_message TEXT NOT NULL DEFAULT ''`},
 	}
 	for _, m := range migrations {
 		if _, err := tx.Exec(m.sql); err != nil {
@@ -334,6 +378,8 @@ func (d *DB) initSchema() error {
 	// no-ops via IF NOT EXISTS. On a migrated database the column was just added.
 	postMigrationIndexes := []struct{ name, sql string }{
 		{"idx_skill_invocations_phase", `CREATE INDEX IF NOT EXISTS idx_skill_invocations_phase ON skill_invocations(phase)`},
+		{"idx_quota_snapshots_captured_at", `CREATE INDEX IF NOT EXISTS idx_quota_snapshots_captured_at ON quota_snapshots(captured_at)`},
+		{"idx_quota_snapshots_mission_id", `CREATE INDEX IF NOT EXISTS idx_quota_snapshots_mission_id ON quota_snapshots(mission_id)`},
 	}
 	for _, idx := range postMigrationIndexes {
 		if _, err := tx.Exec(idx.sql); err != nil {
@@ -367,8 +413,9 @@ func (d *DB) RecordMission(ctx context.Context, m MissionRecord) error {
 			id, domain, task, started_at, finished_at, duration_s,
 			phases_total, phases_completed, phases_failed, phases_skipped,
 			learnings_retrieved, retries_total, gate_failures, output_len_total, status,
-			decomp_source, tokens_in_total, tokens_out_total, cost_usd_total
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			decomp_source, tokens_in_total, tokens_out_total,
+			tokens_cache_creation_total, tokens_cache_read_total, cost_usd_total
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`,
 		m.WorkspaceID, m.Domain, m.Task,
 		m.StartedAt.UTC().Format(time.RFC3339),
@@ -377,7 +424,8 @@ func (d *DB) RecordMission(ctx context.Context, m MissionRecord) error {
 		m.PhasesTotal, m.PhasesCompleted, m.PhasesFailed, m.PhasesSkipped,
 		m.LearningsRetrieved, m.RetriesTotal, m.GateFailures, m.OutputLenTotal,
 		m.Status, decompSource,
-		m.TokensInTotal, m.TokensOutTotal, m.CostUSDTotal,
+		m.TokensInTotal, m.TokensOutTotal,
+		m.TokensCacheCreationTotal, m.TokensCacheReadTotal, m.CostUSDTotal,
 	)
 	if err != nil {
 		return fmt.Errorf("inserting mission %s: %w", m.WorkspaceID, err)
@@ -417,8 +465,9 @@ func insertMissionRowIfMissing(ctx context.Context, execer execContexter, m Miss
 			id, domain, task, started_at, finished_at, duration_s,
 			phases_total, phases_completed, phases_failed, phases_skipped,
 			learnings_retrieved, retries_total, gate_failures, output_len_total, status,
-			decomp_source, tokens_in_total, tokens_out_total, cost_usd_total
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			decomp_source, tokens_in_total, tokens_out_total,
+			tokens_cache_creation_total, tokens_cache_read_total, cost_usd_total
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`,
 		m.WorkspaceID, m.Domain, m.Task,
 		m.StartedAt.UTC().Format(time.RFC3339),
@@ -427,7 +476,8 @@ func insertMissionRowIfMissing(ctx context.Context, execer execContexter, m Miss
 		m.PhasesTotal, m.PhasesCompleted, m.PhasesFailed, m.PhasesSkipped,
 		m.LearningsRetrieved, m.RetriesTotal, m.GateFailures, m.OutputLenTotal,
 		m.Status, decompSource,
-		m.TokensInTotal, m.TokensOutTotal, m.CostUSDTotal,
+		m.TokensInTotal, m.TokensOutTotal,
+		m.TokensCacheCreationTotal, m.TokensCacheReadTotal, m.CostUSDTotal,
 	)
 	if err != nil {
 		return false, fmt.Errorf("inserting mission %s: %w", m.WorkspaceID, err)
@@ -469,7 +519,8 @@ func missionUpsertArgs(m MissionRecord) []any {
 		m.PhasesTotal, m.PhasesCompleted, m.PhasesFailed, m.PhasesSkipped,
 		m.LearningsRetrieved, m.RetriesTotal, m.GateFailures, m.OutputLenTotal,
 		m.Status, decompSource,
-		m.TokensInTotal, m.TokensOutTotal, m.CostUSDTotal,
+		m.TokensInTotal, m.TokensOutTotal,
+		m.TokensCacheCreationTotal, m.TokensCacheReadTotal, m.CostUSDTotal,
 		decompSourceUnknown, decompSourceUnknown,
 	}
 }
@@ -522,11 +573,13 @@ func insertPhase(ctx context.Context, tx *sql.Tx, missionID string, p PhaseRecor
 		INSERT OR IGNORE INTO phases (
 			id, mission_id, name, persona, selection_method, duration_s,
 			status, retries, gate_passed, output_len, learnings_retrieved,
+			error_type, error_message,
 			provider, model, tokens_in, tokens_out, cost_usd, parsed_skills
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`,
 		phaseID, missionID, p.Name, p.Persona, p.SelectionMethod, p.DurationS,
 		p.Status, p.Retries, gatePassed, p.OutputLen, p.LearningsRetrieved,
+		p.ErrorType, p.ErrorMessage,
 		p.Provider, p.Model, p.TokensIn, p.TokensOut, p.CostUSD,
 		marshalSkillsJSON(p.ParsedSkills),
 	)
@@ -551,8 +604,9 @@ func upsertPhase(ctx context.Context, execer execContexter, missionID string, p 
 		INSERT INTO phases (
 			id, mission_id, name, persona, selection_method, duration_s,
 			status, retries, gate_passed, output_len, learnings_retrieved,
+			error_type, error_message,
 			provider, model, tokens_in, tokens_out, cost_usd, parsed_skills
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET
 			mission_id = excluded.mission_id,
 			name = excluded.name,
@@ -564,6 +618,8 @@ func upsertPhase(ctx context.Context, execer execContexter, missionID string, p 
 			gate_passed = excluded.gate_passed,
 			output_len = excluded.output_len,
 			learnings_retrieved = excluded.learnings_retrieved,
+			error_type = excluded.error_type,
+			error_message = excluded.error_message,
 			provider = excluded.provider,
 			model = excluded.model,
 			tokens_in = excluded.tokens_in,
@@ -573,6 +629,7 @@ func upsertPhase(ctx context.Context, execer execContexter, missionID string, p 
 	`,
 		phaseID, missionID, p.Name, p.Persona, p.SelectionMethod, p.DurationS,
 		p.Status, p.Retries, gatePassed, p.OutputLen, p.LearningsRetrieved,
+		p.ErrorType, p.ErrorMessage,
 		p.Provider, p.Model, p.TokensIn, p.TokensOut, p.CostUSD,
 		marshalSkillsJSON(p.ParsedSkills),
 	)
@@ -1352,4 +1409,117 @@ func (d *DB) QueryCostSummary(ctx context.Context, days int) (*CostSummary, erro
 		s.ByModel = append(s.ByModel, mc)
 	}
 	return s, phaseRows.Err()
+}
+
+// QuotaSnapshot records token consumption at a point in time, together with
+// rolling 5-hour window totals and an estimated utilization ratio relative to
+// the operator-configured token budget.
+type QuotaSnapshot struct {
+	ID                    int64     `json:"id,omitempty"`
+	CapturedAt            time.Time `json:"captured_at"`
+	MissionID             string    `json:"mission_id"`
+	TokensIn              int       `json:"tokens_in"`
+	TokensOut             int       `json:"tokens_out"`
+	TokensCacheRead       int       `json:"tokens_cache_read"`
+	CostUSD               float64   `json:"cost_usd"`
+	Window5hTokensIn      int       `json:"window_5h_tokens_in"`
+	Window5hTokensOut     int       `json:"window_5h_tokens_out"`
+	Window5hCostUSD       float64   `json:"window_5h_cost_usd"`
+	Estimated5hUtil       float64   `json:"estimated_5h_utilization"`
+	Model                 string    `json:"model"`
+}
+
+// WindowTotals holds the aggregate token and cost totals over a time window.
+type WindowTotals struct {
+	TokensIn  int
+	TokensOut int
+	CostUSD   float64
+}
+
+// InsertQuotaSnapshot writes a single snapshot row to the quota_snapshots table.
+func (d *DB) InsertQuotaSnapshot(ctx context.Context, s QuotaSnapshot) error {
+	if s.MissionID == "" {
+		return fmt.Errorf("quota snapshot: mission_id is required")
+	}
+	capturedAt := s.CapturedAt
+	if capturedAt.IsZero() {
+		capturedAt = time.Now().UTC()
+	}
+	_, err := d.db.ExecContext(ctx, `
+		INSERT INTO quota_snapshots (
+			captured_at, mission_id,
+			tokens_in, tokens_out, tokens_cache_read, cost_usd,
+			window_5h_tokens_in, window_5h_tokens_out, window_5h_cost_usd,
+			estimated_5h_utilization, model
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`,
+		capturedAt.UTC().Format(time.RFC3339),
+		s.MissionID,
+		s.TokensIn, s.TokensOut, s.TokensCacheRead, s.CostUSD,
+		s.Window5hTokensIn, s.Window5hTokensOut, s.Window5hCostUSD,
+		s.Estimated5hUtil,
+		s.Model,
+	)
+	if err != nil {
+		return fmt.Errorf("inserting quota snapshot for mission %s: %w", s.MissionID, err)
+	}
+	return nil
+}
+
+// GetRecentSnapshots returns all quota snapshots whose captured_at is within
+// the given duration before now, ordered oldest-first.
+func (d *DB) GetRecentSnapshots(ctx context.Context, window time.Duration) ([]QuotaSnapshot, error) {
+	since := time.Now().UTC().Add(-window).Format(time.RFC3339)
+	rows, err := d.db.QueryContext(ctx, `
+		SELECT id, captured_at, mission_id,
+		       tokens_in, tokens_out, tokens_cache_read, cost_usd,
+		       window_5h_tokens_in, window_5h_tokens_out, window_5h_cost_usd,
+		       estimated_5h_utilization, model
+		FROM quota_snapshots
+		WHERE captured_at >= ?
+		ORDER BY captured_at ASC
+	`, since)
+	if err != nil {
+		return nil, fmt.Errorf("querying recent quota snapshots: %w", err)
+	}
+	defer rows.Close()
+
+	var out []QuotaSnapshot
+	for rows.Next() {
+		var s QuotaSnapshot
+		var capturedAtStr string
+		if err := rows.Scan(
+			&s.ID, &capturedAtStr, &s.MissionID,
+			&s.TokensIn, &s.TokensOut, &s.TokensCacheRead, &s.CostUSD,
+			&s.Window5hTokensIn, &s.Window5hTokensOut, &s.Window5hCostUSD,
+			&s.Estimated5hUtil, &s.Model,
+		); err != nil {
+			return nil, fmt.Errorf("scanning quota snapshot row: %w", err)
+		}
+		t, err := time.Parse(time.RFC3339, capturedAtStr)
+		if err != nil {
+			return nil, fmt.Errorf("parsing captured_at %q: %w", capturedAtStr, err)
+		}
+		s.CapturedAt = t
+		out = append(out, s)
+	}
+	return out, rows.Err()
+}
+
+// Get5hWindowTotals returns the sum of tokens_in, tokens_out, and cost_usd
+// from quota_snapshots captured in the last 5 hours.
+func (d *DB) Get5hWindowTotals(ctx context.Context) (*WindowTotals, error) {
+	since := time.Now().UTC().Add(-5 * time.Hour).Format(time.RFC3339)
+	var wt WindowTotals
+	err := d.db.QueryRowContext(ctx, `
+		SELECT COALESCE(SUM(tokens_in), 0),
+		       COALESCE(SUM(tokens_out), 0),
+		       COALESCE(SUM(cost_usd), 0)
+		FROM quota_snapshots
+		WHERE captured_at >= ?
+	`, since).Scan(&wt.TokensIn, &wt.TokensOut, &wt.CostUSD)
+	if err != nil {
+		return nil, fmt.Errorf("querying 5h window totals: %w", err)
+	}
+	return &wt, nil
 }

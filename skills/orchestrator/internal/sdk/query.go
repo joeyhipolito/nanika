@@ -255,12 +255,24 @@ func extractEvents(msg Message) []*StreamedEvent {
 		return events
 
 	case *ResultMessage:
+		// Prefer the legacy nested Cost if present; otherwise build CostInfo from
+		// the top-level total_cost_usd and usage fields that the current CLI emits.
+		cost := m.Cost
+		if cost == nil && (m.TotalCostUSD != 0 || m.Usage != nil) {
+			cost = &CostInfo{TotalCostUSD: m.TotalCostUSD}
+			if m.Usage != nil {
+				cost.InputTokens = m.Usage.InputTokens + m.Usage.CacheCreationInputTokens + m.Usage.CacheReadInputTokens
+				cost.OutputTokens = m.Usage.OutputTokens
+				cost.CacheCreationTokens = m.Usage.CacheCreationInputTokens
+				cost.CacheReadTokens = m.Usage.CacheReadInputTokens
+			}
+		}
 		ev := &StreamedEvent{
 			Kind:       KindTurnEnd,
 			NumTurns:   m.NumTurns,
 			DurationMs: m.DurationMs,
 			SessionID:  m.SessionID,
-			Cost:       m.Cost,
+			Cost:       cost,
 		}
 		if m.Subtype == "error" {
 			ev.IsError = true

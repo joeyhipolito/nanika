@@ -8,7 +8,7 @@ package main
 
 import (
 	"context"
-	"crypto/rand"
+	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
@@ -18,16 +18,15 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/joeyhipolito/nen/internal/scan"
 )
 
 const (
-	binaryAgeWarningDays = 60
-	binaryAgeStaleDays   = 180
-
 	workspaceStaleDays = 7
 	workspaceHighCount = 5
 
@@ -37,12 +36,16 @@ const (
 	deadWeightLow    = 0.10
 	deadWeightMedium = 0.30
 
-	routingFallbackThreshold = 30.0
+	routingFallbackLow    = 5.0
+	routingFallbackMedium = 15.0
+	routingFallbackHigh   = 30.0
 
-	missionStaleDays     = 7
-	missionVeryStaleDays = 30
+	missionStaleDays  = 14
+	missionMediumDays = 30
+	missionHighDays   = 60
 
 	daemonDialTimeout = 200 * time.Millisecond
+	daemonProcessName = "nen-daemon"
 )
 
 const (
@@ -53,6 +56,7 @@ const (
 	categoryEmbedding        = "embedding-coverage"
 	categoryDeadWeight       = "dead-weight"
 	categoryDaemonHealth     = "daemon-health"
+	categorySchedulerHealth  = "scheduler-health"
 	categoryRoutingQuality   = "routing-quality"
 	categoryMissionActivity  = "mission-activity"
 )
@@ -81,20 +85,116 @@ func main() {
 		os.Exit(1)
 	}
 	fmt.Println(string(out))
+
+	if persistErr := scan.PersistFindings(context.Background(), findings); persistErr != nil {
+		fmt.Fprintf(os.Stderr, "en: persisting findings: %v\n", persistErr)
+	}
 }
 
-func enScan(ctx context.Context, _ scan.Scope) ([]scan.Finding, error) {
+// checkEntry associates a check function with the categories it produces and the
+// binary names and path substrings it is relevant to when scope filtering is active.
+type checkEntry struct {
+	fn         func(context.Context) ([]scan.Finding, string)
+	categories []string // categories this check produces
+	binaries   []string // binary names that make this check relevant
+	paths      []string // path substrings that make this check relevant
+}
+
+var allChecks = []checkEntry{
+	{
+		fn:         checkOrchestratorBinaryAge,
+		categories: []string{categoryBinaryFreshness},
+		binaries:   []string{"orchestrator"},
+	},
+	{
+		fn:         checkStaleWorkspaces,
+		categories: []string{categoryWorkspaceHygiene},
+		paths:      []string{"workspaces"},
+	},
+	{
+		fn:         checkLearningsDB,
+		categories: []string{categoryEmbedding, categoryDeadWeight},
+		paths:      []string{"learnings.db"},
+	},
+	{
+		fn:         checkDaemonSocket,
+		categories: []string{categoryDaemonHealth},
+		binaries:   []string{"nen-daemon", "orchestrator"},
+		paths:      []string{".sock"},
+	},
+	{
+		fn:         checkSchedulerDaemon,
+		categories: []string{categorySchedulerHealth},
+		binaries:   []string{"scheduler"},
+		paths:      []string{"scheduler"},
+	},
+	{
+		fn:         checkMetricsDB,
+		categories: []string{categoryRoutingQuality, categoryMissionActivity},
+		binaries:   []string{"orchestrator"},
+		paths:      []string{"metrics.db"},
+	},
+}
+
+// selectChecks returns the subset of checks to run based on the given scope.
+// Empty scope (Kind == "") runs all checks.
+func selectChecks(scope scan.Scope) []func(context.Context) ([]scan.Finding, string) {
+	if scope.Kind == "" || scope.Value == "" {
+		fns := make([]func(context.Context) ([]scan.Finding, string), len(allChecks))
+		for i, e := range allChecks {
+			fns[i] = e.fn
+		}
+		return fns
+	}
+
+	var selected []func(context.Context) ([]scan.Finding, string)
+	for _, e := range allChecks {
+		if matchesScope(e, scope) {
+			selected = append(selected, e.fn)
+		}
+	}
+	return selected
+}
+
+func matchesScope(e checkEntry, scope scan.Scope) bool {
+	switch scope.Kind {
+	case "category":
+		for _, c := range e.categories {
+			if c == scope.Value {
+				return true
+			}
+		}
+	case "binary":
+		for _, b := range e.binaries {
+			if b == scope.Value {
+				return true
+			}
+		}
+	case "path", "file", "directory", "socket":
+		for _, p := range e.paths {
+			if strings.Contains(scope.Value, p) {
+				return true
+			}
+		}
+		// Also match by category if scope.Value looks like a category name.
+		for _, c := range e.categories {
+			if c == scope.Value {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func enScan(ctx context.Context, scope scan.Scope) ([]scan.Finding, error) {
 	type checkResult struct {
 		findings []scan.Finding
 		errMsg   string
 	}
 
-	checkFns := []func(context.Context) ([]scan.Finding, string){
-		checkOrchestratorBinaryAge,
-		checkStaleWorkspaces,
-		checkLearningsDB,
-		checkDaemonSocket,
-		checkMetricsDB,
+	checkFns := selectChecks(scope)
+	if len(checkFns) == 0 {
+		return nil, fmt.Errorf("no checks matched scope %q/%q", scope.Kind, scope.Value)
 	}
 
 	ch := make(chan checkResult, len(checkFns))
@@ -116,6 +216,18 @@ func enScan(ctx context.Context, _ scan.Scope) ([]scan.Finding, error) {
 		}
 	}
 
+	// When scoping to a specific category, drop findings from other categories
+	// that were produced as a side-effect by the same check function.
+	if scope.Kind == "category" && scope.Value != "" {
+		filtered := findings[:0]
+		for _, f := range findings {
+			if f.Category == scope.Value {
+				filtered = append(filtered, f)
+			}
+		}
+		findings = filtered
+	}
+
 	if len(errs) > 0 {
 		return findings, fmt.Errorf("%s", strings.Join(errs, "; "))
 	}
@@ -124,7 +236,7 @@ func enScan(ctx context.Context, _ scan.Scope) ([]scan.Finding, error) {
 
 func newFinding(ability, category string, sev scan.Severity, title, description string, scope scan.Scope) scan.Finding {
 	return scan.Finding{
-		ID:          enFindingID(),
+		ID:          findingID(category, scope.Value),
 		Ability:     ability,
 		Category:    category,
 		Severity:    sev,
@@ -154,23 +266,10 @@ func checkOrchestratorBinaryAge(_ context.Context) ([]scan.Finding, string) {
 
 	ageDays := int(time.Since(info.ModTime()).Hours() / 24)
 
-	var sev scan.Severity
-	var title string
-	switch {
-	case ageDays > binaryAgeStaleDays:
-		sev = scan.SeverityMedium
-		title = fmt.Sprintf("orchestrator binary is stale (%d days old)", ageDays)
-	case ageDays > binaryAgeWarningDays:
-		sev = scan.SeverityLow
-		title = fmt.Sprintf("orchestrator binary may need updating (%d days old)", ageDays)
-	default:
-		sev = scan.SeverityInfo
-		title = fmt.Sprintf("orchestrator binary is recent (%d days old)", ageDays)
-	}
-
 	return []scan.Finding{newFinding(
-		abilitySystemHealth, categoryBinaryFreshness, sev, title,
-		fmt.Sprintf("Binary at %s was last modified %s.", binaryPath, info.ModTime().Format("2006-01-02")),
+		abilitySystemHealth, categoryBinaryFreshness, scan.SeverityInfo,
+		fmt.Sprintf("orchestrator binary is %d days old", ageDays),
+		fmt.Sprintf("Binary at %s was last modified %s. mtime-based age is informational only.", binaryPath, info.ModTime().Format("2006-01-02")),
 		scan.Scope{Kind: "binary", Value: binaryPath},
 	)}, ""
 }
@@ -351,31 +450,39 @@ func checkDaemonSocket(_ context.Context) ([]scan.Finding, string) {
 		return nil, fmt.Sprintf("resolving daemon socket path: %v", err)
 	}
 
+	scope := scan.Scope{Kind: "socket", Value: sockPath}
+
 	if _, err := os.Stat(sockPath); os.IsNotExist(err) {
 		return []scan.Finding{newFinding(
-			abilitySystemHealth, categoryDaemonHealth, scan.SeverityInfo,
-			"daemon is not running",
+			abilitySystemHealth, categoryDaemonHealth, scan.SeverityLow,
+			"daemon has never started",
 			fmt.Sprintf("No socket at %s. Start the daemon with 'orchestrator daemon start'.", sockPath),
-			scan.Scope{Kind: "socket", Value: sockPath},
+			scope,
 		)}, ""
 	}
 
 	conn, err := net.DialTimeout("unix", sockPath, daemonDialTimeout)
 	if err != nil {
 		return []scan.Finding{newFinding(
-			abilitySystemHealth, categoryDaemonHealth, scan.SeverityLow,
-			"daemon socket is unreachable",
-			fmt.Sprintf("Socket exists at %s but connection failed: %v.", sockPath, err),
-			scan.Scope{Kind: "socket", Value: sockPath},
+			abilitySystemHealth, categoryDaemonHealth, scan.SeverityHigh,
+			"daemon crashed (stale socket)",
+			fmt.Sprintf("Socket at %s exists but connection failed: %v. The daemon likely crashed. Remove the socket and restart with 'orchestrator daemon start'.", sockPath, err),
+			scope,
 		)}, ""
 	}
 	conn.Close()
 
+	// Verify the expected process is running by name.
+	note := ""
+	if out, pgrepErr := exec.Command("pgrep", "-x", daemonProcessName).Output(); pgrepErr != nil || len(strings.TrimSpace(string(out))) == 0 {
+		note = fmt.Sprintf(" (warning: no '%s' process found by pgrep — may be running under a different name)", daemonProcessName)
+	}
+
 	return []scan.Finding{newFinding(
 		abilitySystemHealth, categoryDaemonHealth, scan.SeverityInfo,
-		"daemon socket is reachable",
-		fmt.Sprintf("Successfully connected to daemon at %s.", sockPath),
-		scan.Scope{Kind: "socket", Value: sockPath},
+		"daemon is healthy",
+		fmt.Sprintf("Successfully connected to daemon at %s.%s", sockPath, note),
+		scope,
 	)}, ""
 }
 
@@ -468,10 +575,17 @@ func queryFallbackRate(ctx context.Context, db *sql.DB, dbPath string) (scan.Fin
 
 	var sev scan.Severity
 	var title string
-	if fallbackPct >= routingFallbackThreshold {
+	switch {
+	case fallbackPct >= routingFallbackHigh:
 		sev = scan.SeverityHigh
-		title = fmt.Sprintf("routing fallback rate exceeds threshold (%.1f%%)", fallbackPct)
-	} else {
+		title = fmt.Sprintf("routing fallback rate is high (%.1f%%)", fallbackPct)
+	case fallbackPct >= routingFallbackMedium:
+		sev = scan.SeverityMedium
+		title = fmt.Sprintf("routing fallback rate is elevated (%.1f%%)", fallbackPct)
+	case fallbackPct >= routingFallbackLow:
+		sev = scan.SeverityLow
+		title = fmt.Sprintf("routing fallback rate is slightly elevated (%.1f%%)", fallbackPct)
+	default:
 		sev = scan.SeverityInfo
 		title = fmt.Sprintf("routing fallback rate is healthy (%.1f%%)", fallbackPct)
 	}
@@ -508,7 +622,10 @@ func queryLastMissionDate(ctx context.Context, db *sql.DB, dbPath string) (scan.
 	var sev scan.Severity
 	var title string
 	switch {
-	case ageDays > missionVeryStaleDays:
+	case ageDays > missionHighDays:
+		sev = scan.SeverityHigh
+		title = fmt.Sprintf("no missions in the last %d days", ageDays)
+	case ageDays > missionMediumDays:
 		sev = scan.SeverityMedium
 		title = fmt.Sprintf("no missions in the last %d days", ageDays)
 	case ageDays > missionStaleDays:
@@ -526,10 +643,56 @@ func queryLastMissionDate(ctx context.Context, db *sql.DB, dbPath string) (scan.
 	), ""
 }
 
-func enFindingID() string {
-	b := make([]byte, 8)
-	if _, err := rand.Read(b); err != nil {
-		return fmt.Sprintf("en-%d", time.Now().UnixNano())
+func checkSchedulerDaemon(_ context.Context) ([]scan.Finding, string) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil, fmt.Sprintf("resolving home dir: %v", err)
 	}
-	return "en-" + hex.EncodeToString(b)
+	pidPath := filepath.Join(home, ".alluka", "scheduler", "daemon.pid")
+	scope := scan.Scope{Kind: "file", Value: pidPath}
+
+	pidBytes, err := os.ReadFile(pidPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return []scan.Finding{newFinding(
+				abilitySystemHealth, categorySchedulerHealth, scan.SeverityInfo,
+				"scheduler daemon has not been started",
+				fmt.Sprintf("No PID file at %s. Start with 'scheduler daemon'.", pidPath),
+				scope,
+			)}, ""
+		}
+		return nil, fmt.Sprintf("reading scheduler PID file %q: %v", pidPath, err)
+	}
+
+	pid, convErr := strconv.Atoi(strings.TrimSpace(string(pidBytes)))
+	if convErr != nil || pid <= 0 {
+		return []scan.Finding{newFinding(
+			abilitySystemHealth, categorySchedulerHealth, scan.SeverityLow,
+			"scheduler daemon PID file is corrupt",
+			fmt.Sprintf("PID file at %s contains invalid content. Remove it and restart with 'scheduler daemon'.", pidPath),
+			scope,
+		)}, ""
+	}
+
+	proc, findErr := os.FindProcess(pid)
+	if findErr != nil || proc.Signal(syscall.Signal(0)) != nil {
+		return []scan.Finding{newFinding(
+			abilitySystemHealth, categorySchedulerHealth, scan.SeverityLow,
+			fmt.Sprintf("scheduler daemon crashed (stale PID %d)", pid),
+			fmt.Sprintf("PID file at %s points to a dead process. Remove it and restart with 'scheduler daemon'.", pidPath),
+			scope,
+		)}, ""
+	}
+
+	return []scan.Finding{newFinding(
+		abilitySystemHealth, categorySchedulerHealth, scan.SeverityInfo,
+		fmt.Sprintf("scheduler daemon is healthy (PID %d)", pid),
+		fmt.Sprintf("Scheduler daemon running at PID %d (PID file: %s).", pid, pidPath),
+		scope,
+	)}, ""
+}
+
+func findingID(category, scopeValue string) string {
+	h := sha256.Sum256([]byte(category + scopeValue))
+	return "en-" + hex.EncodeToString(h[:8])
 }

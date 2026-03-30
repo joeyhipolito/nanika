@@ -234,6 +234,13 @@ func (e *Engine) executeSequential(ctx context.Context, plan *core.Plan, start t
 		tm.PhaseComplete()
 
 		if err != nil {
+			// Quota-gate skip: phase.Status is already StatusSkipped; don't
+			// treat this as a mission failure or cascade-skip dependents.
+			if errors.Is(err, errQuotaGateSkip) {
+				e.saveCheckpoint(ctx)
+				continue
+			}
+
 			phase.Status = core.StatusFailed
 			phase.Error = err.Error()
 			result.Success = false
@@ -441,7 +448,10 @@ func (e *Engine) executeParallel(ctx context.Context, plan *core.Plan, start tim
 			now := time.Now()
 			phase.EndTime = &now
 
-			if pr.err != nil {
+			if errors.Is(pr.err, errQuotaGateSkip) {
+				// Quota-gate skip: phase.Status is already StatusSkipped.
+				// Don't treat this as a mission failure or cascade-skip dependents.
+			} else if pr.err != nil {
 				phase.Status = core.StatusFailed
 				phase.Error = pr.err.Error()
 				result.Success = false
@@ -509,6 +519,33 @@ func (e *Engine) executePhase(ctx context.Context, phase *core.Phase, priorConte
 			"error": fmt.Sprintf("contract: %v", err),
 		})
 		return "", fmt.Errorf("contract check: %w", err)
+	}
+
+	// Quota gate: check 5h token utilization before spawning a worker.
+	// Block/skip actions are resolved here, before phase.started is emitted,
+	// so skipped phases never appear as "started" in the event log.
+	throttle, util := e.checkQuotaGate(phase)
+	switch throttle {
+	case throttleBlock:
+		msg := fmt.Sprintf("quota gate: 5h utilization %.1f%% >= 95%% — all phases blocked", util*100)
+		phase.Status = core.StatusFailed
+		phase.Error = msg
+		endNow := time.Now()
+		phase.EndTime = &endNow
+		e.emit(ctx, event.PhaseFailed, phaseID, "", map[string]any{
+			"error": msg,
+		})
+		return "", fmt.Errorf("%s", msg)
+	case throttleSkip:
+		msg := fmt.Sprintf("quota gate: non-P0 phase skipped at %.1f%% 5h utilization", util*100)
+		phase.Status = core.StatusSkipped
+		phase.Error = msg
+		endNow := time.Now()
+		phase.EndTime = &endNow
+		e.emit(ctx, event.PhaseSkipped, phaseID, "", map[string]any{
+			"reason": msg,
+		})
+		return "", errQuotaGateSkip
 	}
 
 	// Emit point 3: phase.started
@@ -609,8 +646,10 @@ func (e *Engine) executePhase(ctx context.Context, phase *core.Phase, priorConte
 		return "", fmt.Errorf("spawn worker: %w", err)
 	}
 
-	// Override model if forced
-	if e.config.ForcedModel != "" {
+	// Override model: quota gate downgrade takes priority, then --model flag.
+	if throttle == throttleForceSonnet {
+		config.Model = "sonnet"
+	} else if e.config.ForcedModel != "" {
 		config.Model = e.config.ForcedModel
 	}
 
@@ -656,6 +695,8 @@ func (e *Engine) executePhase(ctx context.Context, phase *core.Phase, priorConte
 		if phaseCost != nil {
 			phase.TokensIn += phaseCost.InputTokens
 			phase.TokensOut += phaseCost.OutputTokens
+			phase.TokensCacheCreation += phaseCost.CacheCreationTokens
+			phase.TokensCacheRead += phaseCost.CacheReadTokens
 			phase.CostUSD += phaseCost.TotalCostUSD
 			if phase.Model == "" {
 				phase.Model = config.Model

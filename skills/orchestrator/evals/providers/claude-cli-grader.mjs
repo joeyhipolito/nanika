@@ -1,24 +1,16 @@
 /**
- * Promptfoo custom provider: routes eval prompts through the Claude Code CLI.
- * This matches how the orchestrator calls the LLM internally (via sdk.QueryText),
- * so the eval uses the same model and auth path as production.
- *
- * Usage in decomposer.yaml:
- *   providers:
- *     - file://providers/claude-cli.mjs
+ * Promptfoo custom grading provider: routes llm-rubric judge calls through Claude CLI.
+ * Used as defaultTest.options.provider so that llm-rubric assertions don't require
+ * OPENAI_API_KEY or ANTHROPIC_API_KEY.
  */
 import { execFileSync } from 'child_process';
 
-export default class ClaudeCliProvider {
+export default class ClaudeCliGrader {
   constructor(options = {}) {
-    this.id = () => 'claude-cli';
+    this.id = () => 'claude-cli-grader';
     this._options = options;
   }
 
-  /**
-   * @param {string} prompt - The fully-rendered prompt string from promptfoo.
-   * @returns {{ output: string } | { error: string }}
-   */
   async callApi(prompt) {
     try {
       const output = execFileSync(

@@ -861,6 +861,7 @@ func ParsePhases(output string, tc *TargetContext) ([]*core.Phase, error) {
 		workdir := f["WORKDIR"]
 		runtimeStr := f["RUNTIME"]
 		timeoutStr := f["TIMEOUT"]
+		priorityStr := f["PRIORITY"]
 
 		// Dedup: skip if we've already seen this phase name.
 		// This catches the common LLM pattern of repeating the plan
@@ -895,6 +896,7 @@ func ParsePhases(output string, tc *TargetContext) ([]*core.Phase, error) {
 			Expected:               expected,
 			TargetDir:              expandTilde(workdir),
 			Runtime:                core.Runtime(runtimeStr),
+			Priority:               strings.ToUpper(strings.TrimSpace(priorityStr)),
 		}
 
 		// Parse per-phase stall timeout (e.g. TIMEOUT: 30m).

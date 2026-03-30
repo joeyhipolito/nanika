@@ -170,7 +170,7 @@ func queryFindings(ctx context.Context, limit int) ([]FindingSummary, int, error
 
 func main() {
 	flag.Usage = func() {
-		fmt.Fprintf(os.Stderr, "Usage: shu <command> [flags]\n\nCommands:\n  evaluate      Evaluate nanika component health\n  propose       Propose remediation missions from findings\n  propose --init  Create scheduler jobs (propose every 4h, dispatch every 15m)\n  close         Close a tracker issue and mark findings as superseded\n  review        Interactively approve/reject pending proposals\n  query         Query latest evaluation results (status|items|actions)\n")
+		fmt.Fprintf(os.Stderr, "Usage: shu <command> [flags]\n\nCommands:\n  evaluate      Evaluate nanika component health\n  propose       Propose remediation missions from findings\n  propose --init  Create scheduler jobs (propose every 4h, dispatch every 15m, evaluate weekly)\n  close         Close a tracker issue and mark findings as superseded\n  review        Interactively approve/reject pending proposals\n  query         Query latest evaluation results (status|items|actions)\n")
 	}
 
 	args := os.Args[1:]

@@ -65,7 +65,20 @@ type SystemMessage struct {
 
 func (m *SystemMessage) GetType() string { return MessageTypeSystem }
 
-// ResultMessage represents execution completion
+// UsageInfo holds token counts from the Claude CLI result message.
+// The CLI emits these inside a "usage" object on the result line.
+type UsageInfo struct {
+	InputTokens              int `json:"input_tokens"`
+	OutputTokens             int `json:"output_tokens"`
+	CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
+	CacheReadInputTokens     int `json:"cache_read_input_tokens"`
+}
+
+// ResultMessage represents execution completion.
+// Note: the Claude CLI emits cost as a top-level "total_cost_usd" field and
+// token counts inside a nested "usage" object — not as a "cost" sub-object.
+// The legacy Cost field is retained for any hypothetical future wire-format
+// change but is not populated by the current CLI.
 type ResultMessage struct {
 	Type         string          `json:"type"`
 	Subtype      string          `json:"subtype,omitempty"`
@@ -73,6 +86,8 @@ type ResultMessage struct {
 	DurationMs   int64           `json:"duration_ms,omitempty"`
 	NumTurns     int             `json:"num_turns,omitempty"`
 	Cost         *CostInfo       `json:"cost,omitempty"`
+	TotalCostUSD float64         `json:"total_cost_usd,omitempty"`
+	Usage        *UsageInfo      `json:"usage,omitempty"`
 	Result       json.RawMessage `json:"result,omitempty"`
 	ErrorCode    string          `json:"error_code,omitempty"`
 	ErrorMessage string          `json:"error_message,omitempty"`
@@ -162,11 +177,15 @@ type ContentBlock struct {
 	ToolUseID string          `json:"tool_use_id,omitempty"`
 }
 
-// CostInfo contains API cost information
+// CostInfo contains API cost information.
+// InputTokens is the sum of all input tokens (raw + cache_creation + cache_read) for backward compatibility.
+// CacheCreationTokens and CacheReadTokens carry the split so callers can attribute prompt-cache costs.
 type CostInfo struct {
-	InputTokens  int     `json:"input_tokens"`
-	OutputTokens int     `json:"output_tokens"`
-	TotalCostUSD float64 `json:"total_cost_usd"`
+	InputTokens         int     `json:"input_tokens"`
+	OutputTokens        int     `json:"output_tokens"`
+	TotalCostUSD        float64 `json:"total_cost_usd"`
+	CacheCreationTokens int     `json:"cache_creation_tokens,omitempty"`
+	CacheReadTokens     int     `json:"cache_read_tokens,omitempty"`
 }
 
 // AgentOptions configures agent behavior

@@ -14,6 +14,7 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -24,6 +25,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"syscall"
@@ -44,6 +46,24 @@ type Event struct {
 	PhaseID   string         `json:"phase_id,omitempty"`
 	WorkerID  string         `json:"worker_id,omitempty"`
 	Data      map[string]any `json:"data,omitempty"`
+}
+
+// scannerStat tracks per-scanner routing metrics.
+type scannerStat struct {
+	EventsRouted int64      `json:"events_routed"`
+	ErrorCount   int64      `json:"error_count"`
+	LastError    string     `json:"last_error,omitempty"`
+	LastErrorAt  *time.Time `json:"last_error_at,omitempty"`
+}
+
+// daemonStats is written to disk by the running daemon so the status
+// subcommand can read it without inter-process communication.
+type daemonStats struct {
+	StartedAt      time.Time               `json:"started_at"`
+	TotalEvents    int64                   `json:"total_events"`
+	LastEventAt    *time.Time              `json:"last_event_at,omitempty"`
+	ConnectionMode string                  `json:"connection_mode"` // "uds" or "jsonl"
+	Scanners       map[string]*scannerStat `json:"scanners"`
 }
 
 // ---- Path helpers -------------------------------------------------------
@@ -84,6 +104,50 @@ func pluginJSONPath() (string, error) {
 	return filepath.Join(dir, "nen", "plugin.json"), nil
 }
 
+func statsFilePath() (string, error) {
+	dir, err := scan.Dir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, "nen", "nen-daemon.stats.json"), nil
+}
+
+// ---- Stats persistence --------------------------------------------------
+
+// writeStats atomically writes stats to the stats file via a temp+rename.
+func writeStats(stats *daemonStats) {
+	path, err := statsFilePath()
+	if err != nil {
+		return
+	}
+	data, err := json.Marshal(stats)
+	if err != nil {
+		return
+	}
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, data, 0o600); err != nil {
+		return
+	}
+	os.Rename(tmp, path) //nolint:errcheck
+}
+
+// readStats reads the stats file written by the running daemon.
+func readStats() (daemonStats, error) {
+	path, err := statsFilePath()
+	if err != nil {
+		return daemonStats{}, err
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return daemonStats{}, err
+	}
+	var s daemonStats
+	if err := json.Unmarshal(data, &s); err != nil {
+		return daemonStats{}, fmt.Errorf("parse stats: %w", err)
+	}
+	return s, nil
+}
+
 // ---- PID management -----------------------------------------------------
 
 func writePID() error {
@@ -106,13 +170,29 @@ func readPID() (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	return strconv.Atoi(strings.TrimSpace(string(data)))
+	pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
+	if err != nil {
+		// Garbage in PID file — remove it so startup can proceed.
+		removePIDFile()
+		return 0, fmt.Errorf("pid file contains non-numeric data: %w", err)
+	}
+	return pid, nil
 }
 
-func removePID() {
+func removePIDFile() {
 	if path, err := pidPath(); err == nil {
 		os.Remove(path) //nolint:errcheck
 	}
+}
+
+// processNameForPID returns the comm name of the process with the given PID
+// using `ps -p <pid> -o comm=`. Returns empty string if the process is not found.
+func processNameForPID(pid int) string {
+	out, err := exec.Command("ps", "-p", strconv.Itoa(pid), "-o", "comm=").Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
 }
 
 func isRunning() (int, bool) {
@@ -120,11 +200,18 @@ func isRunning() (int, bool) {
 	if err != nil || pid <= 0 {
 		return 0, false
 	}
-	proc, err := os.FindProcess(pid)
-	if err != nil {
+	name := processNameForPID(pid)
+	if name == "" {
+		// PID does not exist — stale file.
+		removePIDFile()
 		return 0, false
 	}
-	return pid, proc.Signal(syscall.Signal(0)) == nil
+	if !strings.Contains(name, "nen-daemon") {
+		// PID was recycled by another process — stale file.
+		removePIDFile()
+		return 0, false
+	}
+	return pid, true
 }
 
 // ---- Findings store -----------------------------------------------------
@@ -319,8 +406,13 @@ func invokeScanner(ctx context.Context, sc scannerCfg, scope scan.Scope) ([]scan
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, sc.binaryPath, "--scope", string(scopeJSON))
+	var stderrBuf bytes.Buffer
+	cmd.Stderr = &stderrBuf
 	out, err := cmd.Output()
 	if err != nil {
+		if stderrBuf.Len() > 0 {
+			fmt.Fprintf(os.Stderr, "nen-daemon: scanner %s stderr: %s\n", sc.name, strings.TrimRight(stderrBuf.String(), "\n"))
+		}
 		return nil, nil, fmt.Errorf("run scanner: %w", err)
 	}
 	var env scan.Envelope
@@ -330,8 +422,19 @@ func invokeScanner(ctx context.Context, sc scannerCfg, scope scan.Scope) ([]scan
 	return env.Findings, env.Warnings, nil
 }
 
+// scannerStatFor returns the scannerStat for name, creating it if absent.
+func scannerStatFor(stats *daemonStats, name string) *scannerStat {
+	ss := stats.Scanners[name]
+	if ss == nil {
+		ss = &scannerStat{}
+		stats.Scanners[name] = ss
+	}
+	return ss
+}
+
 // routeEvent dispatches an event to all matching scanners and stores findings.
-func routeEvent(ctx context.Context, ev Event, scanners []scannerCfg, st *store) {
+// stats is updated in place; caller is responsible for persisting it.
+func routeEvent(ctx context.Context, ev Event, scanners []scannerCfg, st *store, stats *daemonStats) {
 	scope := scopeForEvent(ev)
 	for _, sc := range scanners {
 		if !sc.matches(ev.Type) {
@@ -340,8 +443,15 @@ func routeEvent(ctx context.Context, ev Event, scanners []scannerCfg, st *store)
 		findings, warnings, err := invokeScanner(ctx, sc, scope)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "nen-daemon: scanner %s (event %s): %v\n", sc.name, ev.Type, err)
+			ss := scannerStatFor(stats, sc.name)
+			ss.ErrorCount++
+			ss.LastError = err.Error()
+			now := time.Now().UTC()
+			ss.LastErrorAt = &now
 			continue
 		}
+		ss := scannerStatFor(stats, sc.name)
+		ss.EventsRouted++
 		for _, w := range warnings {
 			fmt.Fprintf(os.Stderr, "nen-daemon: scanner %s warning: %s\n", sc.name, w)
 		}
@@ -356,15 +466,20 @@ func routeEvent(ctx context.Context, ev Event, scanners []scannerCfg, st *store)
 // ---- Event sources ------------------------------------------------------
 
 // readUDS connects to socketPath and streams NDJSON events into ch.
+// Sends "uds" to connModeCh on successful connect.
 // Returns nil when ctx is cancelled; returns an error if the initial
 // connection fails (so the caller can fall back to JSONL polling).
-func readUDS(ctx context.Context, socketPath string, ch chan<- Event) error {
+func readUDS(ctx context.Context, socketPath string, ch chan<- Event, connModeCh chan<- string) error {
 	conn, err := net.DialTimeout("unix", socketPath, 5*time.Second)
 	if err != nil {
 		return err // unavailable — signal fallback
 	}
 
 	fmt.Fprintln(os.Stderr, "nen-daemon: connected to events.sock")
+	select {
+	case connModeCh <- "uds":
+	default:
+	}
 
 	go func() {
 		<-ctx.Done()
@@ -390,37 +505,53 @@ func readUDS(ctx context.Context, socketPath string, ch chan<- Event) error {
 	return nil
 }
 
-// readUDSWithReconnect repeatedly connects to socketPath, reconnecting with
-// exponential backoff after drops. Sends all events to ch.
-// Falls back to JSONL polling if the initial connection fails.
-func readUDSWithReconnect(ctx context.Context, socketPath string, ch chan<- Event) bool {
-	// Probe first to decide if UDS is available at all.
-	conn, err := net.DialTimeout("unix", socketPath, 5*time.Second)
-	if err != nil {
-		return false // trigger JSONL fallback
-	}
-	conn.Close() //nolint:errcheck
-
+// readUDSWithReconnect repeatedly connects to socketPath. On initial failure
+// or after a drop, it falls back to JSONL polling for the backoff duration
+// (1s, 2s, 4s, 8s, …, max 30s) then retries. Logs each reconnect attempt.
+// Never permanently falls back to JSONL while ctx is alive.
+// Sends "uds" or "jsonl" to connModeCh whenever the active mode changes.
+func readUDSWithReconnect(ctx context.Context, socketPath string, ch chan<- Event, connModeCh chan<- string) {
+	const maxBackoff = 30 * time.Second
 	backoff := time.Second
+
 	for ctx.Err() == nil {
-		if err := readUDS(ctx, socketPath, ch); err != nil {
-			// First connect attempt failed after probe — unusual; fall back.
-			return false
-		}
+		fmt.Fprintf(os.Stderr, "nen-daemon: connecting to events.sock (backoff %v)\n", backoff)
+
+		err := readUDS(ctx, socketPath, ch, connModeCh)
 		if ctx.Err() != nil {
-			return true
+			return
 		}
-		fmt.Fprintf(os.Stderr, "nen-daemon: events.sock dropped, reconnecting in %v\n", backoff)
+
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "nen-daemon: UDS unavailable (%v), JSONL fallback active, retry in %v\n", err, backoff)
+		} else {
+			// Connected but then dropped — reset backoff and log.
+			fmt.Fprintf(os.Stderr, "nen-daemon: events.sock dropped, JSONL fallback active, reconnecting in %v\n", backoff)
+			backoff = time.Second
+		}
+
+		// Signal JSONL fallback mode.
 		select {
-		case <-time.After(backoff):
-		case <-ctx.Done():
-			return true
+		case connModeCh <- "jsonl":
+		default:
 		}
-		if backoff < 60*time.Second {
+
+		// Run JSONL polling for the backoff duration to fill the gap.
+		tctx, cancel := context.WithTimeout(ctx, backoff)
+		pollJSONL(tctx, ch)
+		cancel()
+
+		if ctx.Err() != nil {
+			return
+		}
+
+		if backoff < maxBackoff {
 			backoff *= 2
+			if backoff > maxBackoff {
+				backoff = maxBackoff
+			}
 		}
 	}
-	return true
 }
 
 // pollJSONL tails new events from ~/.alluka/events/*.jsonl files,
@@ -431,8 +562,6 @@ func pollJSONL(ctx context.Context, ch chan<- Event) {
 		fmt.Fprintf(os.Stderr, "nen-daemon: events dir: %v\n", err)
 		return
 	}
-
-	fmt.Fprintln(os.Stderr, "nen-daemon: falling back to JSONL polling")
 
 	// Seed offsets at current EOF so we only tail new events.
 	offsets := make(map[string]int64)
@@ -515,7 +644,7 @@ func runDaemon(ctx context.Context) error {
 	if err := writePID(); err != nil {
 		return fmt.Errorf("write pid: %w", err)
 	}
-	defer removePID()
+	defer removePIDFile()
 
 	st, err := openStore()
 	if err != nil {
@@ -532,28 +661,57 @@ func runDaemon(ctx context.Context) error {
 	socketPath, _ := eventsSocketPath()
 
 	ch := make(chan Event, 256)
+	connModeCh := make(chan string, 4)
 
 	go func() {
 		defer close(ch)
-		if socketPath != "" && readUDSWithReconnect(ctx, socketPath, ch) {
-			return // UDS handled everything (or ctx cancelled)
-		}
-		if ctx.Err() != nil {
+		if socketPath != "" {
+			readUDSWithReconnect(ctx, socketPath, ch, connModeCh)
 			return
+		}
+		fmt.Fprintln(os.Stderr, "nen-daemon: no events.sock configured, using JSONL polling")
+		select {
+		case connModeCh <- "jsonl":
+		default:
 		}
 		pollJSONL(ctx, ch)
 	}()
 
+	stats := daemonStats{
+		StartedAt:      time.Now().UTC(),
+		ConnectionMode: "jsonl", // default until UDS connects
+		Scanners:       make(map[string]*scannerStat),
+	}
+	writeStats(&stats)
+
 	fmt.Fprintf(os.Stderr, "nen-daemon: running (PID %d)\n", os.Getpid())
+
+	statsTicker := time.NewTicker(10 * time.Second)
+	defer statsTicker.Stop()
 
 	for {
 		select {
+		case mode := <-connModeCh:
+			stats.ConnectionMode = mode
+
 		case ev, ok := <-ch:
 			if !ok {
+				writeStats(&stats)
 				return nil
 			}
-			routeEvent(ctx, ev, scanners, st)
+			stats.TotalEvents++
+			now := ev.Timestamp
+			if now.IsZero() {
+				now = time.Now().UTC()
+			}
+			stats.LastEventAt = &now
+			routeEvent(ctx, ev, scanners, st, &stats)
+
+		case <-statsTicker.C:
+			writeStats(&stats)
+
 		case <-ctx.Done():
+			writeStats(&stats)
 			return nil
 		}
 	}
@@ -588,33 +746,129 @@ func cmdStop() error {
 	return nil
 }
 
-func cmdStatus() error {
+// formatDuration formats a duration as "Xh Ym Zs", omitting leading zero units.
+func formatDuration(d time.Duration) string {
+	d = d.Round(time.Second)
+	h := int(d.Hours())
+	m := int(d.Minutes()) % 60
+	s := int(d.Seconds()) % 60
+	switch {
+	case h > 0:
+		return fmt.Sprintf("%dh %dm %ds", h, m, s)
+	case m > 0:
+		return fmt.Sprintf("%dm %ds", m, s)
+	default:
+		return fmt.Sprintf("%ds", s)
+	}
+}
+
+func cmdStatus(jsonOutput bool) error {
 	pid, running := isRunning()
+
+	type jsonStatus struct {
+		Running        bool                    `json:"running"`
+		PID            int                     `json:"pid,omitempty"`
+		UptimeSeconds  float64                 `json:"uptime_seconds,omitempty"`
+		ConnectionMode string                  `json:"connection_mode,omitempty"`
+		TotalEvents    int64                   `json:"total_events,omitempty"`
+		LastEventAt    *time.Time              `json:"last_event_at,omitempty"`
+		ActiveFindings int                     `json:"active_findings,omitempty"`
+		Scanners       map[string]*scannerStat `json:"scanners,omitempty"`
+	}
+
 	if !running {
+		if jsonOutput {
+			enc := json.NewEncoder(os.Stdout)
+			enc.SetIndent("", "  ")
+			return enc.Encode(jsonStatus{Running: false})
+		}
 		fmt.Println("nen-daemon: not running")
 		return nil
 	}
+
+	stats, statsErr := readStats()
+
+	// Query active findings count from DB (best-effort).
+	activeFindings := -1
+	if st, err := openStore(); err == nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		if n, err := st.countActive(ctx); err == nil {
+			activeFindings = n
+		}
+		cancel()
+		st.close()
+	}
+
+	if jsonOutput {
+		out := jsonStatus{
+			Running:        true,
+			PID:            pid,
+			ActiveFindings: activeFindings,
+		}
+		if statsErr == nil {
+			uptime := time.Since(stats.StartedAt)
+			out.UptimeSeconds = uptime.Seconds()
+			out.ConnectionMode = stats.ConnectionMode
+			out.TotalEvents = stats.TotalEvents
+			out.LastEventAt = stats.LastEventAt
+			out.Scanners = stats.Scanners
+		}
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		return enc.Encode(out)
+	}
+
+	// Human-readable output.
 	fmt.Printf("nen-daemon: running (PID %d)\n", pid)
 
-	st, err := openStore()
-	if err != nil {
-		return nil // DB not yet created is non-fatal for status
+	if statsErr == nil {
+		uptime := time.Since(stats.StartedAt)
+		fmt.Printf("%-20s %s\n", "Uptime:", formatDuration(uptime))
+		fmt.Printf("%-20s %s\n", "Connection mode:", stats.ConnectionMode)
+		fmt.Printf("%-20s %d\n", "Total events:", stats.TotalEvents)
+		if stats.LastEventAt != nil {
+			fmt.Printf("%-20s %s\n", "Last event:", stats.LastEventAt.Format(time.RFC3339))
+		} else {
+			fmt.Printf("%-20s %s\n", "Last event:", "-")
+		}
 	}
-	defer st.close()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	if n, err := st.countActive(ctx); err == nil {
-		fmt.Printf("nen-daemon: %d active finding(s)\n", n)
+	if activeFindings >= 0 {
+		fmt.Printf("%-20s %d\n", "Active findings:", activeFindings)
 	}
+
+	if statsErr == nil && len(stats.Scanners) > 0 {
+		fmt.Println()
+		const sep = "------------------------  --------  --------  ------------------------------"
+		fmt.Printf("%-24s %8s %8s  %s\n", "Scanner", "Events", "Errors", "Last Error")
+		fmt.Println(sep)
+
+		names := make([]string, 0, len(stats.Scanners))
+		for name := range stats.Scanners {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+
+		for _, name := range names {
+			ss := stats.Scanners[name]
+			lastErr := "-"
+			if ss.LastError != "" {
+				lastErr = ss.LastError
+				if len(lastErr) > 40 {
+					lastErr = lastErr[:37] + "..."
+				}
+			}
+			fmt.Printf("%-24s %8d %8d  %s\n", name, ss.EventsRouted, ss.ErrorCount, lastErr)
+		}
+	}
+
 	return nil
 }
 
 func main() {
 	args := os.Args[1:]
 	if len(args) == 0 {
-		fmt.Fprintf(os.Stderr, "Usage: nen-daemon <start|stop|status>\n")
+		fmt.Fprintf(os.Stderr, "Usage: nen-daemon <start|stop|status> [--json]\n")
 		os.Exit(1)
 	}
 
@@ -625,9 +879,15 @@ func main() {
 	case "stop":
 		err = cmdStop()
 	case "status":
-		err = cmdStatus()
+		jsonOutput := false
+		for _, a := range args[1:] {
+			if a == "--json" {
+				jsonOutput = true
+			}
+		}
+		err = cmdStatus(jsonOutput)
 	default:
-		fmt.Fprintf(os.Stderr, "nen-daemon: unknown command %q\nUsage: nen-daemon <start|stop|status>\n", args[0])
+		fmt.Fprintf(os.Stderr, "nen-daemon: unknown command %q\nUsage: nen-daemon <start|stop|status> [--json]\n", args[0])
 		os.Exit(1)
 	}
 

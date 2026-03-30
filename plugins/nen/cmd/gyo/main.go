@@ -32,10 +32,13 @@ import (
 )
 
 const (
-	gyoAbility      = "orchestrator-metrics"
-	gyoZThreshold   = 2.0
-	gyoMinMissions  = 10
-	gyoBaselineDays = 7
+	gyoAbility               = "orchestrator-metrics"
+	gyoZThresholdMedium      = 2.5 // z >= 2.5 → medium
+	gyoZThresholdHigh        = 3.0 // z >= 3.0 → high
+	gyoZThresholdCritical    = 4.0 // z >= 4.0 → critical
+	gyoMinMissions           = 10
+	gyoMinMissionsFailureRate = 10 // failure-rate requires its own baseline floor
+	gyoBaselineDays          = 7
 )
 
 func main() {
@@ -260,6 +263,8 @@ func gyoQueryMissions(ctx context.Context, db *sql.DB, days int) ([]gyoMissionRo
 		SELECT id, duration_s, phases_failed, phases_total, retries_total, cost_usd_total
 		FROM missions
 		WHERE started_at >= datetime('now', '-' || ? || ' days')
+		  AND id NOT LIKE 'ws-%'
+		  AND phases_total > 0
 		ORDER BY started_at DESC
 	`, days)
 	if err != nil {
@@ -320,47 +325,54 @@ func gyoZScore(value float64, st gyoStats) float64 {
 func gyoDetectMetricAnomalies(missions []gyoMissionRow) []scan.Finding {
 	n := len(missions)
 	costs := make([]float64, n)
-	durations := make([]float64, n)
+	durPerPhase := make([]float64, n) // duration normalized per phase
 	failureRates := make([]float64, n)
 	retries := make([]float64, n)
 
 	for i, m := range missions {
 		costs[i] = m.CostUSD
-		durations[i] = float64(m.DurationSec)
+		durPerPhase[i] = float64(m.DurationSec) / float64(m.PhasesTotal)
 		failureRates[i] = m.FailureRate
 		retries[i] = float64(m.RetriesTotal)
 	}
 
 	costSt := gyoComputeStats(costs)
-	durSt := gyoComputeStats(durations)
-	failSt := gyoComputeStats(failureRates)
+	durSt := gyoComputeStats(durPerPhase)
 	retrySt := gyoComputeStats(retries)
+
+	// Failure-rate baseline requires its own minimum sample floor.
+	var failSt gyoStats
+	hasFailBaseline := len(missions) >= gyoMinMissionsFailureRate
+	if hasFailBaseline {
+		failSt = gyoComputeStats(failureRates)
+	}
 
 	now := time.Now().UTC()
 	var findings []scan.Finding
 
-	for _, m := range missions {
+	for i, m := range missions {
 		type check struct {
 			metric string
 			value  float64
 			st     gyoStats
 			cat    string
+			skip   bool
 		}
 		checks := []check{
-			{"cost_usd", m.CostUSD, costSt, "cost-anomaly"},
-			{"duration_s", float64(m.DurationSec), durSt, "duration-anomaly"},
-			{"failure_rate", m.FailureRate, failSt, "failure-rate-anomaly"},
-			{"retries", float64(m.RetriesTotal), retrySt, "retry-anomaly"},
+			{"cost_usd", m.CostUSD, costSt, "cost-anomaly", false},
+			{"duration_s_per_phase", durPerPhase[i], durSt, "duration-anomaly", false},
+			{"failure_rate", m.FailureRate, failSt, "failure-rate-anomaly", !hasFailBaseline},
+			{"retries", float64(m.RetriesTotal), retrySt, "retry-anomaly", false},
 		}
 		for _, c := range checks {
-			z := gyoZScore(c.value, c.st)
-			if z <= gyoZThreshold {
+			if c.skip {
 				continue
 			}
-			sev := scan.SeverityMedium
-			if z > 3.0 {
-				sev = scan.SeverityHigh
+			z := gyoZScore(c.value, c.st)
+			if z < gyoZThresholdMedium {
+				continue
 			}
+			sev := gyoSeverity(z)
 			findings = append(findings, scan.Finding{
 				ID:       gyoFindingID(),
 				Ability:  gyoAbility,
@@ -385,6 +397,19 @@ func gyoDetectMetricAnomalies(missions []gyoMissionRow) []scan.Finding {
 		}
 	}
 	return findings
+}
+
+// gyoSeverity maps a z-score to a severity level.
+// z=2.5-3.0 → medium, z=3.0-4.0 → high, z>4.0 → critical.
+func gyoSeverity(z float64) scan.Severity {
+	switch {
+	case z >= gyoZThresholdCritical:
+		return scan.SeverityCritical
+	case z >= gyoZThresholdHigh:
+		return scan.SeverityHigh
+	default:
+		return scan.SeverityMedium
+	}
 }
 
 func gyoDetectSilentFailures(missions []gyoMissionRow, eventsDir string) ([]scan.Finding, error) {

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -13,6 +14,10 @@ import (
 	"github.com/joeyhipolito/orchestrator-cli/internal/core"
 	metricsdb "github.com/joeyhipolito/orchestrator-cli/internal/metrics"
 )
+
+// defaultBudgetTokens is the fallback 5h token budget used for utilization
+// estimation. Matches the Claude Max 20x plan. Override with RYU_5H_BUDGET_TOKENS.
+const defaultBudgetTokens = 10_000_000
 
 // PhaseMetric captures per-phase execution data.
 type PhaseMetric struct {
@@ -28,12 +33,65 @@ type PhaseMetric struct {
 	GatePassed             bool     `json:"gate_passed"`
 	OutputLen              int      `json:"output_len"`
 	LearningsRetrieved     int      `json:"learnings_retrieved,omitempty"`
+	// Error classification (only set when status == "failed")
+	ErrorType    string `json:"error_type,omitempty"`    // rate-limit, tool-error, gate-failure, timeout, unknown
+	ErrorMessage string `json:"error_message,omitempty"` // raw error string
 	// Cost attribution (populated from Claude CLI session output)
-	Provider  string  `json:"provider,omitempty"`   // always "anthropic"
-	Model     string  `json:"model,omitempty"`      // resolved model ID
-	TokensIn  int     `json:"tokens_in,omitempty"`  // input tokens (accumulated across retries)
-	TokensOut int     `json:"tokens_out,omitempty"` // output tokens (accumulated across retries)
-	CostUSD   float64 `json:"cost_usd,omitempty"`   // total cost in USD
+	Provider            string  `json:"provider,omitempty"`              // always "anthropic"
+	Model               string  `json:"model,omitempty"`                 // resolved model ID
+	TokensIn            int     `json:"tokens_in,omitempty"`             // input tokens (sum of raw + cache_creation + cache_read, accumulated across retries)
+	TokensOut           int     `json:"tokens_out,omitempty"`            // output tokens (accumulated across retries)
+	TokensCacheCreation int     `json:"tokens_cache_creation,omitempty"` // cache creation tokens (accumulated across retries)
+	TokensCacheRead     int     `json:"tokens_cache_read,omitempty"`     // cache read tokens (accumulated across retries)
+	CostUSD             float64 `json:"cost_usd,omitempty"`              // total cost in USD
+}
+
+// Error type constants used in PhaseMetric.ErrorType and stored in phases.error_type.
+const (
+	ErrorTypeRateLimit   = "rate-limit"
+	ErrorTypeToolError   = "tool-error"
+	ErrorTypeGateFailure = "gate-failure"
+	ErrorTypeTimeout     = "timeout"
+	ErrorTypeUnknown     = "unknown"
+)
+
+// ParseErrorType classifies a raw error string into one of the known error type
+// categories. Rate-limit errors are parsed specifically because they are needed
+// for quota calibration.
+func ParseErrorType(errMsg string) string {
+	if errMsg == "" {
+		return ""
+	}
+	lower := strings.ToLower(errMsg)
+	switch {
+	case strings.Contains(lower, "rate limit") ||
+		strings.Contains(lower, "rate_limit") ||
+		strings.Contains(lower, "rate limited") ||
+		strings.Contains(lower, "ratelimit") ||
+		strings.Contains(lower, "429") ||
+		strings.Contains(lower, "quota exceeded") ||
+		strings.Contains(lower, "overloaded"):
+		return ErrorTypeRateLimit
+	case strings.Contains(lower, "gate:") ||
+		strings.Contains(lower, "gate failed") ||
+		strings.Contains(lower, "quality gate") ||
+		strings.Contains(lower, "gate failure"):
+		return ErrorTypeGateFailure
+	case strings.Contains(lower, "context deadline exceeded") ||
+		strings.Contains(lower, "deadline exceeded") ||
+		strings.Contains(lower, "timed out") ||
+		strings.Contains(lower, "stall timeout") ||
+		strings.Contains(lower, "timeout"):
+		return ErrorTypeTimeout
+	case strings.Contains(lower, "tool error") ||
+		strings.Contains(lower, "tool_error") ||
+		strings.Contains(lower, "tool call failed") ||
+		strings.Contains(lower, "tool failed") ||
+		strings.Contains(lower, "tool_use_error"):
+		return ErrorTypeToolError
+	default:
+		return ErrorTypeUnknown
+	}
 }
 
 // MissionMetrics captures observability data for a single mission execution.
@@ -56,9 +114,11 @@ type MissionMetrics struct {
 	DecompSource       string        `json:"decomp_source,omitempty"` // "predecomposed", "decomp.llm", "decomp.keyword", "template"
 	Phases             []PhaseMetric `json:"phases,omitempty"`
 	// Mission-level cost rollups (sum of all phase costs)
-	TokensInTotal  int     `json:"tokens_in_total,omitempty"`
-	TokensOutTotal int     `json:"tokens_out_total,omitempty"`
-	CostUSDTotal   float64 `json:"cost_usd_total,omitempty"`
+	TokensInTotal          int     `json:"tokens_in_total,omitempty"`
+	TokensOutTotal         int     `json:"tokens_out_total,omitempty"`
+	TokensCacheCreationTotal int   `json:"tokens_cache_creation_total,omitempty"`
+	TokensCacheReadTotal   int     `json:"tokens_cache_read_total,omitempty"`
+	CostUSDTotal           float64 `json:"cost_usd_total,omitempty"`
 }
 
 // RecordMetrics appends a JSONL line to ~/.alluka/metrics.jsonl and writes to
@@ -68,6 +128,9 @@ type MissionMetrics struct {
 func RecordMetrics(m MissionMetrics) error {
 	if err := recordMetricsDB(m); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: sqlite metrics write failed: %v\n", err)
+	}
+	if err := recordQuotaSnapshotDB(m); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: quota snapshot write failed: %v\n", err)
 	}
 
 	base, err := config.Dir()
@@ -108,6 +171,79 @@ func recordMetricsDB(m MissionMetrics) error {
 
 	_, err = db.UpsertMission(ctx, toMissionRecord(m))
 	return err
+}
+
+// recordQuotaSnapshotDB writes a quota snapshot row after mission completion.
+// It queries the existing 5h window totals from the DB, adds this mission's
+// tokens, then inserts a snapshot row with the combined window values.
+// Opens a fresh DB connection — acceptable since this runs once per mission.
+func recordQuotaSnapshotDB(m MissionMetrics) error {
+	if m.WorkspaceID == "" {
+		return nil
+	}
+
+	db, err := metricsdb.InitDB("")
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	// Query rolling 5h totals from prior snapshots (this mission not yet included).
+	prior, err := db.Get5hWindowTotals(ctx)
+	if err != nil {
+		return fmt.Errorf("get 5h window totals: %w", err)
+	}
+
+	window5hIn := prior.TokensIn + m.TokensInTotal
+	window5hOut := prior.TokensOut + m.TokensOutTotal
+	window5hCost := prior.CostUSD + m.CostUSDTotal
+
+	budget := defaultBudgetTokens
+	if v := os.Getenv("RYU_5H_BUDGET_TOKENS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			budget = n
+		}
+	}
+
+	util := 0.0
+	if budget > 0 {
+		util = float64(window5hIn+window5hOut) / float64(budget)
+	}
+
+	snap := metricsdb.QuotaSnapshot{
+		CapturedAt:        m.FinishedAt,
+		MissionID:         m.WorkspaceID,
+		TokensIn:          m.TokensInTotal,
+		TokensOut:         m.TokensOutTotal,
+		TokensCacheRead:   m.TokensCacheReadTotal,
+		CostUSD:           m.CostUSDTotal,
+		Window5hTokensIn:  window5hIn,
+		Window5hTokensOut: window5hOut,
+		Window5hCostUSD:   window5hCost,
+		Estimated5hUtil:   util,
+		Model:             dominantModel(m.Phases),
+	}
+	return db.InsertQuotaSnapshot(ctx, snap)
+}
+
+// dominantModel returns the model with the highest cost across phases.
+// Falls back to the first non-empty model string if costs are zero.
+func dominantModel(phases []PhaseMetric) string {
+	best := ""
+	bestCost := -1.0
+	for _, p := range phases {
+		if p.Model == "" {
+			continue
+		}
+		if p.CostUSD > bestCost {
+			bestCost = p.CostUSD
+			best = p.Model
+		}
+	}
+	return best
 }
 
 // recordPhaseSkillsDB persists the mission row and current phase skill usage as
@@ -194,46 +330,52 @@ func toMissionRecord(m MissionMetrics) metricsdb.MissionRecord {
 	phases := make([]metricsdb.PhaseRecord, len(m.Phases))
 	for i, p := range m.Phases {
 		phases[i] = metricsdb.PhaseRecord{
-			ID:                 p.ID,
-			Name:               p.Name,
-			Persona:            p.Persona,
-			Skills:             append([]string(nil), p.Skills...),
-			ParsedSkills:       append([]string(nil), p.ParsedSkills...),
-			SelectionMethod:    p.PersonaSelectionMethod,
-			DurationS:          p.DurationS,
-			Status:             p.Status,
-			Retries:            p.Retries,
-			GatePassed:         p.GatePassed,
-			OutputLen:          p.OutputLen,
-			LearningsRetrieved: p.LearningsRetrieved,
-			Provider:           p.Provider,
-			Model:              p.Model,
-			TokensIn:           p.TokensIn,
-			TokensOut:          p.TokensOut,
-			CostUSD:            p.CostUSD,
+			ID:                  p.ID,
+			Name:                p.Name,
+			Persona:             p.Persona,
+			Skills:              append([]string(nil), p.Skills...),
+			ParsedSkills:        append([]string(nil), p.ParsedSkills...),
+			SelectionMethod:     p.PersonaSelectionMethod,
+			DurationS:           p.DurationS,
+			Status:              p.Status,
+			Retries:             p.Retries,
+			GatePassed:          p.GatePassed,
+			OutputLen:           p.OutputLen,
+			LearningsRetrieved:  p.LearningsRetrieved,
+			ErrorType:           p.ErrorType,
+			ErrorMessage:        p.ErrorMessage,
+			Provider:            p.Provider,
+			Model:               p.Model,
+			TokensIn:            p.TokensIn,
+			TokensOut:           p.TokensOut,
+			TokensCacheCreation: p.TokensCacheCreation,
+			TokensCacheRead:     p.TokensCacheRead,
+			CostUSD:             p.CostUSD,
 		}
 	}
 	return metricsdb.MissionRecord{
-		WorkspaceID:        m.WorkspaceID,
-		Domain:             m.Domain,
-		Task:               m.Task,
-		StartedAt:          m.StartedAt,
-		FinishedAt:         m.FinishedAt,
-		DurationSec:        m.DurationSec,
-		PhasesTotal:        m.PhasesTotal,
-		PhasesCompleted:    m.PhasesCompleted,
-		PhasesFailed:       m.PhasesFailed,
-		PhasesSkipped:      m.PhasesSkipped,
-		LearningsRetrieved: m.LearningsRetrieved,
-		RetriesTotal:       m.RetriesTotal,
-		GateFailures:       m.GateFailures,
-		OutputLenTotal:     m.OutputLenTotal,
-		Status:             m.Status,
-		DecompSource:       m.DecompSource,
-		Phases:             phases,
-		TokensInTotal:      m.TokensInTotal,
-		TokensOutTotal:     m.TokensOutTotal,
-		CostUSDTotal:       m.CostUSDTotal,
+		WorkspaceID:              m.WorkspaceID,
+		Domain:                   m.Domain,
+		Task:                     m.Task,
+		StartedAt:                m.StartedAt,
+		FinishedAt:               m.FinishedAt,
+		DurationSec:              m.DurationSec,
+		PhasesTotal:              m.PhasesTotal,
+		PhasesCompleted:          m.PhasesCompleted,
+		PhasesFailed:             m.PhasesFailed,
+		PhasesSkipped:            m.PhasesSkipped,
+		LearningsRetrieved:       m.LearningsRetrieved,
+		RetriesTotal:             m.RetriesTotal,
+		GateFailures:             m.GateFailures,
+		OutputLenTotal:           m.OutputLenTotal,
+		Status:                   m.Status,
+		DecompSource:             m.DecompSource,
+		Phases:                   phases,
+		TokensInTotal:            m.TokensInTotal,
+		TokensOutTotal:           m.TokensOutTotal,
+		TokensCacheCreationTotal: m.TokensCacheCreationTotal,
+		TokensCacheReadTotal:     m.TokensCacheReadTotal,
+		CostUSDTotal:             m.CostUSDTotal,
 	}
 }
 
@@ -358,25 +500,32 @@ func toPhaseRecord(p *core.Phase) metricsdb.PhaseRecord {
 		durS = int(p.EndTime.Sub(*p.StartTime).Seconds())
 	}
 
-	return metricsdb.PhaseRecord{
-		ID:                 phaseRuntimeID(p),
-		Name:               p.Name,
-		Persona:            p.Persona,
-		Skills:             append([]string(nil), p.Skills...),
-		ParsedSkills:       append([]string(nil), p.ParsedSkills...),
-		SelectionMethod:    p.PersonaSelectionMethod,
-		DurationS:          durS,
-		Status:             string(p.Status),
-		Retries:            p.Retries,
-		GatePassed:         p.GatePassed,
-		OutputLen:          p.OutputLen,
-		LearningsRetrieved: p.LearningsRetrieved,
-		Provider:           providerForPhase(p),
-		Model:              p.Model,
-		TokensIn:           p.TokensIn,
-		TokensOut:          p.TokensOut,
-		CostUSD:            p.CostUSD,
+	pr := metricsdb.PhaseRecord{
+		ID:                  phaseRuntimeID(p),
+		Name:                p.Name,
+		Persona:             p.Persona,
+		Skills:              append([]string(nil), p.Skills...),
+		ParsedSkills:        append([]string(nil), p.ParsedSkills...),
+		SelectionMethod:     p.PersonaSelectionMethod,
+		DurationS:           durS,
+		Status:              string(p.Status),
+		Retries:             p.Retries,
+		GatePassed:          p.GatePassed,
+		OutputLen:           p.OutputLen,
+		LearningsRetrieved:  p.LearningsRetrieved,
+		Provider:            providerForPhase(p),
+		Model:               p.Model,
+		TokensIn:            p.TokensIn,
+		TokensOut:           p.TokensOut,
+		TokensCacheCreation: p.TokensCacheCreation,
+		TokensCacheRead:     p.TokensCacheRead,
+		CostUSD:             p.CostUSD,
 	}
+	if p.Status == core.StatusFailed && p.Error != "" {
+		pr.ErrorType = ParseErrorType(p.Error)
+		pr.ErrorMessage = p.Error
+	}
+	return pr
 }
 
 func providerForPhase(p *core.Phase) string {
@@ -391,6 +540,7 @@ func buildMetrics(ws *core.Workspace, plan *core.Plan, result *core.ExecutionRes
 	var completed, failed, skipped int
 	var retriesTotal, gateFailures, learningsRetrieved, outputLenTotal int
 	var tokensInTotal, tokensOutTotal int
+	var tokensCacheCreationTotal, tokensCacheReadTotal int
 	var costUSDTotal float64
 	var phaseDetails []PhaseMetric
 
@@ -414,6 +564,8 @@ func buildMetrics(ws *core.Workspace, plan *core.Plan, result *core.ExecutionRes
 		// Accumulate cost rollups
 		tokensInTotal += p.TokensIn
 		tokensOutTotal += p.TokensOut
+		tokensCacheCreationTotal += p.TokensCacheCreation
+		tokensCacheReadTotal += p.TokensCacheRead
 		costUSDTotal += p.CostUSD
 
 		// Per-phase duration
@@ -422,7 +574,7 @@ func buildMetrics(ws *core.Workspace, plan *core.Plan, result *core.ExecutionRes
 			durS = int(p.EndTime.Sub(*p.StartTime).Seconds())
 		}
 
-		phaseDetails = append(phaseDetails, PhaseMetric{
+		pm := PhaseMetric{
 			ID:                     phaseRuntimeID(p),
 			Name:                   p.Name,
 			Persona:                p.Persona,
@@ -439,8 +591,15 @@ func buildMetrics(ws *core.Workspace, plan *core.Plan, result *core.ExecutionRes
 			Model:                  p.Model,
 			TokensIn:               p.TokensIn,
 			TokensOut:              p.TokensOut,
+			TokensCacheCreation:    p.TokensCacheCreation,
+			TokensCacheRead:        p.TokensCacheRead,
 			CostUSD:                p.CostUSD,
-		})
+		}
+		if p.Status == core.StatusFailed && p.Error != "" {
+			pm.ErrorType = ParseErrorType(p.Error)
+			pm.ErrorMessage = p.Error
+		}
+		phaseDetails = append(phaseDetails, pm)
 	}
 
 	status := "success"
@@ -454,25 +613,27 @@ func buildMetrics(ws *core.Workspace, plan *core.Plan, result *core.ExecutionRes
 
 	end := time.Now()
 	return MissionMetrics{
-		WorkspaceID:        ws.ID,
-		Domain:             ws.Domain,
-		Task:               plan.Task,
-		StartedAt:          start,
-		FinishedAt:         end,
-		DurationSec:        int(end.Sub(start).Seconds()),
-		PhasesTotal:        len(plan.Phases),
-		PhasesCompleted:    completed,
-		PhasesFailed:       failed,
-		PhasesSkipped:      skipped,
-		LearningsRetrieved: learningsRetrieved,
-		RetriesTotal:       retriesTotal,
-		GateFailures:       gateFailures,
-		OutputLenTotal:     outputLenTotal,
-		Status:             status,
-		DecompSource:       plan.DecompSource,
-		Phases:             phaseDetails,
-		TokensInTotal:      tokensInTotal,
-		TokensOutTotal:     tokensOutTotal,
-		CostUSDTotal:       costUSDTotal,
+		WorkspaceID:              ws.ID,
+		Domain:                   ws.Domain,
+		Task:                     plan.Task,
+		StartedAt:                start,
+		FinishedAt:               end,
+		DurationSec:              int(end.Sub(start).Seconds()),
+		PhasesTotal:              len(plan.Phases),
+		PhasesCompleted:          completed,
+		PhasesFailed:             failed,
+		PhasesSkipped:            skipped,
+		LearningsRetrieved:       learningsRetrieved,
+		RetriesTotal:             retriesTotal,
+		GateFailures:             gateFailures,
+		OutputLenTotal:           outputLenTotal,
+		Status:                   status,
+		DecompSource:             plan.DecompSource,
+		Phases:                   phaseDetails,
+		TokensInTotal:            tokensInTotal,
+		TokensOutTotal:           tokensOutTotal,
+		TokensCacheCreationTotal: tokensCacheCreationTotal,
+		TokensCacheReadTotal:     tokensCacheReadTotal,
+		CostUSDTotal:             costUSDTotal,
 	}
 }

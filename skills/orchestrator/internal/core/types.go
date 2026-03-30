@@ -50,6 +50,10 @@ type Phase struct {
 	// Populated from WORKDIR: in pre-decomposed PHASE lines, or inherited from Workspace.TargetDir.
 	// Empty means the worker executes in its own WorkerDir (legacy behaviour).
 	TargetDir string `json:"target_dir,omitempty"`
+	// Priority marks this phase as P0 (critical) so the quota gate never skips
+	// or downgrades it even under high token utilization. Set via PRIORITY: P0
+	// in pre-decomposed PHASE lines. Leave empty for normal priority.
+	Priority string `json:"priority,omitempty"`
 	// Runtime identifies which execution backend runs this phase.
 	// The zero value ("") is treated as RuntimeClaude for backward compatibility,
 	// so existing plans that omit this field continue to use the Claude Code CLI.
@@ -82,10 +86,12 @@ type Phase struct {
 	SessionID              string   `json:"session_id,omitempty"`               // Claude session ID from last worker run
 	PersonaSelectionMethod string   `json:"persona_selection_method,omitempty"` // "llm" or "keyword"
 	// Cost attribution (accumulated across retries; populated from Claude CLI ResultMessage)
-	Model     string  `json:"model,omitempty"`      // resolved model ID (e.g. "claude-sonnet-4-6")
-	TokensIn  int     `json:"tokens_in,omitempty"`  // total input tokens across all attempts
-	TokensOut int     `json:"tokens_out,omitempty"` // total output tokens across all attempts
-	CostUSD   float64 `json:"cost_usd,omitempty"`   // total cost in USD across all attempts
+	Model               string  `json:"model,omitempty"`                // resolved model ID (e.g. "claude-sonnet-4-6")
+	TokensIn            int     `json:"tokens_in,omitempty"`            // total input tokens across all attempts (raw + cache_creation + cache_read)
+	TokensOut           int     `json:"tokens_out,omitempty"`           // total output tokens across all attempts
+	TokensCacheCreation int     `json:"tokens_cache_creation,omitempty"` // cache creation tokens across all attempts
+	TokensCacheRead     int     `json:"tokens_cache_read,omitempty"`     // cache read tokens across all attempts
+	CostUSD             float64 `json:"cost_usd,omitempty"`             // total cost in USD across all attempts
 
 	// Review loop tracking (populated by engine/review_loop.go)
 	ReviewIteration int      `json:"review_iteration,omitempty"` // 0 = first review pass, 1 = after first fix
@@ -226,6 +232,7 @@ type OrchestratorConfig struct {
 	DryRun           bool
 	ForcedModel      string        // override model for all phases
 	ForceSequential  bool          // force sequential execution
+	Force            bool          // bypass quota gate (--force flag)
 	Domain           string        // dev/personal/work/creative/academic
 	MaxTurns         int           // max agentic turns per worker (default 50)
 	DisableLearnings bool          // skip learning retrieval and injection

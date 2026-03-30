@@ -115,7 +115,7 @@ func runPropose(args []string) error {
 	fs.SetOutput(os.Stderr)
 	dryRun := fs.Bool("dry-run", false, "Show what would be proposed without creating issues or files")
 	jsonOut := fs.Bool("json", false, "Output proposals as JSON")
-	initFlag := fs.Bool("init", false, "Set up scheduler jobs for propose and dispatch")
+	initFlag := fs.Bool("init", false, "Set up scheduler jobs for propose, dispatch, and weekly evaluate")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -280,6 +280,8 @@ func queryProposableFindings(ctx context.Context) ([]proposableFinding, error) {
 	}
 	defer rows.Close()
 
+	// categoryCounts tracks finding counts keyed by "ability:category:severity"
+	// so we can count only same-or-higher severity findings at threshold checks.
 	categoryCounts := make(map[string]int)
 	var all []proposableFinding
 
@@ -309,11 +311,25 @@ func queryProposableFindings(ctx context.Context) ([]proposableFinding, error) {
 			continue
 		}
 
-		categoryCounts[f.Ability+":"+f.Category]++
+		categoryCounts[f.Ability+":"+f.Category+":"+f.Severity]++
 		all = append(all, f)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterating findings: %w", err)
+	}
+
+	// categoryCountAtLeast returns the number of findings in the same ability:category
+	// at the given severity or higher (critical > high > medium).
+	categoryCountAtLeast := func(ability, category, severity string) int {
+		key := ability + ":" + category + ":"
+		switch severity {
+		case "high":
+			return categoryCounts[key+"critical"] + categoryCounts[key+"high"]
+		case "medium":
+			return categoryCounts[key+"critical"] + categoryCounts[key+"high"] + categoryCounts[key+"medium"]
+		default: // critical — only itself
+			return categoryCounts[key+"critical"]
+		}
 	}
 
 	// Apply severity thresholds
@@ -324,7 +340,7 @@ func queryProposableFindings(ctx context.Context) ([]proposableFinding, error) {
 			proposable = append(proposable, f)
 		case "high":
 			age := now.Sub(f.FoundAt)
-			if age > 24*time.Hour || categoryCounts[f.Ability+":"+f.Category] >= 2 {
+			if age > 24*time.Hour || categoryCountAtLeast(f.Ability, f.Category, "high") >= 2 {
 				proposable = append(proposable, f)
 			}
 		case "medium":
@@ -336,7 +352,7 @@ func queryProposableFindings(ctx context.Context) ([]proposableFinding, error) {
 }
 
 func computeDedupKey(f proposableFinding) string {
-	h := sha256.Sum256([]byte(f.Ability + ":" + f.Category + ":" + f.ScopeKind + ":" + f.ScopeValue))
+	h := sha256.Sum256([]byte(f.Ability + ":" + f.Category + ":" + f.ScopeKind))
 	return fmt.Sprintf("%x", h[:4])
 }
 
@@ -615,6 +631,23 @@ func runProposeInit() error {
 		fmt.Println("Added scheduler job: dispatch-approved (every 15m)")
 	}
 
+	exists, err = schedulerJobExists("evaluate-weekly")
+	if err != nil {
+		return fmt.Errorf("checking evaluate-weekly job: %w", err)
+	}
+	if exists {
+		fmt.Println("Scheduler job already exists: evaluate-weekly (skipping)")
+	} else {
+		if out, err := exec.Command("scheduler", "jobs", "add",
+			"--name", "evaluate-weekly",
+			"--cron", "0 10 * * 1",
+			"--command", "shu evaluate --json",
+		).CombinedOutput(); err != nil {
+			return fmt.Errorf("adding evaluate-weekly job: %s: %w", strings.TrimSpace(string(out)), err)
+		}
+		fmt.Println("Added scheduler job: evaluate-weekly (Mondays 10am)")
+	}
+
 	remDir := filepath.Join(home, ".alluka", "missions", "remediation")
 	if err := os.MkdirAll(remDir, 0o755); err != nil {
 		return fmt.Errorf("creating remediation missions dir: %w", err)
@@ -682,7 +715,7 @@ if [[ -z "$MISSION_FILE" || ! -f "$MISSION_FILE" ]]; then
     exit 1
 fi
 
-FINDING_IDS=$(printf '%s\n' "$DESCRIPTION" | grep '^- ' | sed 's/^- \([^:]*\):.*/\1/' | tr '\n' ',' | sed 's/,$//')
+FINDING_IDS=$(printf '%s\n' "$DESCRIPTION" | grep '^- [^ ]*: ' | sed 's/^- \([^:]*\):.*/\1/' | tr '\n' ',' | sed 's/,$//')
 
 log "dispatching ${ISSUE_ID} — mission: ${MISSION_FILE}"
 

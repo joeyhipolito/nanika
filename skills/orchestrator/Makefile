@@ -17,10 +17,10 @@ clean:
 
 # Regenerate the promptfoo eval prompt from the live orchestrator prompt builder.
 # Usage:
+#   make gen-eval-prompt          (writes to evals/prompts/decomposer.txt)
 #   make gen-eval-prompt OUT=/abs/path/to/decomposer.txt
 gen-eval-prompt:
-	@test -n "$(OUT)" || (echo "OUT=/abs/path/to/decomposer.txt is required" >&2; exit 1)
-	go run ./cmd/gen-decomposer-prompt > "$(OUT)"
+	go run ./cmd/gen-decomposer-prompt > "$${OUT:-evals/prompts/decomposer.txt}"
 
 # Regenerate the promptfoo persona-selector prompt from the live persona catalog.
 # Usage:
