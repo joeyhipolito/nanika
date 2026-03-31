@@ -163,6 +163,11 @@ func runDoctor(jsonOutput bool) error {
 		}
 	}
 
+	// 14. Multiple scheduler.db files
+	if name, msg, status := checkMultipleDBs(); status != "" {
+		addCheck(name, status, msg)
+	}
+
 	// --- Output ---
 	if jsonOutput {
 		counts := map[string]int{"ok": 0, "warn": 0, "fail": 0}
@@ -234,4 +239,46 @@ func checkDBSchemaVersion(path string) (int, error) {
 	defer d.Close()
 
 	return d.SchemaVersion(ctx)
+}
+
+// checkMultipleDBs scans the three known scheduler.db locations and returns a
+// warning if more than one exists. Returns empty strings when nothing to report.
+func checkMultipleDBs() (name, message, status string) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", "", ""
+	}
+
+	candidates := []string{
+		filepath.Join(home, ".scheduler", "scheduler.db"),
+		filepath.Join(home, ".alluka", "scheduler.db"),
+		filepath.Join(home, ".alluka", "scheduler", "scheduler.db"),
+	}
+
+	type dbInfo struct {
+		path    string
+		size    int64
+		modTime time.Time
+	}
+
+	var found []dbInfo
+	for _, p := range candidates {
+		info, err := os.Stat(p)
+		if err != nil {
+			continue
+		}
+		found = append(found, dbInfo{path: p, size: info.Size(), modTime: info.ModTime()})
+	}
+
+	if len(found) <= 1 {
+		return "", "", ""
+	}
+
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "%d scheduler.db files found — canonical is ~/.alluka/scheduler/scheduler.db:\n", len(found))
+	for _, f := range found {
+		fmt.Fprintf(&sb, "    %s  (%d bytes, modified %s)",
+			f.path, f.size, f.modTime.Format("2006-01-02 15:04:05"))
+	}
+	return "Multiple DBs", sb.String(), "warn"
 }

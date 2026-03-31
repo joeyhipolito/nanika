@@ -81,7 +81,7 @@ func runInit(force bool) error {
 		if err != nil {
 			return fmt.Errorf("invalid schedule for %q: %w", def.name, err)
 		}
-		id, err := d.CreateJob(ctx, def.name, def.command, def.schedule, cfg.Shell, "", 0)
+		id, err := d.CreateJob(ctx, def.name, def.command, def.schedule, cfg.Shell, "", "cron", 0)
 		if err != nil {
 			return fmt.Errorf("creating job %q: %w", def.name, err)
 		}

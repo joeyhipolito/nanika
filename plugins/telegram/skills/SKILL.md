@@ -15,7 +15,7 @@ Config: `~/.alluka/channels/telegram.json` — bot token and optional chat ID li
 
 - User wants to send an audio file to Telegram as a voice message
 - User wants to verify Telegram bot config is working
-- After generating audio (e.g. via elevenlabs, if installed), pass the output as a voice message
+- After `elevenlabs generate`, pass the output as a voice message
 
 ## Commands
 
@@ -80,7 +80,6 @@ Get your bot token from [@BotFather](https://t.me/BotFather). Chat IDs can be fo
 **User**: "generate a voice message and send to Telegram"
 **Action**:
 ```bash
-# TTS requires elevenlabs plugin (not included — install separately)
-# elevenlabs generate narration.txt --output /tmp/
+elevenlabs generate narration.txt --output /tmp/
 telegram send-voice-message --chat <id> --audio /tmp/narration.mp3
 ```

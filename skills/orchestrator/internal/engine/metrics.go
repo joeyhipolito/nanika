@@ -15,9 +15,10 @@ import (
 	metricsdb "github.com/joeyhipolito/orchestrator-cli/internal/metrics"
 )
 
-// defaultBudgetTokens is the fallback 5h token budget used for utilization
-// estimation. Matches the Claude Max 20x plan. Override with RYU_5H_BUDGET_TOKENS.
-const defaultBudgetTokens = 10_000_000
+// defaultBudgetTokens is the fallback 5h token budget (input + output, cache_read
+// excluded) used for utilization estimation. Derived from ~160K tokens/min × 300min.
+// Override with RYU_5H_BUDGET_TOKENS.
+const defaultBudgetTokens = 50_000_000
 
 // PhaseMetric captures per-phase execution data.
 type PhaseMetric struct {
@@ -52,6 +53,7 @@ const (
 	ErrorTypeToolError   = "tool-error"
 	ErrorTypeGateFailure = "gate-failure"
 	ErrorTypeTimeout     = "timeout"
+	ErrorTypeWorkerCrash = "worker-crash"
 	ErrorTypeUnknown     = "unknown"
 )
 
@@ -89,6 +91,8 @@ func ParseErrorType(errMsg string) string {
 		strings.Contains(lower, "tool failed") ||
 		strings.Contains(lower, "tool_use_error"):
 		return ErrorTypeToolError
+	case strings.Contains(lower, "claude exited "):
+		return ErrorTypeWorkerCrash
 	default:
 		return ErrorTypeUnknown
 	}
@@ -199,6 +203,7 @@ func recordQuotaSnapshotDB(m MissionMetrics) error {
 
 	window5hIn := prior.TokensIn + m.TokensInTotal
 	window5hOut := prior.TokensOut + m.TokensOutTotal
+	window5hCacheRead := prior.TokensCacheRead + m.TokensCacheReadTotal
 	window5hCost := prior.CostUSD + m.CostUSDTotal
 
 	budget := defaultBudgetTokens
@@ -208,10 +213,18 @@ func recordQuotaSnapshotDB(m MissionMetrics) error {
 		}
 	}
 
+	// Exclude cache_read tokens: they don't count toward Anthropic rate limits.
+	effectiveIn := window5hIn - window5hCacheRead
+	if effectiveIn < 0 {
+		effectiveIn = 0
+	}
 	util := 0.0
 	if budget > 0 {
-		util = float64(window5hIn+window5hOut) / float64(budget)
+		util = float64(effectiveIn+window5hOut) / float64(budget)
 	}
+
+	fmt.Printf("[ryu] quota snapshot: window_in=%d cache_read=%d (excluded) effective_in=%d out=%d budget=%d util=%.1f%%\n",
+		window5hIn, window5hCacheRead, effectiveIn, window5hOut, budget, util*100)
 
 	snap := metricsdb.QuotaSnapshot{
 		CapturedAt:        m.FinishedAt,

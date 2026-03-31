@@ -1,16 +1,12 @@
 bin/
 node_modules/
 
-# Compiled binaries
-/shu
+# Compiled binaries at repo/plugin roots
 /gyo
-/en
 /ryu
-/ko
+/en
+/shu
 /watermark
-plugins/nen/shu
-plugins/nen/bin/
-plugins/scheduler/bin/
 
 # Go workspace (developer-local)
 go.work
@@ -18,10 +14,15 @@ go.work
 # Backup files
 *.bak
 
+# Large media / training data — never commit frames or downloaded assets
+personas/artist/kurzgesagt/
+personas/artist/kurzgesagt-frames/
+
 # Installed skills — core is tracked, everything else is user-installed
 skills/*/
 !skills/orchestrator/
 !skills/decomposer/
+!skills/channels/
 
 # Installed skill definitions — core is tracked, rest is user-installed
 .claude/skills/*/
@@ -41,3 +42,6 @@ skills-lock.json
 go.work.sum
 AGENTS.md
 .claude/worktrees/
+plugins/nen/review-scanner
+plugins/dashboard/nanika-dashboard
+plugins/nen/cmd/shu/shu

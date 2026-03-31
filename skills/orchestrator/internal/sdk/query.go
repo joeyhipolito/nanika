@@ -191,16 +191,30 @@ consumeLoop:
 	output := strings.Join(textParts, "")
 
 	if waitErr != nil {
-		if output != "" {
-			return output, waitErr
-		}
 		if exitErr, ok := waitErr.(*exec.ExitError); ok {
-			return "", fmt.Errorf("claude exited %d: %s", exitErr.ExitCode(), string(transport.stderrBuf))
+			return output, &ExitError{
+				Code:   exitErr.ExitCode(),
+				Stderr: lastNLines(string(transport.stderrBuf), 20),
+			}
 		}
-		return "", waitErr
+		return output, waitErr
 	}
 
 	return output, nil
+}
+
+// lastNLines returns the last n lines of s, or all of s if it has fewer than n lines.
+// Empty trailing newlines are stripped before splitting.
+func lastNLines(s string, n int) string {
+	s = strings.TrimRight(s, "\n")
+	if s == "" {
+		return ""
+	}
+	lines := strings.Split(s, "\n")
+	if len(lines) > n {
+		lines = lines[len(lines)-n:]
+	}
+	return strings.Join(lines, "\n")
 }
 
 func parseMessageBestEffort(data []byte) Message {

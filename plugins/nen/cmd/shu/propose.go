@@ -152,7 +152,17 @@ func runPropose(args []string) error {
 	out := proposeOutput{Proposed: []proposal{}, Skipped: []skippedFinding{}}
 	proposedKeys := make(map[string]bool)
 
+	// Separate review-blocker findings for grouped workspace handling.
+	var regularFindings, reviewBlockers []proposableFinding
 	for _, f := range findings {
+		if f.Category == "review-blocker" {
+			reviewBlockers = append(reviewBlockers, f)
+		} else {
+			regularFindings = append(regularFindings, f)
+		}
+	}
+
+	for _, f := range regularFindings {
 		key := computeDedupKey(f)
 
 		if proposedKeys[key] {
@@ -224,6 +234,29 @@ func runPropose(args []string) error {
 		notifyChannels(trackerID, f)
 	}
 
+	// Process review-blocker findings grouped by workspace (scope_value).
+	for workspaceID, groupFindings := range groupReviewBlockers(reviewBlockers) {
+		key := computeDedupKey(groupFindings[0])
+		if proposedKeys[key] {
+			for _, f := range groupFindings {
+				out.Skipped = append(out.Skipped, skippedFinding{
+					FindingID: f.ID,
+					Reason:    "duplicate review-blocker group in this batch",
+				})
+			}
+			continue
+		}
+		p, skipped, err := proposeReviewBlockerGroup(workspaceID, groupFindings, existing, *dryRun, *jsonOut)
+		if err != nil {
+			return fmt.Errorf("proposing review-blockers for workspace %s: %w", workspaceID, err)
+		}
+		out.Skipped = append(out.Skipped, skipped...)
+		if p != nil {
+			out.Proposed = append(out.Proposed, *p)
+			proposedKeys[key] = true
+		}
+	}
+
 	if *jsonOut {
 		return encodeJSON(out)
 	}
@@ -265,7 +298,7 @@ func queryProposableFindings(ctx context.Context) ([]proposableFinding, error) {
 		FROM findings
 		WHERE superseded_by = ''
 		  AND (expires_at IS NULL OR expires_at > ?)
-		  AND scope_kind IN ('mission', 'phase')
+		  AND scope_kind IN ('mission', 'phase', 'workspace')
 		  AND evidence != '[]'
 		  AND severity IN ('critical', 'high', 'medium')
 		ORDER BY
@@ -339,6 +372,11 @@ func queryProposableFindings(ctx context.Context) ([]proposableFinding, error) {
 		case "critical":
 			proposable = append(proposable, f)
 		case "high":
+			// review-blocker findings bypass the 24h threshold — propose immediately.
+			if f.Category == "review-blocker" {
+				proposable = append(proposable, f)
+				continue
+			}
 			age := now.Sub(f.FoundAt)
 			if age > 24*time.Hour || categoryCountAtLeast(f.Ability, f.Category, "high") >= 2 {
 				proposable = append(proposable, f)
@@ -352,7 +390,7 @@ func queryProposableFindings(ctx context.Context) ([]proposableFinding, error) {
 }
 
 func computeDedupKey(f proposableFinding) string {
-	h := sha256.Sum256([]byte(f.Ability + ":" + f.Category + ":" + f.ScopeKind))
+	h := sha256.Sum256([]byte(f.Ability + ":" + f.Category + ":" + f.ScopeKind + ":" + f.ScopeValue))
 	return fmt.Sprintf("%x", h[:4])
 }
 

@@ -1,0 +1,512 @@
+/* CommandPalette — OKLCH/CSS-var palette matching the dashboard theme */
+
+/* Overlay — transparent hit-area; only the .cmd-dialog card is visible */
+.cmd-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding-top: 12vh;
+  background: transparent;
+}
+
+/* Dialog card */
+.cmd-dialog {
+  width: 100%;
+  max-width: 520px;
+  overflow: hidden;
+  border-radius: 14px;
+  background: var(--pill-bg);
+  border: 1px solid var(--pill-border);
+  animation: cmd-slide-in 0.15s ease;
+}
+
+@keyframes cmd-slide-in {
+  from {
+    opacity: 0;
+    transform: translateY(-6px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+/* Input row */
+.cmd-input-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 12px;
+  border-bottom: 1px solid var(--pill-border);
+}
+
+.cmd-search-icon {
+  color: var(--text-secondary);
+  flex-shrink: 0;
+}
+
+.cmd-input {
+  flex: 1;
+  background: transparent;
+  border: none;
+  outline: none;
+  padding: 13px 0;
+  font-size: 13px;
+  color: var(--text-primary);
+  font-family: inherit;
+  caret-color: var(--accent);
+}
+
+.cmd-input--listening::placeholder {
+  color: var(--text-secondary);
+  font-style: italic;
+}
+
+.cmd-input::placeholder {
+  color: var(--placeholder);
+}
+
+.cmd-voice-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: color 0.12s, background 0.12s, border-color 0.12s;
+  flex-shrink: 0;
+}
+
+.cmd-voice-btn:hover:not(:disabled) {
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.cmd-voice-btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.cmd-voice-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.cmd-voice-btn--active {
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 32%, transparent);
+  background: color-mix(in srgb, var(--accent-soft) 70%, transparent);
+}
+
+.cmd-voice-bars {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  height: 14px;
+}
+
+.cmd-voice-bar {
+  width: 2px;
+  height: 12px;
+  border-radius: 999px;
+  background: currentColor;
+  transform-origin: center;
+  will-change: transform;
+}
+
+/* List */
+.cmd-list {
+  max-height: 360px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 6px;
+}
+
+/* Group */
+.cmd-group [cmdk-group-heading] {
+  padding: 4px 8px 2px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+}
+
+/* Item */
+.cmd-item {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 7px 8px;
+  border-radius: 7px;
+  cursor: pointer;
+  font-size: 13px;
+  color: var(--text-primary);
+  transition: background 0.1s;
+  user-select: none;
+}
+
+.cmd-item[data-selected='true'] {
+  background: oklch(0.35 0.04 80 / 0.55);
+  color: var(--text-primary);
+}
+
+.cmd-item[data-selected='true'] .cmd-item-icon {
+  color: var(--accent);
+}
+
+.cmd-item-icon {
+  display: flex;
+  align-items: center;
+  color: var(--text-secondary);
+  flex-shrink: 0;
+  transition: color 0.1s;
+}
+
+.cmd-item-label {
+  flex-shrink: 0;
+  font-weight: 500;
+}
+
+.cmd-item-desc {
+  flex: 1;
+  min-width: 0;
+  font-size: 11px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  padding-left: 2px;
+}
+
+.cmd-shortcut-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 600;
+  font-family: inherit;
+  letter-spacing: 0.04em;
+  color: var(--text-secondary);
+  background: oklch(0.28 0.01 80 / 0.6);
+  border: 1px solid var(--pill-border);
+  flex-shrink: 0;
+}
+
+.cmd-item[data-selected='true'] .cmd-shortcut-badge {
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 40%, transparent);
+  background: color-mix(in srgb, var(--accent-soft) 55%, transparent);
+}
+
+.cmd-highlight {
+  background: transparent;
+  color: var(--accent, #e8895a);
+  font-weight: 700;
+}
+
+.cmd-item-meta {
+  font-size: 11px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 160px;
+}
+
+/* Empty state */
+.cmd-empty {
+  padding: 32px 16px;
+  text-align: center;
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+
+/* Footer */
+.cmd-footer {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 8px 12px;
+  border-top: 1px solid var(--pill-border);
+}
+
+.cmd-footer-hint {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+/* Mode bar (replaces footer) */
+.cmd-mode-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 7px 12px;
+  border-top: 1px solid var(--pill-border);
+}
+
+.cmd-mode-switcher {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.cmd-mode-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  background: oklch(0.30 0.06 80 / 0.25);
+  border: 1px solid oklch(0.50 0.08 80 / 0.4);
+  border-radius: 5px;
+  padding: 0;
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-family: inherit;
+  flex-shrink: 0;
+  transition: background 0.1s, color 0.1s, border-color 0.1s;
+}
+
+.cmd-mode-btn svg {
+  display: block;
+}
+
+.cmd-mode-btn:hover {
+  background: oklch(0.35 0.06 80 / 0.35);
+}
+
+.cmd-mode-btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.cmd-mode-btn--active {
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 55%, transparent);
+  background: color-mix(in srgb, var(--accent-soft) 65%, transparent);
+}
+
+.cmd-mode-hints {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-left: auto;
+}
+
+/* Mode content — fades in when mode switches (unmount/remount) */
+.cmd-mode-content {
+  animation: cmd-mode-in 0.12s ease;
+}
+
+@keyframes cmd-mode-in {
+  from {
+    opacity: 0;
+    transform: translateY(3px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* Conversation area */
+.cmd-conversation {
+  max-height: 260px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.cmd-conv-empty {
+  padding: 28px 0;
+  text-align: center;
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+
+.cmd-conv-msg {
+  display: flex;
+  gap: 10px;
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.cmd-conv-role {
+  flex-shrink: 0;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  padding-top: 2px;
+  width: 20px;
+  text-align: right;
+}
+
+.cmd-conv-msg--user .cmd-conv-role {
+  color: var(--accent);
+}
+
+.cmd-conv-msg--assistant .cmd-conv-role {
+  color: var(--text-secondary);
+}
+
+.cmd-conv-text {
+  color: var(--text-primary);
+  flex: 1;
+}
+
+.cmd-conv-cursor {
+  color: var(--accent);
+  animation: cmd-cursor-blink 1s step-end infinite;
+}
+
+@keyframes cmd-cursor-blink {
+  50% { opacity: 0; }
+}
+
+/* @ mention tag styling inside items */
+.cmd-at-tag {
+  color: var(--accent);
+  font-weight: 600;
+}
+
+/* @ extension dropdown — floats below input row, overlays conversation */
+.cmd-at-dropdown {
+  border-top: 1px solid var(--pill-border);
+  background: var(--pill-bg);
+  /* Limit height when many modules have extensions */
+  max-height: 180px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+/* Extension preview — inline context block shown after @module selection */
+.cmd-ext-preview {
+  border-top: 1px solid var(--pill-border);
+  padding: 6px 12px 8px;
+  background: oklch(0.18 0.005 80 / 0.5);
+}
+
+.cmd-ext-preview-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 5px;
+}
+
+.cmd-ext-preview-label {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+}
+
+.cmd-ext-preview-close {
+  background: transparent;
+  border: none;
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-size: 10px;
+  padding: 0 2px;
+  line-height: 1;
+  transition: color 0.1s;
+}
+
+.cmd-ext-preview-close:hover {
+  color: var(--text-primary);
+}
+
+.cmd-ext-preview-close:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 3px;
+}
+
+.cmd-ext-preview-item {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 3px 0;
+  font-size: 12px;
+}
+
+.cmd-ext-preview-title {
+  color: var(--text-primary);
+  flex: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.cmd-ext-preview-sub {
+  font-size: 10px;
+  white-space: nowrap;
+  flex-shrink: 0;
+  color: var(--text-secondary);
+}
+
+.cmd-ext-preview-sub--running  { color: oklch(0.75 0.15 140); }
+.cmd-ext-preview-sub--completed { color: oklch(0.65 0.10 155); }
+.cmd-ext-preview-sub--failed   { color: oklch(0.65 0.18 25); }
+.cmd-ext-preview-sub--critical { color: oklch(0.65 0.22 25); }
+.cmd-ext-preview-sub--high     { color: oklch(0.70 0.18 50); }
+.cmd-ext-preview-sub--medium   { color: oklch(0.72 0.14 80); }
+
+/* Run-mission inline context area */
+.cmd-action-context {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--pill-border);
+}
+
+.cmd-action-context-label {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+}
+
+.cmd-action-context-hint {
+  font-size: 12px;
+  color: var(--text-secondary);
+  opacity: 0.6;
+}
+
+/* Keyboard chip */
+.cmd-kbd {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1px 5px;
+  border-radius: 4px;
+  font-size: 10px;
+  font-family: inherit;
+  color: var(--text-secondary);
+  background: oklch(0.28 0.01 80 / 0.6);
+  border: 1px solid var(--pill-border);
+  white-space: nowrap;
+}

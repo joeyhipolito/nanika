@@ -15,7 +15,7 @@ Config: `~/.alluka/channels/discord.json` — same file used by the orchestrator
 
 - User wants to send an audio file to Discord as a voice message
 - User wants to verify Discord channel config is working
-- After generating audio (e.g. via elevenlabs, if installed), pass the output as a voice message
+- After `elevenlabs generate`, pass the output as a voice message
 
 ## Commands
 
@@ -78,7 +78,6 @@ discord doctor --json
 **User**: "generate a voice message and send to Discord"
 **Action**:
 ```bash
-# TTS requires elevenlabs plugin (not included — install separately)
-# elevenlabs generate narration.txt --output /tmp/
+elevenlabs generate narration.txt --output /tmp/
 discord send-voice-message --channel <id> --audio /tmp/narration.mp3
 ```

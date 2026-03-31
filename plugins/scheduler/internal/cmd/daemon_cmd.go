@@ -183,6 +183,7 @@ func startDaemon(once, notify bool) error {
 }
 
 // backfillNextRunAt sets next_run_at for enabled jobs that are missing it.
+// One-shot types (at/delay) are excluded by ListJobsMissingNextRun.
 func backfillNextRunAt(ctx context.Context, d *db.DB) {
 	jobs, err := d.ListJobsMissingNextRun(ctx)
 	if err != nil {
@@ -191,14 +192,22 @@ func backfillNextRunAt(ctx context.Context, d *db.DB) {
 	}
 	for _, j := range jobs {
 		var next time.Time
-		if j.RandomWindow != "" {
+		switch j.ScheduleType {
+		case "random":
 			t, err := nextRandomTime(j.RandomWindow)
 			if err != nil {
 				log.Printf("backfill: job %d (%s) bad random_window %q: %v", j.ID, j.Name, j.RandomWindow, err)
 				continue
 			}
 			next = t
-		} else {
+		case "every":
+			interval, err := time.ParseDuration(j.Schedule)
+			if err != nil {
+				log.Printf("backfill: job %d (%s) bad every interval %q: %v", j.ID, j.Name, j.Schedule, err)
+				continue
+			}
+			next = time.Now().Add(interval)
+		default: // "cron" or legacy empty
 			t, err := cronutil.NextRun(j.Schedule)
 			if err != nil {
 				log.Printf("backfill: job %d (%s) bad schedule %q: %v", j.ID, j.Name, j.Schedule, err)
@@ -239,12 +248,24 @@ func runDueJobs(ctx context.Context, d *db.DB, exec *executor.Executor, notify b
 	now := time.Now().UTC()
 	var queue []pending
 	for _, j := range jobs {
+		nextRunAt := j.NextRunAt.UTC()
 		if j.NextRunAt.After(now) {
+			log.Printf("[debug] job %d (%s): next_run_at=%s now=%s decision=skip (not yet due)",
+				j.ID, j.Name, nextRunAt.Format(time.RFC3339), now.Format(time.RFC3339))
 			break // sorted by next_run_at ASC; no subsequent job is due either
 		}
 		if runningSet[j.ID] {
-			log.Printf("skipping job %d (%s): still running from previous tick", j.ID, j.Name)
+			log.Printf("[debug] job %d (%s): next_run_at=%s now=%s decision=skip (still running)",
+				j.ID, j.Name, nextRunAt.Format(time.RFC3339), now.Format(time.RFC3339))
 			continue
+		}
+		missed := now.Sub(nextRunAt) > time.Minute
+		if missed {
+			log.Printf("[debug] job %d (%s): next_run_at=%s now=%s decision=fire (missed, firing immediately)",
+				j.ID, j.Name, nextRunAt.Format(time.RFC3339), now.Format(time.RFC3339))
+		} else {
+			log.Printf("[debug] job %d (%s): next_run_at=%s now=%s decision=fire",
+				j.ID, j.Name, nextRunAt.Format(time.RFC3339), now.Format(time.RFC3339))
 		}
 		log.Printf("running job %d (%s)", j.ID, j.Name)
 		queue = append(queue, pending{j, exec.Run(ctx, j)})
@@ -253,7 +274,7 @@ func runDueJobs(ctx context.Context, d *db.DB, exec *executor.Executor, notify b
 	// Collect results, emit events, and advance next_run_at for each completed job.
 	for _, p := range queue {
 		result := <-p.ch
-		runTime := time.Now().UTC()
+		completedAt := time.Now().UTC()
 
 		var evType string
 		if result.Err != nil || result.ExitCode != 0 {
@@ -272,14 +293,34 @@ func runDueJobs(ctx context.Context, d *db.DB, exec *executor.Executor, notify b
 			DurationMs: result.DurationMs,
 			ExitCode:   result.ExitCode,
 			Stderr:     stderrSnippet(result.Stderr),
-			Ts:         runTime.Format(time.RFC3339),
+			Ts:         completedAt.Format(time.RFC3339),
 		}
 		writeEvent(ev)
 		if notify {
 			notifyOrchestratorSocket(ev)
 		}
 
-		if p.job.RandomWindow != "" {
+		switch p.job.ScheduleType {
+		case "at", "delay":
+			// One-shot: clear next_run_at so the job doesn't fire again.
+			log.Printf("job %d (%s): one-shot complete, clearing next_run_at", p.job.ID, p.job.Name)
+			if err := d.SetNextRunAt(ctx, p.job.ID, nil); err != nil {
+				log.Printf("job %d: cannot clear next_run_at: %v", p.job.ID, err)
+			}
+
+		case "every":
+			// Interval job: next = completedAt + interval.
+			interval, err := time.ParseDuration(p.job.Schedule)
+			if err != nil {
+				log.Printf("job %d: bad every interval %q: %v", p.job.ID, p.job.Name, err)
+				continue
+			}
+			next := completedAt.Add(interval)
+			if err := d.SetNextRunAt(ctx, p.job.ID, &next); err != nil {
+				log.Printf("job %d: cannot update next_run_at: %v", p.job.ID, err)
+			}
+
+		case "random":
 			// Random-daily job: schedule based on exit code.
 			// exit 2 → pause (next_run_at = NULL)
 			// exit 0 or exit 1 → random time tomorrow
@@ -298,11 +339,27 @@ func runDueJobs(ctx context.Context, d *db.DB, exec *executor.Executor, notify b
 					log.Printf("job %d: cannot update next_run_at: %v", p.job.ID, err)
 				}
 			}
-		} else {
-			next, err := cronutil.NextRunAfter(p.job.Schedule, runTime)
+
+		default: // "cron" or legacy empty
+			// Anchor rescheduling to the scheduled time rather than the drain time.
+			// This prevents concurrent job execution from inflating next_run_at for fast jobs
+			// when a slow job earlier in the queue delays the sequential drain loop.
+			anchor := *p.job.NextRunAt
+			next, err := cronutil.NextRunAfter(p.job.Schedule, anchor)
 			if err != nil {
 				log.Printf("job %d: cannot compute next run: %v", p.job.ID, err)
 				continue
+			}
+			// If the computed next run is still in the past (daemon was down for a long time
+			// and this was a missed job), roll forward from now to prevent a re-fire cascade.
+			if !next.After(completedAt) {
+				next, err = cronutil.NextRunAfter(p.job.Schedule, completedAt)
+				if err != nil {
+					log.Printf("job %d: cannot compute next run from now: %v", p.job.ID, err)
+					continue
+				}
+				log.Printf("job %d (%s): missed run detected, rolled next_run_at forward to %s",
+					p.job.ID, p.job.Name, next.Format(time.RFC3339))
 			}
 			if err := d.SetNextRunAt(ctx, p.job.ID, &next); err != nil {
 				log.Printf("job %d: cannot update next_run_at: %v", p.job.ID, err)

@@ -35,16 +35,17 @@ type Config struct {
 }
 
 // Default returns a Config populated with sensible defaults.
-// DBPath is intentionally empty; callers set it based on their config directory.
+// DBPath defaults to ~/.alluka/scheduler/scheduler.db (respects SCHEDULER_CONFIG_DIR).
 func Default() *Config {
 	return &Config{
+		DBPath:        filepath.Join(Dir(), "scheduler.db"),
 		LogLevel:      "info",
 		Shell:         "/bin/sh",
 		MaxConcurrent: 4,
 	}
 }
 
-// Dir returns the full path to the ~/.scheduler/ directory.
+// Dir returns the full path to the ~/.alluka/scheduler/ directory.
 // If SCHEDULER_CONFIG_DIR is set, that path is used instead.
 func Dir() string {
 	if d := os.Getenv("SCHEDULER_CONFIG_DIR"); d != "" {
@@ -57,7 +58,7 @@ func Dir() string {
 	return filepath.Join(home, DirName)
 }
 
-// Path returns the full path to the config file (~/.scheduler/config).
+// Path returns the full path to the config file (~/.alluka/scheduler/config).
 func Path() string {
 	return filepath.Join(Dir(), FileName)
 }
@@ -68,7 +69,7 @@ func Exists() bool {
 	return err == nil
 }
 
-// EnsureDir creates ~/.scheduler/ if it doesn't exist.
+// EnsureDir creates ~/.alluka/scheduler/ if it doesn't exist.
 func EnsureDir() error {
 	d := Dir()
 	if err := os.MkdirAll(d, 0700); err != nil {
@@ -85,6 +86,7 @@ func Load() (*Config, error) {
 
 	f, err := os.Open(Path())
 	if os.IsNotExist(err) {
+		warnMigration(migrateOldDB(cfg.DBPath))
 		return cfg, nil
 	}
 	if err != nil {
@@ -95,6 +97,7 @@ func Load() (*Config, error) {
 	if err := parseConfig(f, cfg); err != nil {
 		return nil, err
 	}
+	warnMigration(migrateOldDB(cfg.DBPath))
 	return cfg, nil
 }
 
@@ -248,6 +251,7 @@ func (s *Store) Load() (*Config, error) {
 
 	f, err := os.Open(s.Path())
 	if os.IsNotExist(err) {
+		warnMigration(migrateOldDB(cfg.DBPath))
 		return cfg, nil
 	}
 	if err != nil {
@@ -258,6 +262,7 @@ func (s *Store) Load() (*Config, error) {
 	if err := parseConfig(f, cfg); err != nil {
 		return nil, err
 	}
+	warnMigration(migrateOldDB(cfg.DBPath))
 	return cfg, nil
 }
 
@@ -279,4 +284,71 @@ func (s *Store) Permissions() (os.FileMode, error) {
 		return 0, fmt.Errorf("stat config: %w", err)
 	}
 	return info.Mode().Perm(), nil
+}
+
+// warnMigration logs a non-fatal migration error to stderr.
+func warnMigration(err error) {
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "scheduler: db migration warning: %v\n", err)
+	}
+}
+
+// migrateOldDB copies ~/.scheduler/scheduler.db to canonicalPath when:
+//   - the old path differs from canonicalPath
+//   - the old path exists
+//   - canonicalPath is missing or empty (0 bytes)
+//
+// The old file is never deleted. This is idempotent — subsequent calls skip
+// the copy once canonicalPath contains data.
+func migrateOldDB(canonicalPath string) error {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil
+	}
+	oldPath := filepath.Join(home, ".scheduler", "scheduler.db")
+
+	if oldPath == canonicalPath {
+		return nil
+	}
+
+	if _, err := os.Stat(oldPath); os.IsNotExist(err) {
+		return nil
+	} else if err != nil {
+		return fmt.Errorf("checking legacy db %s: %w", oldPath, err)
+	}
+
+	if info, err := os.Stat(canonicalPath); err == nil && info.Size() > 0 {
+		return nil
+	}
+
+	if err := os.MkdirAll(filepath.Dir(canonicalPath), 0700); err != nil {
+		return fmt.Errorf("creating db dir: %w", err)
+	}
+
+	if err := copyFile(oldPath, canonicalPath); err != nil {
+		return fmt.Errorf("copying %s → %s: %w", oldPath, canonicalPath, err)
+	}
+
+	fmt.Fprintf(os.Stderr, "scheduler: migrated db from %s to %s (old file kept)\n", oldPath, canonicalPath)
+	return nil
+}
+
+// copyFile copies src to dst, creating or truncating dst. Permissions are 0600.
+func copyFile(src, dst string) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+
+	out, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
+	if err != nil {
+		return err
+	}
+	defer out.Close()
+
+	if _, err := io.Copy(out, in); err != nil {
+		return err
+	}
+	return out.Sync()
 }

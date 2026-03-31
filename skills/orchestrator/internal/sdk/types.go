@@ -3,8 +3,24 @@ package sdk
 
 import (
 	"encoding/json"
+	"fmt"
 	"time"
 )
+
+// ExitError is returned by QueryText when the claude subprocess exits with a non-zero code.
+// It carries the parsed exit code and the last 20 lines of stderr so callers can inspect
+// them without re-parsing the error string.
+type ExitError struct {
+	Code   int
+	Stderr string
+}
+
+func (e *ExitError) Error() string {
+	if e.Stderr == "" {
+		return fmt.Sprintf("claude exited %d", e.Code)
+	}
+	return fmt.Sprintf("claude exited %d: %s", e.Code, e.Stderr)
+}
 
 // Message types
 const (

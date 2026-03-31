@@ -340,13 +340,17 @@ func (e *Engine) executeParallel(ctx context.Context, plan *core.Plan, start tim
 		output  string
 		err     error
 	}
-	completionCh := make(chan phaseResult, len(plan.Phases))
 
-	// Track pending phases
+	// Track pending phases. Phases already in a terminal state (from checkpoint
+	// resume) are excluded so they are never dispatched and never expected in
+	// completionCh. The completed counter is pre-seeded with their count.
 	pending := make(map[string]bool)
 	for _, p := range plan.Phases {
-		pending[p.ID] = true
+		if !p.Status.IsTerminal() {
+			pending[p.ID] = true
+		}
 	}
+	completionCh := make(chan phaseResult, len(pending))
 
 	// Dispatch ready phases
 	dispatch := func() {
@@ -405,7 +409,7 @@ func (e *Engine) executeParallel(ctx context.Context, plan *core.Plan, start tim
 	dispatch()
 
 	// Event loop: wait for completions, dispatch newly-unblocked phases
-	completed := 0
+	completed := len(plan.Phases) - len(pending)
 	total := len(plan.Phases)
 
 	for completed < total {
@@ -706,14 +710,23 @@ func (e *Engine) executePhase(ctx context.Context, phase *core.Phase, priorConte
 			break
 		}
 		if attempt == maxAttempts {
-			// Emit point 4: phase.failed
+			// Emit point 4: phase.failed (terminal — no more retries)
 			e.emit(ctx, event.PhaseFailed, phaseID, config.Name, map[string]any{
-				"error":    err.Error(),
-				"attempts": attempt,
+				"error":   err.Error(),
+				"attempt": attempt,
 			})
 			return output, err
 		}
 		phase.Retries++
+
+		// Emit phase.failed for every worker failure so dashboards and silent-failure
+		// detectors see an event immediately, not only after retries are exhausted.
+		// The subsequent phase.retrying event signals that execution will continue.
+		e.emit(ctx, event.PhaseFailed, phaseID, config.Name, map[string]any{
+			"error":    err.Error(),
+			"attempt":  attempt,
+			"retrying": true,
+		})
 
 		// Emit point: phase.retrying
 		e.emit(ctx, event.PhaseRetrying, phaseID, config.Name, map[string]any{
@@ -742,13 +755,22 @@ func (e *Engine) executePhase(ctx context.Context, phase *core.Phase, priorConte
 	phase.GatePassed = gate.Passed
 	if !gate.Passed {
 		if e.config.GateMode == core.GateModeWarn {
-			fmt.Printf("[engine] phase %s gate warning: %s\n", phase.Name, gate.Reason)
+			fmt.Printf("[engine] phase %s gate warning: %s (output_len=%d, retries=%d)\n",
+				phase.Name, gate.Reason, len(output), phase.Retries)
 		} else {
 			// GateModeBlock (default): fail the phase so dependents are skipped.
+			if e.config.Verbose {
+				fmt.Printf("[engine] phase %s gate failed: %s (output_len=%d, retries=%d, model=%s, session=%s)\n",
+					phase.Name, gate.Reason, len(output), phase.Retries, phase.Model, phase.SessionID)
+			}
 			e.emit(ctx, event.PhaseFailed, phaseID, config.Name, map[string]any{
-				"error": fmt.Sprintf("gate: %s", gate.Reason),
+				"error":      fmt.Sprintf("gate: %s", gate.Reason),
+				"output_len": len(output),
+				"retries":    phase.Retries,
+				"model":      phase.Model,
+				"session_id": phase.SessionID,
 			})
-			return output, fmt.Errorf("gate: %s", gate.Reason)
+			return output, fmt.Errorf("gate: %s (output_len=%d, retries=%d)", gate.Reason, len(output), phase.Retries)
 		}
 	}
 

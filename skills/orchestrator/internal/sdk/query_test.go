@@ -171,6 +171,70 @@ func TestExtractEvents_GenericMessage(t *testing.T) {
 	}
 }
 
+// TestExtractEvents_ResultMessage_CostFromCLIWireFormat verifies that cost and
+// token counts are populated from the actual Claude CLI output format, which emits
+// total_cost_usd as a top-level field and token counts inside a "usage" object —
+// not as a nested "cost" sub-object.
+func TestExtractEvents_ResultMessage_CostFromCLIWireFormat(t *testing.T) {
+	// Simulate the actual JSON emitted by the CLI (confirmed from live output).
+	raw := `{"type":"result","subtype":"success","session_id":"abc","num_turns":1,"duration_ms":3671,"total_cost_usd":0.083861,"usage":{"input_tokens":3,"cache_creation_input_tokens":12498,"cache_read_input_tokens":11217,"output_tokens":5}}`
+	msg := parseMessageBestEffort([]byte(raw))
+	result, ok := msg.(*ResultMessage)
+	if !ok {
+		t.Fatalf("want *ResultMessage, got %T", msg)
+	}
+	if result.TotalCostUSD == 0 {
+		t.Error("TotalCostUSD should be non-zero after parsing")
+	}
+	if result.Usage == nil {
+		t.Fatal("Usage should be non-nil after parsing")
+	}
+
+	events := extractEvents(msg)
+	if len(events) != 1 {
+		t.Fatalf("want 1 event, got %d", len(events))
+	}
+	ev := events[0]
+	if ev.Kind != KindTurnEnd {
+		t.Errorf("want KindTurnEnd, got %q", ev.Kind)
+	}
+	if ev.Cost == nil {
+		t.Fatal("Cost should be populated from CLI wire format fields")
+	}
+	if ev.Cost.TotalCostUSD != 0.083861 {
+		t.Errorf("TotalCostUSD: want 0.083861, got %f", ev.Cost.TotalCostUSD)
+	}
+	// tokens_in = input_tokens(3) + cache_creation(12498) + cache_read(11217) = 23718
+	wantTokensIn := 3 + 12498 + 11217
+	if ev.Cost.InputTokens != wantTokensIn {
+		t.Errorf("InputTokens: want %d, got %d", wantTokensIn, ev.Cost.InputTokens)
+	}
+	if ev.Cost.OutputTokens != 5 {
+		t.Errorf("OutputTokens: want 5, got %d", ev.Cost.OutputTokens)
+	}
+}
+
+// TestExtractEvents_ResultMessage_LegacyCostField verifies that the legacy nested
+// cost field still works if a future CLI version emits it.
+func TestExtractEvents_ResultMessage_LegacyCostField(t *testing.T) {
+	msg := &ResultMessage{
+		Type:    MessageTypeResult,
+		Subtype: "success",
+		Cost:    &CostInfo{InputTokens: 100, OutputTokens: 50, TotalCostUSD: 0.01},
+	}
+	events := extractEvents(msg)
+	if len(events) != 1 {
+		t.Fatalf("want 1 event, got %d", len(events))
+	}
+	ev := events[0]
+	if ev.Cost == nil {
+		t.Fatal("Cost should be populated from legacy Cost field")
+	}
+	if ev.Cost.TotalCostUSD != 0.01 {
+		t.Errorf("TotalCostUSD: want 0.01, got %f", ev.Cost.TotalCostUSD)
+	}
+}
+
 func TestExtractEvents_NestedAssistantMessage(t *testing.T) {
 	// Test the nested message.content path (as opposed to direct content).
 	msg := &AssistantMessage{

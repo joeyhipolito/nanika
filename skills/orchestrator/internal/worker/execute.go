@@ -162,11 +162,19 @@ func Execute(ctx context.Context, config *core.WorkerConfig, emitter event.Emitt
 	duration := time.Since(start)
 
 	if err != nil {
+		var exitErr *sdk.ExitError
+		exitCode, stderrTail := 0, ""
+		if errors.As(err, &exitErr) {
+			exitCode = exitErr.Code
+			stderrTail = exitErr.Stderr
+		}
 		// Emit point 7: worker.failed
 		emitter.Emit(ctx, event.New(event.WorkerFailed, missionID, phaseID, config.Name, map[string]any{
-			"error":      err.Error(),
-			"duration":   duration.String(),
-			"output_len": len(output),
+			"error":       err.Error(),
+			"duration":    duration.String(),
+			"output_len":  len(output),
+			"exit_code":   exitCode,
+			"stderr_tail": stderrTail,
 		}))
 
 		if verbose {

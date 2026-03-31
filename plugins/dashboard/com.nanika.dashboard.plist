@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.nanika.dashboard</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>__BINARY_PATH__</string>
+    </array>
+
+    <!-- Launch at login, but do not restart if the user quits. -->
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <false/>
+
+    <!-- Log to /tmp so it's easy to tail during debugging. -->
+    <key>StandardOutPath</key>
+    <string>/tmp/nanika-dashboard.log</string>
+    <key>StandardErrorPath</key>
+    <string>/tmp/nanika-dashboard.log</string>
+</dict>
+</plist>

@@ -69,6 +69,11 @@ func (d *DB) migrate() error {
 		return fmt.Errorf("migrating random_window column: %w", err)
 	}
 
+	// Add schedule_type column to jobs if missing.
+	if err := d.migrateScheduleTypeColumn(); err != nil {
+		return fmt.Errorf("migrating schedule_type column: %w", err)
+	}
+
 	return nil
 }
 
@@ -121,6 +126,40 @@ func (d *DB) migrateRandomWindowColumn() error {
 	}
 
 	_, err = d.db.Exec(`ALTER TABLE jobs ADD COLUMN random_window TEXT`)
+	return err
+}
+
+// migrateScheduleTypeColumn adds the schedule_type column to jobs if it doesn't exist,
+// then backfills existing rows: random_window jobs → "random", cron jobs → "cron".
+func (d *DB) migrateScheduleTypeColumn() error {
+	rows, err := d.db.Query(`PRAGMA table_info(jobs)`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var cid int
+		var name, colType string
+		var notNull int
+		var dfltValue sql.NullString
+		var pk int
+		if err := rows.Scan(&cid, &name, &colType, &notNull, &dfltValue, &pk); err != nil {
+			return err
+		}
+		if name == "schedule_type" {
+			return nil // already migrated
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+
+	if _, err := d.db.Exec(`ALTER TABLE jobs ADD COLUMN schedule_type TEXT NOT NULL DEFAULT 'cron'`); err != nil {
+		return err
+	}
+	// Backfill random-daily jobs.
+	_, err = d.db.Exec(`UPDATE jobs SET schedule_type = 'random' WHERE random_window IS NOT NULL AND random_window != ''`)
 	return err
 }
 
@@ -332,6 +371,7 @@ type Job struct {
 	Shell        string
 	Enabled      bool
 	TimeoutSec   int
+	ScheduleType string // "cron", "random", "at", "every", "delay"
 	RandomWindow string // "H:MM-H:MM" for random-daily jobs; empty for cron jobs
 	LastRunAt    *time.Time
 	NextRunAt    *time.Time
@@ -340,17 +380,30 @@ type Job struct {
 }
 
 // CreateJob inserts a new job record and returns its ID.
-// For cron jobs, schedule is a cron expression and randomWindow is empty.
-// For random-daily jobs, schedule is empty and randomWindow is "H:MM-H:MM".
-func (d *DB) CreateJob(ctx context.Context, name, command, schedule, shell, randomWindow string, timeoutSec int) (int64, error) {
+// scheduleType must be one of: "cron", "random", "at", "every", "delay".
+// For "cron" and "every", schedule must be non-empty.
+// For "random", randomWindow must be non-empty.
+// For "at" and "delay", neither is required (next_run_at is set by the caller).
+func (d *DB) CreateJob(ctx context.Context, name, command, schedule, shell, randomWindow, scheduleType string, timeoutSec int) (int64, error) {
 	if name == "" {
 		return 0, fmt.Errorf("job name is required")
 	}
 	if command == "" {
 		return 0, fmt.Errorf("job command is required")
 	}
-	if schedule == "" && randomWindow == "" {
-		return 0, fmt.Errorf("either schedule or random_window is required")
+	switch scheduleType {
+	case "cron", "every":
+		if schedule == "" {
+			return 0, fmt.Errorf("schedule is required for %s jobs", scheduleType)
+		}
+	case "random":
+		if randomWindow == "" {
+			return 0, fmt.Errorf("random_window is required for random jobs")
+		}
+	case "at", "delay":
+		// next_run_at set by caller; no schedule required
+	default:
+		return 0, fmt.Errorf("unknown schedule_type %q", scheduleType)
 	}
 	if shell == "" {
 		shell = "/bin/sh"
@@ -362,9 +415,9 @@ func (d *DB) CreateJob(ctx context.Context, name, command, schedule, shell, rand
 	}
 
 	res, err := d.db.ExecContext(ctx,
-		`INSERT INTO jobs (name, command, schedule, shell, timeout_sec, random_window)
-		 VALUES (?, ?, ?, ?, ?, ?)`,
-		name, command, schedule, shell, timeoutSec, randWin,
+		`INSERT INTO jobs (name, command, schedule, shell, timeout_sec, random_window, schedule_type)
+		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		name, command, schedule, shell, timeoutSec, randWin, scheduleType,
 	)
 	if err != nil {
 		return 0, fmt.Errorf("inserting job %q: %w", name, err)
@@ -380,7 +433,7 @@ func (d *DB) CreateJob(ctx context.Context, name, command, schedule, shell, rand
 func (d *DB) GetJob(ctx context.Context, id int64) (*Job, error) {
 	row := d.db.QueryRowContext(ctx,
 		`SELECT id, name, command, schedule, shell, enabled, timeout_sec,
-		        random_window, last_run_at, next_run_at, created_at, updated_at
+		        schedule_type, random_window, last_run_at, next_run_at, created_at, updated_at
 		 FROM jobs WHERE id = ?`, id)
 	return scanJob(row)
 }
@@ -389,7 +442,7 @@ func (d *DB) GetJob(ctx context.Context, id int64) (*Job, error) {
 func (d *DB) GetJobByName(ctx context.Context, name string) (*Job, error) {
 	row := d.db.QueryRowContext(ctx,
 		`SELECT id, name, command, schedule, shell, enabled, timeout_sec,
-		        random_window, last_run_at, next_run_at, created_at, updated_at
+		        schedule_type, random_window, last_run_at, next_run_at, created_at, updated_at
 		 FROM jobs WHERE name = ?`, name)
 	return scanJob(row)
 }
@@ -398,7 +451,7 @@ func (d *DB) GetJobByName(ctx context.Context, name string) (*Job, error) {
 func (d *DB) ListJobs(ctx context.Context) ([]Job, error) {
 	rows, err := d.db.QueryContext(ctx,
 		`SELECT id, name, command, schedule, shell, enabled, timeout_sec,
-		        random_window, last_run_at, next_run_at, created_at, updated_at
+		        schedule_type, random_window, last_run_at, next_run_at, created_at, updated_at
 		 FROM jobs ORDER BY name`)
 	if err != nil {
 		return nil, fmt.Errorf("listing jobs: %w", err)
@@ -463,12 +516,12 @@ type scanner interface {
 func scanJob(s scanner) (*Job, error) {
 	var j Job
 	var enabled int
-	var randomWindow, lastRunAt, nextRunAt, createdAt, updatedAt sql.NullString
+	var scheduleType, randomWindow, lastRunAt, nextRunAt, createdAt, updatedAt sql.NullString
 
 	if err := s.Scan(
 		&j.ID, &j.Name, &j.Command, &j.Schedule, &j.Shell,
 		&enabled, &j.TimeoutSec,
-		&randomWindow, &lastRunAt, &nextRunAt, &createdAt, &updatedAt,
+		&scheduleType, &randomWindow, &lastRunAt, &nextRunAt, &createdAt, &updatedAt,
 	); err != nil {
 		if err == sql.ErrNoRows {
 			return nil, fmt.Errorf("job not found")
@@ -477,6 +530,9 @@ func scanJob(s scanner) (*Job, error) {
 	}
 
 	j.Enabled = enabled == 1
+	if scheduleType.Valid {
+		j.ScheduleType = scheduleType.String
+	}
 	if randomWindow.Valid {
 		j.RandomWindow = randomWindow.String
 	}
@@ -715,12 +771,14 @@ func (d *DB) ListJobsWithLastExitCode(ctx context.Context) ([]JobWithLastExitCod
 	return jobs, rows.Err()
 }
 
-// ListJobsMissingNextRun returns enabled jobs that have no next_run_at set.
+// ListJobsMissingNextRun returns enabled jobs that have no next_run_at set,
+// excluding one-shot types (at/delay) which don't get backfilled.
 func (d *DB) ListJobsMissingNextRun(ctx context.Context) ([]Job, error) {
 	rows, err := d.db.QueryContext(ctx,
 		`SELECT id, name, command, schedule, shell, enabled, timeout_sec,
-		        random_window, last_run_at, next_run_at, created_at, updated_at
-		 FROM jobs WHERE enabled = 1 AND next_run_at IS NULL`)
+		        schedule_type, random_window, last_run_at, next_run_at, created_at, updated_at
+		 FROM jobs WHERE enabled = 1 AND next_run_at IS NULL
+		   AND schedule_type NOT IN ('at', 'delay')`)
 	if err != nil {
 		return nil, fmt.Errorf("listing jobs missing next_run_at: %w", err)
 	}
@@ -744,7 +802,7 @@ func (d *DB) ListUpcomingJobs(ctx context.Context, limit int) ([]Job, error) {
 	}
 	rows, err := d.db.QueryContext(ctx, `
 		SELECT id, name, command, schedule, shell, enabled, timeout_sec,
-		       random_window, last_run_at, next_run_at, created_at, updated_at
+		       schedule_type, random_window, last_run_at, next_run_at, created_at, updated_at
 		FROM jobs
 		WHERE enabled = 1 AND next_run_at IS NOT NULL
 		ORDER BY next_run_at ASC

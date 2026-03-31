@@ -1,0 +1,62 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  ci:
+    name: ${{ matrix.skill }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        skill:
+          - ai-analyzer
+          - bird
+          - claude-sdk-go
+          - contentkit
+          - decomposer
+          - elevenlabs
+          - engage
+          - gmail
+          - gyo
+          - linkedin
+          - obsidian
+          - orchestrator
+          - publish
+          - publishing-shared
+          - reddit
+          - scheduler
+          - scout
+          - substack
+          - todoist
+          - watermark
+          - ynab
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+          cache-dependency-path: skills/${{ matrix.skill }}/go.sum
+
+      - name: vet
+        working-directory: skills/${{ matrix.skill }}
+        run: go vet ./...
+
+      - name: test
+        working-directory: skills/${{ matrix.skill }}
+        run: go test ./...
+
+      - name: build
+        working-directory: skills/${{ matrix.skill }}
+        run: |
+          if find . -name "main.go" | grep -qv "integration_test"; then
+            make -C $GITHUB_WORKSPACE build-${{ matrix.skill }}
+          else
+            echo "No main package in ${{ matrix.skill }}, skipping build"
+          fi

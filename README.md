@@ -131,9 +131,11 @@ PHASE: review    | PERSONA: security-auditor         | OBJECTIVE: Audit auth flo
 - **decomposer** — breaks tasks into dependency-aware PHASE lines (knowledge-only, no binary)
 
 **Plugins** are the hands — domain-specific CLIs that skills invoke:
-- **Core**: **nen** (self-improvement scanners + eval engine), **tracker** (issue tracking, Rust), **scheduler** (cron + publishing)
-- **Optional**: **dashboard** (macOS Spotlight overlay, Wails)
+- **Core**: **nen** (self-improvement scanners + eval engine)
+- **Recommended**: **scout** (intelligence gathering), **obsidian** (vault CLI), **tracker** (issue tracking, Rust), **scheduler** (cron + publishing), **gmail** (multi-account), **engage** (cross-platform comments)
+- **Optional**: **linkedin**, **youtube**, **reddit**, **substack**, **elevenlabs** (TTS), **ynab** (budgets), **dashboard** (macOS Spotlight overlay, Wails)
 - **Channels**: **discord** / **telegram** — notifications + native voice messages
+- **Examples**: **example-hello** / **example-bookmarks** — starter plugins for learning the system
 
 ## Quick Start
 
@@ -152,9 +154,7 @@ scripts/install.sh --all                  # Core + discord, telegram, dashboard
 scripts/install.sh --plugins discord      # Core + specific plugins
 scripts/install.sh --no-interactive       # CI: core only, no prompts
 scripts/install.sh --dry-run              # Show what would be installed
-scripts/install.sh --repair               # Re-check prereqs, rebuild broken plugins
-scripts/install.sh --skip-dashboard       # Skip dashboard build (even with --all)
-scripts/install.sh --json                 # Machine-readable output (implies --no-interactive)
+scripts/install.sh --repair              # Re-check prereqs, rebuild broken plugins
 ```
 
 Open in Claude Code — it reads `CLAUDE.md` and discovers all skills automatically:
@@ -233,8 +233,8 @@ The installer checks only what you need based on selected plugins.
 ```bash
 make uninstall              # Stop daemons, remove launchd plists
 make clean                  # Remove build artifacts
-rm -f ~/bin/{orchestrator,tracker,scheduler,discord,telegram}  # Remove plugin binaries
-rm -rf ~/.alluka/           # Remove all runtime data (missions, databases, logs, nen binaries)
+rm -rf ~/bin/{orchestrator,shu,gyo,en,ryu,tracker,scheduler,discord,telegram}  # Remove binaries
+rm -rf ~/.alluka/           # Remove all runtime data (missions, databases, logs)
 ```
 
 ## The Name

@@ -19,5 +19,70 @@
     "items": "tracker query items --json",
     "actions": "tracker query actions --json"
   },
-  "ui": true
+  "ui": true,
+  "capabilities": {
+    "description": "Manages project tasks with parent-child hierarchies, blocking dependencies, and priority-based ready detection. Use when creating tasks, tracking work, finding what to work on next, or visualizing issue dependencies.",
+    "triggers": [
+      "create a task",
+      "what should I work on next",
+      "show my open issues",
+      "track this bug",
+      "what's blocking this task",
+      "show the task hierarchy"
+    ],
+    "entities": {
+      "issue": {
+        "pattern": "trk-[A-Z0-9]{4}",
+        "mentionable": true,
+        "description": "A tracked issue or task"
+      }
+    },
+    "commands": {
+      "create": {
+        "description": "Create a new issue",
+        "args": ["<title>", "--priority <P0|P1|P2|P3>", "--parent <issue-id>", "--labels <csv>", "--assignee <name>"]
+      },
+      "show": {
+        "description": "Show a single issue with full details",
+        "args": ["<issue-id>"]
+      },
+      "list": {
+        "description": "List issues with optional filters",
+        "args": ["--status <open|in-progress|done|cancelled>", "--priority <P0|P1|P2|P3>"]
+      },
+      "update": {
+        "description": "Update issue fields",
+        "args": ["<issue-id>", "--status <status>", "--priority <priority>", "--assignee <name>"]
+      },
+      "delete": {
+        "description": "Delete an issue",
+        "args": ["<issue-id>"]
+      },
+      "link": {
+        "description": "Link two issues",
+        "args": ["<from-id>", "<to-id>", "--type <blocks|relates_to|supersedes|duplicates>"]
+      },
+      "unlink": {
+        "description": "Remove a link between issues",
+        "args": ["<from-id>", "<to-id>", "--type <type>"]
+      },
+      "ready": {
+        "description": "List open issues with no blocking dependencies"
+      },
+      "next": {
+        "description": "Show the highest-priority ready issue"
+      },
+      "tree": {
+        "description": "Show issues as a parent-child hierarchy"
+      },
+      "search": {
+        "description": "Search issues by title or description",
+        "args": ["<query>"]
+      },
+      "comment": {
+        "description": "Add a comment to an issue",
+        "args": ["<issue-id>", "<body>", "--author <name>"]
+      }
+    }
+  }
 }

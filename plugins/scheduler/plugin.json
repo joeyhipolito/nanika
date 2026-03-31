@@ -36,5 +36,64 @@
       "cmd": ["scheduler", "query", "action", "disable", "<job_id>", "--json"],
       "description": "Disable an enabled job"
     }
+  },
+  "capabilities": {
+    "description": "Runs recurring shell commands on cron schedules and manages the nanika publishing pipeline. Use when scheduling jobs, running the daemon, checking job history, enabling or disabling jobs, or setting up automated workflows.",
+    "triggers": [
+      "schedule a recurring job",
+      "set up a cron job",
+      "check what scheduled jobs are running",
+      "run a job now",
+      "show job history",
+      "set up the publishing pipeline",
+      "start the scheduler daemon"
+    ],
+    "commands": {
+      "daemon": {
+        "description": "Start the daemon that polls and executes scheduled jobs",
+        "args": ["--notify", "--once", "--stop"]
+      },
+      "init": {
+        "description": "Create the default nanika publishing pipeline jobs (scout, engage, weekly-brief)",
+        "args": ["--force"]
+      },
+      "jobs": {
+        "description": "List all configured cron jobs"
+      },
+      "jobs add": {
+        "description": "Add a new recurring job",
+        "args": ["--name <name>", "--cron <expression>", "--command <shell-cmd>", "--timeout <seconds>"]
+      },
+      "jobs enable": {
+        "description": "Enable a disabled job",
+        "args": ["<job-id>"]
+      },
+      "jobs disable": {
+        "description": "Disable a job without removing it",
+        "args": ["<job-id>"]
+      },
+      "jobs remove": {
+        "description": "Remove a job and its run history",
+        "args": ["<job-id>"]
+      },
+      "run": {
+        "description": "Run a job immediately, ignoring its schedule",
+        "args": ["<job-id>"]
+      },
+      "logs": {
+        "description": "View execution output for a job",
+        "args": ["<job-id>", "--limit <n>"]
+      },
+      "history": {
+        "description": "Show recent job run events (newest first)",
+        "args": ["--limit <n>"]
+      },
+      "status": {
+        "description": "Show daemon state, job counts, and next scheduled run"
+      },
+      "doctor": {
+        "description": "Verify installation: CLIs, database, and daemon status"
+      }
+    }
   }
 }

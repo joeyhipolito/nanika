@@ -565,6 +565,9 @@ func runTask(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
+	if !success {
+		return fmt.Errorf("mission failed")
+	}
 	return nil
 }
 
@@ -705,7 +708,13 @@ func resumeMission(ctx context.Context, wsPath string, db *learning.DB, embedder
 
 	printResult(result)
 	printEmitterDropWarning(resumeEmitter)
-	return err
+	if err != nil {
+		return err
+	}
+	if !success {
+		return fmt.Errorf("mission failed")
+	}
+	return nil
 }
 
 // resetPhasesForResume resets failed/running phases to pending and revives

@@ -1425,15 +1425,16 @@ type QuotaSnapshot struct {
 	Window5hTokensIn      int       `json:"window_5h_tokens_in"`
 	Window5hTokensOut     int       `json:"window_5h_tokens_out"`
 	Window5hCostUSD       float64   `json:"window_5h_cost_usd"`
-	Estimated5hUtil       float64   `json:"estimated_5h_utilization"`
+	Estimated5hUtil       float64   `json:"estimated_5h_utilization"` // (effective_in + out) / budget; cache_read excluded from effective_in
 	Model                 string    `json:"model"`
 }
 
 // WindowTotals holds the aggregate token and cost totals over a time window.
 type WindowTotals struct {
-	TokensIn  int
-	TokensOut int
-	CostUSD   float64
+	TokensIn       int
+	TokensOut      int
+	TokensCacheRead int
+	CostUSD        float64
 }
 
 // InsertQuotaSnapshot writes a single snapshot row to the quota_snapshots table.
@@ -1514,10 +1515,11 @@ func (d *DB) Get5hWindowTotals(ctx context.Context) (*WindowTotals, error) {
 	err := d.db.QueryRowContext(ctx, `
 		SELECT COALESCE(SUM(tokens_in), 0),
 		       COALESCE(SUM(tokens_out), 0),
+		       COALESCE(SUM(tokens_cache_read), 0),
 		       COALESCE(SUM(cost_usd), 0)
 		FROM quota_snapshots
 		WHERE captured_at >= ?
-	`, since).Scan(&wt.TokensIn, &wt.TokensOut, &wt.CostUSD)
+	`, since).Scan(&wt.TokensIn, &wt.TokensOut, &wt.TokensCacheRead, &wt.CostUSD)
 	if err != nil {
 		return nil, fmt.Errorf("querying 5h window totals: %w", err)
 	}
