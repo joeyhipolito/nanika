@@ -980,7 +980,7 @@ func TestHandleMetrics_Shape(t *testing.T) {
 		t.Error("metrics shape: by_domain must not be nil")
 	}
 	if body.ByPersona == nil {
-		t.Error("metrics shape: by_persona must not be nil")
+		t.Error("metrics shape: phases_by_persona must not be nil")
 	}
 	if body.Recent == nil {
 		t.Error("metrics shape: recent must not be nil")

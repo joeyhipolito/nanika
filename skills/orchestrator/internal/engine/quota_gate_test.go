@@ -6,9 +6,12 @@ package engine
 //  2. 30% actual usage does not trigger throttling
 //  3. 95%+ genuine utilization triggers throttleBlock
 //  4. RYU_THROTTLE_ENABLED=false bypasses the gate regardless of utilization
+//  5. During peak hours, utilization is scaled by 1/0.7 (conservative 0.7x budget)
 
 import (
 	"context"
+	"fmt"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -16,6 +19,24 @@ import (
 	"github.com/joeyhipolito/orchestrator-cli/internal/core"
 	metricsdb "github.com/joeyhipolito/orchestrator-cli/internal/metrics"
 )
+
+// writePeakConfig writes a peak-hours.json to dir and returns the dir for use as HOME.
+func writePeakConfig(t *testing.T, enabled bool) string {
+	t.Helper()
+	home := t.TempDir()
+	alluka := filepath.Join(home, ".alluka")
+	if err := os.MkdirAll(alluka, 0o755); err != nil {
+		t.Fatalf("writePeakConfig: mkdir: %v", err)
+	}
+	content := fmt.Sprintf(
+		`{"enabled":%v,"start_hour":0,"end_hour":24,"timezone":"UTC"}`,
+		enabled,
+	)
+	if err := os.WriteFile(filepath.Join(alluka, "peak-hours.json"), []byte(content), 0o644); err != nil {
+		t.Fatalf("writePeakConfig: write: %v", err)
+	}
+	return home
+}
 
 // seedSnap inserts a quota snapshot with the given Estimated5hUtil into db.
 func seedSnap(t *testing.T, db *metricsdb.DB, missionID string, util float64) {
@@ -157,6 +178,10 @@ func TestQuotaGate_ThrottleAction(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			cfgDir := t.TempDir()
+			// Isolate HOME so peak.LoadConfig inside checkQuotaGate finds no
+			// peak-hours.json — prevents the 0.7x scaling from flaking these tests
+			// when run during real peak hours.
+			t.Setenv("HOME", writePeakConfig(t, false))
 			e := quotaTestEngine(t, cfgDir, false)
 
 			db, err := metricsdb.InitDB(filepath.Join(cfgDir, "metrics.db"))
@@ -210,4 +235,84 @@ func TestQuotaGate_DisabledByEnvVar(t *testing.T) {
 	if util != 0 {
 		t.Errorf("RYU_THROTTLE_ENABLED=false: got util=%.4f, want 0 (gate never read DB)", util)
 	}
+}
+
+// TestQuotaGate_PeakHours_BudgetScaling verifies the 0.7x conservative budget
+// that is applied during peak hours.
+//
+// Key property: a raw utilization of 50% (which would be throttleNormal off-peak)
+// becomes 50%/0.7 ≈ 71.4% during peak — crossing the 60% throttleForceSonnet
+// threshold.
+//
+// The "peak active" sub-test uses a peak config window of 0–24 UTC so peak is
+// active on any weekday regardless of wall-clock time. The test skips on weekends
+// because the peak package intentionally excludes Saturday and Sunday.
+func TestQuotaGate_PeakHours_BudgetScaling(t *testing.T) {
+	t.Run("off-peak: 50% raw stays throttleNormal", func(t *testing.T) {
+		cfgDir := t.TempDir()
+		// Set HOME to a dir with enabled=false — peak never fires.
+		t.Setenv("HOME", writePeakConfig(t, false))
+		e := quotaTestEngine(t, cfgDir, false)
+
+		db, err := metricsdb.InitDB(filepath.Join(cfgDir, "metrics.db"))
+		if err != nil {
+			t.Fatalf("InitDB: %v", err)
+		}
+		t.Cleanup(func() { db.Close() })
+		seedSnap(t, db, "mission-off-peak", 0.50)
+
+		phase := &core.Phase{ID: "test-phase", Name: "test", Priority: ""}
+		action, got := e.checkQuotaGate(phase)
+		if action != throttleNormal {
+			t.Errorf("off-peak 50%% util: got action=%v (util=%.1f%%), want throttleNormal",
+				action, got*100)
+		}
+	})
+
+	t.Run("peak active: 50% raw scales to 71.4% effective → throttleForceSonnet", func(t *testing.T) {
+		if wd := time.Now().UTC().Weekday(); wd == time.Saturday || wd == time.Sunday {
+			t.Skip("peak package excludes weekends; run on a weekday")
+		}
+		cfgDir := t.TempDir()
+		// enabled=true, all UTC hours covered → IsPeak returns true on any weekday.
+		t.Setenv("HOME", writePeakConfig(t, true))
+		e := quotaTestEngine(t, cfgDir, false)
+
+		db, err := metricsdb.InitDB(filepath.Join(cfgDir, "metrics.db"))
+		if err != nil {
+			t.Fatalf("InitDB: %v", err)
+		}
+		t.Cleanup(func() { db.Close() })
+		// 50% raw / 0.7 ≈ 71.4% effective → above 60% threshold → throttleForceSonnet.
+		seedSnap(t, db, "mission-peak", 0.50)
+
+		phase := &core.Phase{ID: "test-phase", Name: "test", Priority: ""}
+		action, _ := e.checkQuotaGate(phase)
+		if action != throttleForceSonnet {
+			t.Errorf("peak 50%% raw (≈71.4%% effective): got action=%v, want throttleForceSonnet", action)
+		}
+	})
+
+	t.Run("peak active: P0 phase not skipped even at 80% effective", func(t *testing.T) {
+		if wd := time.Now().UTC().Weekday(); wd == time.Saturday || wd == time.Sunday {
+			t.Skip("peak package excludes weekends; run on a weekday")
+		}
+		cfgDir := t.TempDir()
+		t.Setenv("HOME", writePeakConfig(t, true))
+		e := quotaTestEngine(t, cfgDir, false)
+
+		db, err := metricsdb.InitDB(filepath.Join(cfgDir, "metrics.db"))
+		if err != nil {
+			t.Fatalf("InitDB: %v", err)
+		}
+		t.Cleanup(func() { db.Close() })
+		// 58% raw / 0.7 ≈ 82.9% effective → above 80% threshold, but P0 → throttleNormal.
+		seedSnap(t, db, "mission-peak-p0", 0.58)
+
+		phase := &core.Phase{ID: "test-phase", Name: "test", Priority: "P0"}
+		action, _ := e.checkQuotaGate(phase)
+		if action != throttleNormal {
+			t.Errorf("peak P0 phase at 82.9%% effective: got action=%v, want throttleNormal", action)
+		}
+	})
 }

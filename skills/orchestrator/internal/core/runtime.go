@@ -23,6 +23,12 @@ const (
 	// (codex exec). Phases assigned this runtime bypass the Claude Code path
 	// entirely; the CodexExecutor must be registered before Execute is called.
 	RuntimeCodex Runtime = "codex"
+
+	// RuntimeBoth is a sentinel that requests both Claude and Codex executors
+	// for a phase. The engine dispatches to each runtime in turn and merges
+	// their outputs. Only valid for implementer phases; reviewer phases always
+	// use RuntimeClaude regardless of this value.
+	RuntimeBoth Runtime = "both"
 )
 
 // Effective returns RuntimeClaude when r is the zero value (""), preserving

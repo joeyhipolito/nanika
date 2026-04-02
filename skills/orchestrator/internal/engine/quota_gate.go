@@ -7,6 +7,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/joeyhipolito/nen/peak"
 	"github.com/joeyhipolito/orchestrator-cli/internal/core"
 	metricsdb "github.com/joeyhipolito/orchestrator-cli/internal/metrics"
 )
@@ -70,6 +71,16 @@ func (e *Engine) checkQuotaGate(phase *core.Phase) (throttleAction, float64) {
 
 	latest := snaps[len(snaps)-1]
 	util := latest.Estimated5hUtil
+
+	// During peak hours, apply a conservative budget by scaling utilization up
+	// by 1/0.7 — equivalent to treating the budget as 70% of normal.
+	if peakCfg, err := peak.LoadConfig(); err != nil {
+		fmt.Fprintf(os.Stderr, "[ryu] peak: config load error: %v\n", err)
+	} else if peak.IsPeak(peakCfg) {
+		fmt.Println("[ryu] peak hours active — using conservative budget (0.7x)")
+		util = util / 0.7
+	}
+
 	isP0 := phase.Priority == "P0"
 	phaseID := phaseRuntimeID(phase)
 

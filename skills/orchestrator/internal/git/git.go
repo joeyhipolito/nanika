@@ -4,12 +4,15 @@ package git
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
+	"syscall"
+	"time"
 )
 
 // FindRoot walks up from dir looking for a .git entry.
@@ -55,22 +58,167 @@ func CreateWorktree(repoRoot, path, branch string) error {
 	return nil
 }
 
-// RemoveWorktree removes the worktree at path and prunes the worktree list.
-func RemoveWorktree(path string) error {
-	// Resolve the main repo root before the worktree is deleted.
-	// We use git rev-parse --git-common-dir because FindRoot(path) would
-	// return the worktree's own path (linked worktrees have a .git *file*),
-	// not the main repository root.
+const lockFileName = ".nanika-lock"
+
+type worktreeLock struct {
+	PID       int    `json:"pid"`
+	MissionID string `json:"mission_id"`
+	StartedAt string `json:"started_at"`
+	Phase     string `json:"phase"`
+}
+
+// WriteLockFile writes a .nanika-lock file in worktreePath recording the
+// current process PID, missionID, start time, and an empty initial phase.
+func WriteLockFile(worktreePath, missionID string) error {
+	lock := worktreeLock{
+		PID:       os.Getpid(),
+		MissionID: missionID,
+		StartedAt: time.Now().UTC().Format(time.RFC3339),
+	}
+	data, err := json.Marshal(lock)
+	if err != nil {
+		return fmt.Errorf("marshal lock file: %w", err)
+	}
+	if err := os.WriteFile(filepath.Join(worktreePath, lockFileName), data, 0600); err != nil {
+		return fmt.Errorf("write lock file: %w", err)
+	}
+	return nil
+}
+
+// UpdateLockFilePhase updates the phase field in an existing lock file.
+// No-op when the lock file does not exist.
+func UpdateLockFilePhase(worktreePath, phase string) error {
+	lockPath := filepath.Join(worktreePath, lockFileName)
+	data, err := os.ReadFile(lockPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("read lock file: %w", err)
+	}
+	var lock worktreeLock
+	if err := json.Unmarshal(data, &lock); err != nil {
+		return fmt.Errorf("parse lock file: %w", err)
+	}
+	lock.Phase = phase
+	updated, err := json.Marshal(lock)
+	if err != nil {
+		return fmt.Errorf("marshal lock file: %w", err)
+	}
+	return os.WriteFile(lockPath, updated, 0600)
+}
+
+// RemoveLockFile removes the .nanika-lock file from worktreePath.
+// Errors are silently ignored — removal is best-effort.
+func RemoveLockFile(worktreePath string) {
+	os.Remove(filepath.Join(worktreePath, lockFileName)) //nolint:errcheck
+}
+
+// isWorktreeLocked returns true when worktreePath contains a .nanika-lock file
+// whose recorded PID refers to a still-running process.
+func isWorktreeLocked(path string) bool {
+	data, err := os.ReadFile(filepath.Join(path, lockFileName))
+	if err != nil {
+		return false
+	}
+	var lock worktreeLock
+	if err := json.Unmarshal(data, &lock); err != nil || lock.PID <= 0 {
+		return false
+	}
+	proc, err := os.FindProcess(lock.PID)
+	if err != nil {
+		return false
+	}
+	return proc.Signal(syscall.Signal(0)) == nil
+}
+
+const trashMetaFileName = ".nanika-trash-meta.json"
+
+// TrashMeta records what a trashed worktree was before soft-deletion.
+// Stored as JSON in the trash entry directory so restore can work without
+// consulting any other state.
+type TrashMeta struct {
+	WorkspaceID  string `json:"workspace_id"`
+	OriginalPath string `json:"original_path"`
+	Branch       string `json:"branch"`
+	RepoRoot     string `json:"repo_root"`
+	TrashedAt    string `json:"trashed_at"`
+}
+
+// RemoveWorktree removes the worktree at path.
+// When trashDir is non-empty the directory is moved there (soft delete) and a
+// metadata file is written inside the trash entry so the worktree can be
+// restored later.  When trashDir is empty the worktree is hard-deleted (the
+// original behaviour, used by tests and fallback paths).
+func RemoveWorktree(path, trashDir string) error {
+	if isWorktreeLocked(path) {
+		return fmt.Errorf("worktree %s is locked by an active process", path)
+	}
+	// Resolve the main repo root before the worktree is touched.
 	mainRoot, err := mainRepoRoot(path)
 	if err != nil {
 		mainRoot = path // best-effort fallback
 	}
-	if _, err := run(mainRoot, "git", "worktree", "remove", "--force", path); err != nil {
-		return fmt.Errorf("git worktree remove %s: %w", path, err)
+
+	if trashDir == "" {
+		// Hard delete — original behaviour.
+		if _, err := run(mainRoot, "git", "worktree", "remove", "--force", path); err != nil {
+			return fmt.Errorf("git worktree remove %s: %w", path, err)
+		}
+		if _, err := run(mainRoot, "git", "worktree", "prune"); err != nil {
+			return fmt.Errorf("git worktree prune: %w", err)
+		}
+		return nil
 	}
-	// Prune from the main repo root (path is already gone at this point).
+
+	// Soft delete — move to trash then prune the dangling git reference.
+	if err := os.MkdirAll(trashDir, 0755); err != nil {
+		return fmt.Errorf("create trash dir: %w", err)
+	}
+
+	now := time.Now().UTC()
+	workspaceID := filepath.Base(path)
+	trashEntry := filepath.Join(trashDir, workspaceID+"_"+now.Format("20060102T150405Z"))
+
+	// Determine the current branch from the worktree's HEAD before moving it.
+	branch := ""
+	if b, err := CurrentBranch(path); err == nil {
+		branch = b
+	}
+
+	meta := TrashMeta{
+		WorkspaceID:  workspaceID,
+		OriginalPath: path,
+		Branch:       branch,
+		RepoRoot:     mainRoot,
+		TrashedAt:    now.Format(time.RFC3339),
+	}
+
+	if err := os.Rename(path, trashEntry); err != nil {
+		return fmt.Errorf("move worktree to trash: %w", err)
+	}
+
+	// Write metadata so restore can find everything it needs.
+	if metaData, err := json.Marshal(meta); err == nil {
+		_ = os.WriteFile(filepath.Join(trashEntry, trashMetaFileName), metaData, 0600)
+	}
+
+	// Prune the now-missing worktree reference from the main repo.
 	if _, err := run(mainRoot, "git", "worktree", "prune"); err != nil {
-		return fmt.Errorf("git worktree prune: %w", err)
+		// Non-fatal — the worktree is in trash, just the git ref is stale.
+		fmt.Printf("warning: git worktree prune: %v\n", err)
+	}
+
+	fmt.Printf("worktree moved to trash: %s\n", trashEntry)
+	return nil
+}
+
+// RepairWorktree re-registers a linked worktree whose git metadata was lost
+// (e.g. after a prune).  Run from the main repo root after the worktree
+// directory has been restored to its original path.
+func RepairWorktree(repoRoot, worktreePath string) error {
+	if _, err := run(repoRoot, "git", "worktree", "repair", worktreePath); err != nil {
+		return fmt.Errorf("git worktree repair %s: %w", worktreePath, err)
 	}
 	return nil
 }
@@ -79,44 +227,23 @@ func RemoveWorktree(path string) error {
 // that owns the git repository at dir. Works correctly from both the main
 // worktree and linked worktrees.
 func mainRepoRoot(dir string) (string, error) {
-	// --git-common-dir returns ".git" when called from the main worktree, or
-	// an absolute path to the main .git dir when called from a linked worktree.
-	out, err := run(dir, "git", "rev-parse", "--absolute-git-dir")
+	// --git-common-dir returns ".git" from the main worktree, or an absolute
+	// path to the main .git dir from a linked worktree. Its parent is the
+	// main worktree root in both cases.
+	out, err := run(dir, "git", "rev-parse", "--git-common-dir")
 	if err != nil {
-		return "", fmt.Errorf("rev-parse --absolute-git-dir: %w", err)
+		return "", fmt.Errorf("rev-parse --git-common-dir: %w", err)
 	}
-	absGitDir := strings.TrimSpace(out)
-	// A linked worktree's git dir looks like /main/repo/.git/worktrees/<name>.
-	// The main .git dir is two levels up; its parent is the main worktree root.
-	// A main worktree's git dir looks like /main/repo/.git.
-	// In both cases: walk up until we find a directory whose parent holds .git.
-	// Simpler: use git rev-parse --show-toplevel which always gives the main
-	// worktree's checkout root (for linked worktrees it gives the worktree root,
-	// not main root). Instead, derive main root from the common git dir.
-	out2, err := run(dir, "git", "rev-parse", "--git-common-dir")
-	if err != nil {
-		// Fall back: parent of absGitDir.
-		return filepath.Dir(absGitDir), nil
-	}
-	commonDir := strings.TrimSpace(out2)
+	commonDir := strings.TrimSpace(out)
 	if !filepath.IsAbs(commonDir) {
 		commonDir = filepath.Join(dir, commonDir)
 	}
-	// commonDir is the main .git directory; its parent is the main worktree root.
 	return filepath.Dir(commonDir), nil
 }
 
 // CommitAll stages all changes in worktreePath and creates a commit with message.
 // Returns nil (no error) if there is nothing to commit.
 func CommitAll(worktreePath, message string) error {
-	statusOut, statusErr := run(worktreePath, "git", "status", "--short")
-	fmt.Printf("[git.CommitAll] worktreePath=%q\n", worktreePath)
-	if statusErr != nil {
-		fmt.Printf("[git.CommitAll] git status error: %v\n", statusErr)
-	} else {
-		fmt.Printf("[git.CommitAll] git status:\n%s\n", statusOut)
-	}
-
 	if _, err := run(worktreePath, "git", "add", "-A"); err != nil {
 		return fmt.Errorf("git add -A: %w", err)
 	}
@@ -129,6 +256,15 @@ func CommitAll(worktreePath, message string) error {
 		return fmt.Errorf("git commit: %w", err)
 	}
 	return nil
+}
+
+// HeadSHA returns the full commit hash of HEAD in dir.
+func HeadSHA(dir string) (string, error) {
+	out, err := run(dir, "git", "rev-parse", "HEAD")
+	if err != nil {
+		return "", fmt.Errorf("git rev-parse HEAD: %w", err)
+	}
+	return strings.TrimSpace(out), nil
 }
 
 // Push pushes branch to remote from within worktreePath.

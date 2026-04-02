@@ -93,6 +93,10 @@ type TargetContext struct {
 	// Set by the --no-review CLI flag for missions where a review phase is
 	// not wanted (e.g. hot-fix, local-only experiments).
 	SkipReviewInjection bool
+	// ReviewRuntime is the runtime assigned to auto-injected review phases.
+	// Set by the --review-runtime CLI flag. When empty, review phases use the
+	// policy default (RuntimeClaude) applied by applyRuntimePolicy.
+	ReviewRuntime core.Runtime
 	// TestCommand is the command used to run tests for this target, e.g. "go test ./....".
 	// Injected into the decomposer prompt so phases can reference the correct test invocation.
 	TestCommand string
@@ -859,7 +863,14 @@ func ParsePhases(output string, tc *TargetContext) ([]*core.Phase, error) {
 		depends := f["DEPENDS"]
 		expected := f["EXPECTED"]
 		workdir := f["WORKDIR"]
-		runtimeStr := f["RUNTIME"]
+		runtimeStr := strings.ToLower(strings.TrimSpace(f["RUNTIME"]))
+		if runtimeStr != "" &&
+			runtimeStr != string(core.RuntimeClaude) &&
+			runtimeStr != string(core.RuntimeCodex) &&
+			runtimeStr != string(core.RuntimeBoth) {
+			fmt.Fprintf(os.Stderr, "[decompose] warning: unknown RUNTIME value %q for phase %q; ignoring\n", runtimeStr, f["PHASE"])
+			runtimeStr = ""
+		}
 		timeoutStr := f["TIMEOUT"]
 		priorityStr := f["PRIORITY"]
 
@@ -1147,6 +1158,9 @@ func ensureCodeReviewPhase(plan *core.Plan, tc *TargetContext) {
 		Skills:                 []string{"requesting-code-review"},
 		MaxReviewLoops:         1, // allow one fix cycle; increase for stricter review loops
 		Status:                 core.StatusPending,
+	}
+	if tc != nil && tc.ReviewRuntime != "" {
+		review.Runtime = tc.ReviewRuntime
 	}
 
 	if qaIdx := firstValidationPhaseIndex(plan.Phases); qaIdx >= 0 {

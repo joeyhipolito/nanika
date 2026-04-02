@@ -111,6 +111,72 @@ func TestBuildArgs_ResumeSession_NoModel(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// buildReviewArgs
+// ---------------------------------------------------------------------------
+
+func TestBuildReviewArgs_Basic(t *testing.T) {
+	e := &CodexExecutor{BinaryPath: "codex"}
+	config := &core.WorkerConfig{
+		Bundle: core.ContextBundle{
+			Objective: "Review the implementation for bugs",
+		},
+	}
+	args := e.buildReviewArgs(config, "/work", "main")
+
+	mustContain(t, args, "review")
+	mustContain(t, args, "--base")
+	mustContain(t, args, "main")
+	mustContain(t, args, "--dangerously-bypass-approvals-and-sandbox")
+	mustContain(t, args, "--json")
+	mustContain(t, args, "--skip-git-repo-check")
+	mustContain(t, args, "Review the implementation for bugs")
+}
+
+func TestBuildReviewArgs_WithModel(t *testing.T) {
+	e := &CodexExecutor{BinaryPath: "codex"}
+	config := &core.WorkerConfig{
+		Model: "o4",
+		Bundle: core.ContextBundle{
+			Objective: "Review code quality",
+		},
+	}
+	args := e.buildReviewArgs(config, "/repo", "develop")
+
+	mustContain(t, args, "review")
+	mustContain(t, args, "--base")
+	mustContain(t, args, "develop")
+	mustContain(t, args, "-m")
+	mustContain(t, args, "o4")
+	mustContain(t, args, "Review code quality")
+}
+
+func TestBuildReviewArgs_WithEffortLevel(t *testing.T) {
+	e := &CodexExecutor{BinaryPath: "codex"}
+	config := &core.WorkerConfig{
+		EffortLevel: "high",
+		Bundle: core.ContextBundle{
+			Objective: "Review implementation",
+		},
+	}
+	args := e.buildReviewArgs(config, "/work", "feature-x")
+
+	mustContain(t, args, "-c")
+	mustContain(t, args, "model_reasoning_effort=high")
+}
+
+func TestBuildReviewArgs_EmptyCwd(t *testing.T) {
+	e := &CodexExecutor{BinaryPath: "codex"}
+	config := &core.WorkerConfig{
+		Bundle: core.ContextBundle{
+			Objective: "Review",
+		},
+	}
+	args := e.buildReviewArgs(config, "", "main")
+
+	mustNotContain(t, args, "-C")
+}
+
+// ---------------------------------------------------------------------------
 // extractCodexText
 // ---------------------------------------------------------------------------
 

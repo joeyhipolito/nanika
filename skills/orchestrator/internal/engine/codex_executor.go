@@ -13,6 +13,7 @@ import (
 
 	"github.com/joeyhipolito/orchestrator-cli/internal/core"
 	"github.com/joeyhipolito/orchestrator-cli/internal/event"
+	"github.com/joeyhipolito/orchestrator-cli/internal/git"
 	"github.com/joeyhipolito/orchestrator-cli/internal/sdk"
 )
 
@@ -55,12 +56,17 @@ func (e *CodexExecutor) Describe() core.RuntimeDescriptor {
 
 // Execute runs a Codex session for the given worker config.
 //
-// It invokes:
+// For implementer phases, it invokes:
 //
 //	codex exec --dangerously-bypass-approvals-and-sandbox --json
 //	           --skip-git-repo-check [-m model] [-C cwd] <objective>
 //
-// When config.ResumeSessionID is set (a prior thread_id), the invocation is:
+// For reviewer phases (RoleReviewer), it invokes:
+//
+//	codex review --dangerously-bypass-approvals-and-sandbox --json
+//	             --skip-git-repo-check --base <branch> [-m model] [-C cwd] <objective>
+//
+// When config.ResumeSessionID is set (a prior thread_id) on implementer phases:
 //
 //	codex exec resume --dangerously-bypass-approvals-and-sandbox --json
 //	                  --skip-git-repo-check <thread_id>
@@ -68,6 +74,9 @@ func (e *CodexExecutor) Describe() core.RuntimeDescriptor {
 // The executor streams the JSONL event log from stdout, emitting
 // WorkerOutput events for each text chunk and capturing the thread_id
 // returned by the "thread.started" event as the session ID.
+//
+// For review phases, the output is parsed into ReviewFindings format
+// (### Blockers and ### Warnings sections) expected by the review loop.
 func (e *CodexExecutor) Execute(
 	ctx context.Context,
 	config *core.WorkerConfig,
@@ -91,6 +100,12 @@ func (e *CodexExecutor) Execute(
 		cwd = config.TargetDir
 	}
 
+	// Dispatch to review path for RoleReviewer phases.
+	if config.Bundle.Role == core.RoleReviewer {
+		return e.executeReview(ctx, config, cwd, emitter, verbose, start)
+	}
+
+	// Implementer/default path
 	args := e.buildArgs(config, cwd)
 	cmd := exec.CommandContext(ctx, e.BinaryPath, args...)
 	cmd.Dir = cwd
@@ -244,6 +259,176 @@ func (e *CodexExecutor) Execute(
 	return output, sessionID, nil, nil
 }
 
+// executeReview runs a codex review session for review phases.
+// It invokes: codex review --base <branch> with the review objective.
+// The output is parsed into ReviewFindings format for use by the review loop.
+func (e *CodexExecutor) executeReview(
+	ctx context.Context,
+	config *core.WorkerConfig,
+	cwd string,
+	emitter event.Emitter,
+	verbose bool,
+	start time.Time,
+) (output, sessionID string, cost *sdk.CostInfo, err error) {
+	missionID := config.Bundle.WorkspaceID
+	phaseID := config.Bundle.PhaseID
+
+	// Get the current branch to use as the review base.
+	baseBranch, err := git.CurrentBranch(cwd)
+	if err != nil {
+		emitter.Emit(ctx, event.New(event.WorkerFailed, missionID, phaseID, config.Name, map[string]any{
+			"error": fmt.Sprintf("git.CurrentBranch: %v", err),
+		}))
+		return "", "", nil, fmt.Errorf("get current branch for review: %w", err)
+	}
+
+	args := e.buildReviewArgs(config, cwd, baseBranch)
+	cmd := exec.CommandContext(ctx, e.BinaryPath, args...)
+	cmd.Dir = cwd
+	cmd.Env = codexEnv()
+
+	if verbose {
+		fmt.Printf("[%s] codex review --base %s\n", config.Name, baseBranch)
+	}
+
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return "", "", nil, fmt.Errorf("codex stdout pipe: %w", err)
+	}
+	stderr, err := cmd.StderrPipe()
+	if err != nil {
+		return "", "", nil, fmt.Errorf("codex stderr pipe: %w", err)
+	}
+
+	if err := cmd.Start(); err != nil {
+		return "", "", nil, fmt.Errorf("start codex review: %w", err)
+	}
+
+	// Collect stderr for error messages.
+	var stderrLines []string
+	var stderrScanErr error
+	stderrDone := make(chan struct{})
+	go func() {
+		defer close(stderrDone)
+		sc := bufio.NewScanner(stderr)
+		for sc.Scan() {
+			stderrLines = append(stderrLines, sc.Text())
+		}
+		stderrScanErr = sc.Err()
+	}()
+
+	// Parse JSONL from stdout, accumulating text and capturing the thread_id.
+	var textParts []string
+	var capturedSessionID string
+	var lastEmit = start
+	var emittedLen int
+
+	scanner := bufio.NewScanner(stdout)
+	scanner.Buffer(make([]byte, 0, 4*1024*1024), 4*1024*1024)
+
+	for scanner.Scan() {
+		line := scanner.Bytes()
+		if len(line) == 0 {
+			continue
+		}
+
+		var raw map[string]json.RawMessage
+		if jsonErr := json.Unmarshal(line, &raw); jsonErr != nil {
+			continue
+		}
+
+		// Capture thread_id from any event.
+		if tid, ok := rawString(raw, "thread_id"); ok && capturedSessionID == "" {
+			capturedSessionID = tid
+		}
+
+		// Extract text from this event.
+		text := extractCodexText(raw)
+		if text != "" {
+			textParts = append(textParts, text)
+
+			// Throttle WorkerOutput events to ~1 Hz.
+			if time.Since(lastEmit) >= time.Second {
+				full := strings.Join(textParts, "")
+				chunk := full[emittedLen:]
+				if chunk != "" {
+					emitter.Emit(ctx, event.New(event.WorkerOutput, missionID, phaseID, config.Name, map[string]any{
+						"chunk":     chunk,
+						"streaming": true,
+					}))
+					emittedLen = len(full)
+				}
+				lastEmit = time.Now()
+			}
+		}
+	}
+
+	// Capture stdout scanner error.
+	stdoutScanErr := scanner.Err()
+
+	// Wait for stderr goroutine.
+	<-stderrDone
+
+	waitErr := cmd.Wait()
+	duration := time.Since(start)
+	output = strings.Join(textParts, "")
+
+	if capturedSessionID != "" {
+		sessionID = capturedSessionID
+	}
+
+	// A stdout scanner error means the JSONL output was corrupted or truncated.
+	if stdoutScanErr != nil {
+		return output, sessionID, nil, fmt.Errorf("codex review stdout scanner: %w", stdoutScanErr)
+	}
+
+	if waitErr != nil {
+		stderrText := strings.Join(stderrLines, "\n")
+		if stderrScanErr != nil {
+			stderrText += fmt.Sprintf(" [stderr truncated: %v]", stderrScanErr)
+		}
+		emitter.Emit(ctx, event.New(event.WorkerFailed, missionID, phaseID, config.Name, map[string]any{
+			"error":      waitErr.Error(),
+			"duration":   duration.String(),
+			"output_len": len(output),
+		}))
+		if verbose {
+			fmt.Printf("[%s] codex review failed in %s\n", config.Name, duration.Round(time.Second))
+		}
+		if exitErr, ok := waitErr.(*exec.ExitError); ok {
+			return output, sessionID, nil, fmt.Errorf("codex review exited %d: %s", exitErr.ExitCode(), stderrText)
+		}
+		return output, sessionID, nil, fmt.Errorf("codex review: %w", waitErr)
+	}
+
+	if stderrScanErr != nil {
+		return output, sessionID, nil, fmt.Errorf("codex review stderr scanner: %w", stderrScanErr)
+	}
+
+	// Write text output to WorkerDir.
+	if output != "" {
+		outPath := filepath.Join(config.WorkerDir, "output.md")
+		if writeErr := os.WriteFile(outPath, []byte(output), 0600); writeErr != nil && verbose {
+			fmt.Printf("[%s] warning: could not write output.md: %v\n", config.Name, writeErr)
+		}
+	}
+
+	emitter.Emit(ctx, event.New(event.WorkerOutput, missionID, phaseID, config.Name, map[string]any{
+		"output_len": len(output),
+		"duration":   duration.String(),
+	}))
+	emitter.Emit(ctx, event.New(event.WorkerCompleted, missionID, phaseID, config.Name, map[string]any{
+		"output_len": len(output),
+		"duration":   duration.String(),
+	}))
+
+	if verbose {
+		fmt.Printf("[%s] codex review completed in %s (%d chars)\n", config.Name, duration.Round(time.Second), len(output))
+	}
+
+	return output, sessionID, nil, nil
+}
+
 // buildArgs constructs the codex exec argument list.
 // When config.ResumeSessionID is non-empty, it builds a resume invocation.
 func (e *CodexExecutor) buildArgs(config *core.WorkerConfig, cwd string) []string {
@@ -266,6 +451,30 @@ func (e *CodexExecutor) buildArgs(config *core.WorkerConfig, cwd string) []strin
 	// codex exec [-m model] [-c model_reasoning_effort=<level>] [-C <cwd>] <objective>
 	// -C sets the working root inside codex (redundant with cmd.Dir but explicit).
 	args := append([]string{"exec"}, baseFlags...)
+	if config.Model != "" {
+		args = append(args, "-m", config.Model)
+	}
+	if config.EffortLevel != "" {
+		args = append(args, "-c", "model_reasoning_effort="+config.EffortLevel)
+	}
+	if cwd != "" {
+		args = append(args, "-C", cwd)
+	}
+	args = append(args, config.Bundle.Objective)
+	return args
+}
+
+// buildReviewArgs constructs the codex review argument list.
+// codex review --base <branch> [-m model] [-C <cwd>] <objective>
+func (e *CodexExecutor) buildReviewArgs(config *core.WorkerConfig, cwd string, baseBranch string) []string {
+	baseFlags := []string{
+		"--dangerously-bypass-approvals-and-sandbox",
+		"--json",
+		"--skip-git-repo-check",
+	}
+
+	args := append([]string{"review"}, baseFlags...)
+	args = append(args, "--base", baseBranch)
 	if config.Model != "" {
 		args = append(args, "-m", config.Model)
 	}

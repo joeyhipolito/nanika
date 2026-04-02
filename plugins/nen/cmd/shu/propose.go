@@ -11,9 +11,12 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"text/template"
 	"time"
+
+	"github.com/joeyhipolito/nen/internal/scan"
 )
 
 // --- Types shared with review.go ---
@@ -110,6 +113,172 @@ type proposeOutput struct {
 	Skipped  []skippedFinding `json:"skipped"`
 }
 
+const rateLimitMax = 5
+
+// proposeItem is either a single finding or a batch of 3+ findings sharing ability+category.
+type proposeItem struct {
+	isBatch  bool
+	findings []proposableFinding
+	severity string // highest severity for priority ordering
+}
+
+// severityWeight returns a sort weight (lower = higher priority).
+func severityWeight(s string) int {
+	switch s {
+	case "critical":
+		return 0
+	case "high":
+		return 1
+	default:
+		return 2
+	}
+}
+
+// buildRegularItems groups findings by ability+category. Groups of 3+ become a single batch
+// item; smaller groups are kept as individual items. Items are sorted severity-first.
+func buildRegularItems(findings []proposableFinding) []proposeItem {
+	type key struct{ ability, category string }
+	var order []key
+	groups := make(map[key][]proposableFinding)
+	seen := make(map[key]bool)
+	for _, f := range findings {
+		k := key{f.Ability, f.Category}
+		if !seen[k] {
+			order = append(order, k)
+			seen[k] = true
+		}
+		groups[k] = append(groups[k], f)
+	}
+
+	var items []proposeItem
+	for _, k := range order {
+		fs := groups[k]
+		sev := fs[0].Severity // SQL orders by severity; first is highest
+		if len(fs) >= 3 {
+			items = append(items, proposeItem{isBatch: true, findings: fs, severity: sev})
+		} else {
+			for _, f := range fs {
+				items = append(items, proposeItem{isBatch: false, findings: []proposableFinding{f}, severity: f.Severity})
+			}
+		}
+	}
+	sort.Slice(items, func(i, j int) bool {
+		return severityWeight(items[i].severity) < severityWeight(items[j].severity)
+	})
+	return items
+}
+
+// computeBatchDedupKey produces a stable key for a batch of findings sharing ability+category.
+func computeBatchDedupKey(ability, category string) string {
+	h := sha256.Sum256([]byte("batch:" + ability + ":" + category))
+	return fmt.Sprintf("%x", h[:8])
+}
+
+// batchMissionFilePath returns the mission file path for a batched ability+category group.
+func batchMissionFilePath(ability, category string) string {
+	home, _ := os.UserHomeDir()
+	date := time.Now().Format("2006-01-02")
+	slug := slugify(fmt.Sprintf("batch-%s-%s", ability, category))
+	if len(slug) > 60 {
+		slug = slug[:60]
+	}
+	return filepath.Join(home, ".alluka", "missions", "remediation", fmt.Sprintf("%s-%s.md", date, slug))
+}
+
+type batchFindingDetail struct {
+	ID          string
+	Title       string
+	Severity    string
+	Description string
+	Evidence    string
+}
+
+type batchMissionData struct {
+	TrackerIssue   string
+	FindingIDs     []string
+	Severity       string
+	Ability        string
+	Category       string
+	GeneratedAt    string
+	Count          int
+	FindingDetails []batchFindingDetail
+	SuccessCriteria []string
+}
+
+var batchMissionTemplate = template.Must(template.New("batch-mission").Parse(`---
+source: shu-propose
+tracker_issue: {{.TrackerIssue}}
+finding_ids:{{range .FindingIDs}}
+  - {{.}}{{end}}
+severity: {{.Severity}}
+ability: {{.Ability}}
+category: {{.Category}}
+generated_at: "{{.GeneratedAt}}"
+domain: dev
+target: repo:~/nanika
+---
+
+# Fix: {{.Count}} {{.Category}} findings in {{.Ability}}
+
+## Summary
+
+{{.Count}} findings in ability **{{.Ability}}**, category **{{.Category}}** require remediation.
+
+## Findings
+{{range .FindingDetails}}
+### {{.ID}}: {{.Title}} ({{.Severity}})
+
+{{.Description}}
+
+Evidence:
+{{.Evidence}}
+{{end}}
+PHASE: investigate | OBJECTIVE: Investigate all {{.Count}} {{.Category}} findings in {{.Ability}}. Identify root causes and common patterns. Document a remediation plan | PERSONA: senior-backend-engineer
+
+PHASE: fix | OBJECTIVE: Fix all {{.Count}} {{.Category}} findings in {{.Ability}} identified in the investigate phase. Add test coverage for each failure scenario | PERSONA: senior-backend-engineer | DEPENDS: investigate
+
+PHASE: verify | OBJECTIVE: Re-run the scanner for {{.Ability}} {{.Category}} to confirm all {{.Count}} findings are resolved. Run the full test suite | PERSONA: qa-engineer | DEPENDS: fix
+
+## Success Criteria
+{{range .SuccessCriteria}}
+- [ ] {{.}}{{end}}
+`))
+
+func generateBatchMission(ability, category string, findings []proposableFinding, trackerID string) (string, error) {
+	findingIDs := make([]string, len(findings))
+	details := make([]batchFindingDetail, len(findings))
+	for i, f := range findings {
+		findingIDs[i] = f.ID
+		details[i] = batchFindingDetail{
+			ID:          f.ID,
+			Title:       f.Title,
+			Severity:    f.Severity,
+			Description: f.Description,
+			Evidence:    formatEvidenceSummary(f.Evidence),
+		}
+	}
+	data := batchMissionData{
+		TrackerIssue:   trackerID,
+		FindingIDs:     findingIDs,
+		Severity:       findings[0].Severity, // highest (SQL-ordered)
+		Ability:        ability,
+		Category:       category,
+		GeneratedAt:    time.Now().UTC().Format(time.RFC3339),
+		Count:          len(findings),
+		FindingDetails: details,
+		SuccessCriteria: []string{
+			fmt.Sprintf("All %d %s findings in %s are resolved", len(findings), category, ability),
+			"Scanner re-run produces no new findings for this category",
+			"Test cases cover each identified failure mode",
+		},
+	}
+	var buf strings.Builder
+	if err := batchMissionTemplate.Execute(&buf, data); err != nil {
+		return "", fmt.Errorf("executing batch template: %w", err)
+	}
+	return buf.String(), nil
+}
+
 func runPropose(args []string) error {
 	fs := flag.NewFlagSet("propose", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
@@ -149,8 +318,15 @@ func runPropose(args []string) error {
 		return fmt.Errorf("querying tracker: %w", err)
 	}
 
+	proposalsDB, err := openProposalsDB()
+	if err != nil {
+		return fmt.Errorf("opening proposals db: %w", err)
+	}
+	defer proposalsDB.Close()
+
 	out := proposeOutput{Proposed: []proposal{}, Skipped: []skippedFinding{}}
 	proposedKeys := make(map[string]bool)
+	deferred := 0
 
 	// Separate review-blocker findings for grouped workspace handling.
 	var regularFindings, reviewBlockers []proposableFinding
@@ -162,80 +338,189 @@ func runPropose(args []string) error {
 		}
 	}
 
-	for _, f := range regularFindings {
-		key := computeDedupKey(f)
-
-		if proposedKeys[key] {
-			out.Skipped = append(out.Skipped, skippedFinding{
-				FindingID: f.ID,
-				Reason:    "duplicate of finding proposed in this batch",
-			})
-			continue
-		}
-
-		if issueID := findExistingIssue(existing, key); issueID != "" {
-			out.Skipped = append(out.Skipped, skippedFinding{
-				FindingID: f.ID,
-				Reason:    fmt.Sprintf("existing tracker issue %s covers same category", issueID),
-			})
-			continue
-		}
-
-		missionPath := missionFilePath(f)
-
-		if *dryRun {
-			content, _ := generateMission(f, "(dry-run)")
-			if !*jsonOut {
-				fmt.Printf("--- dry-run: %s ---\n%s\n---\n\n", f.ID, content)
+	// Group regular findings: 3+ in same ability+category → single batched issue.
+	// Items are sorted severity-first (critical → high → medium).
+	for _, item := range buildRegularItems(regularFindings) {
+		if len(out.Proposed) >= rateLimitMax {
+			deferred += len(item.findings)
+			for _, f := range item.findings {
+				out.Skipped = append(out.Skipped, skippedFinding{
+					FindingID: f.ID,
+					Reason:    "rate limit reached — deferred to next cycle",
+				})
 			}
+			continue
+		}
+
+		if item.isBatch {
+			ability := item.findings[0].Ability
+			category := item.findings[0].Category
+			key := computeBatchDedupKey(ability, category)
+
+			if proposedKeys[key] {
+				for _, f := range item.findings {
+					out.Skipped = append(out.Skipped, skippedFinding{FindingID: f.ID, Reason: "batch duplicate in this run"})
+				}
+				continue
+			}
+			if recent, err := wasRecentlyProposed(proposalsDB, key); err != nil {
+				return fmt.Errorf("checking proposal recency for batch %s/%s: %w", ability, category, err)
+			} else if recent {
+				for _, f := range item.findings {
+					out.Skipped = append(out.Skipped, skippedFinding{FindingID: f.ID, Reason: "proposed within the last 24 hours"})
+				}
+				continue
+			}
+			if issueID := findExistingIssue(existing, key); issueID != "" {
+				for _, f := range item.findings {
+					out.Skipped = append(out.Skipped, skippedFinding{FindingID: f.ID, Reason: fmt.Sprintf("existing tracker issue %s covers same category", issueID)})
+				}
+				continue
+			}
+
+			n := len(item.findings)
+			title := fmt.Sprintf("Fix: %d %s findings in %s", n, category, ability)
+			missionPath := batchMissionFilePath(ability, category)
+			findingIDs := make([]string, n)
+			for i, f := range item.findings {
+				findingIDs[i] = f.ID
+			}
+
+			if *dryRun {
+				if !*jsonOut {
+					fmt.Printf("--- dry-run batch: %d %s/%s findings ---\n", n, ability, category)
+				}
+				out.Proposed = append(out.Proposed, proposal{
+					TrackerIssue: "(dry-run)",
+					MissionFile:  missionPath,
+					FindingIDs:   findingIDs,
+					Severity:     item.severity,
+					Title:        title,
+				})
+				proposedKeys[key] = true
+				continue
+			}
+
+			priority := severityToPriority(item.severity)
+			var descBuf strings.Builder
+			fmt.Fprintf(&descBuf, "Mission: %s\n\nBatched Findings (%d):\n", missionPath, n)
+			for _, f := range item.findings {
+				fmt.Fprintf(&descBuf, "- %s: %s (%s)\n  Evidence:\n%s\n", f.ID, f.Title, f.Severity, formatEvidenceSummary(f.Evidence))
+			}
+			labels := fmt.Sprintf("auto,nen,%s,dedup:%s", ability, key)
+
+			trackerID, err := createTrackerIssue(title, priority, labels, descBuf.String())
+			if err != nil {
+				return fmt.Errorf("creating batch tracker issue for %s/%s: %w", ability, category, err)
+			}
+
+			content, err := generateBatchMission(ability, category, item.findings, trackerID)
+			if err != nil {
+				return fmt.Errorf("generating batch mission for %s/%s: %w", ability, category, err)
+			}
+			if err := os.MkdirAll(filepath.Dir(missionPath), 0o755); err != nil {
+				return fmt.Errorf("creating mission dir: %w", err)
+			}
+			if err := os.WriteFile(missionPath, []byte(content), 0o644); err != nil {
+				return fmt.Errorf("writing batch mission file: %w", err)
+			}
+			if err := recordProposed(proposalsDB, key); err != nil {
+				return fmt.Errorf("recording batch proposal for %s/%s: %w", ability, category, err)
+			}
+
 			out.Proposed = append(out.Proposed, proposal{
-				TrackerIssue: "(dry-run)",
+				TrackerIssue: trackerID,
+				MissionFile:  missionPath,
+				FindingIDs:   findingIDs,
+				Severity:     item.severity,
+				Title:        title,
+			})
+			proposedKeys[key] = true
+		} else {
+			f := item.findings[0]
+			key := computeDedupKey(f)
+
+			if proposedKeys[key] {
+				out.Skipped = append(out.Skipped, skippedFinding{FindingID: f.ID, Reason: "duplicate of finding proposed in this batch"})
+				continue
+			}
+			if recent, err := wasRecentlyProposed(proposalsDB, key); err != nil {
+				return fmt.Errorf("checking proposal recency for %s: %w", f.ID, err)
+			} else if recent {
+				out.Skipped = append(out.Skipped, skippedFinding{FindingID: f.ID, Reason: "proposed within the last 24 hours"})
+				continue
+			}
+			if issueID := findExistingIssue(existing, key); issueID != "" {
+				out.Skipped = append(out.Skipped, skippedFinding{FindingID: f.ID, Reason: fmt.Sprintf("existing tracker issue %s covers same category", issueID)})
+				continue
+			}
+
+			missionPath := missionFilePath(f)
+			if *dryRun {
+				content, _ := generateMission(f, "(dry-run)")
+				if !*jsonOut {
+					fmt.Printf("--- dry-run: %s ---\n%s\n---\n\n", f.ID, content)
+				}
+				out.Proposed = append(out.Proposed, proposal{
+					TrackerIssue: "(dry-run)",
+					MissionFile:  missionPath,
+					FindingIDs:   []string{f.ID},
+					Severity:     f.Severity,
+					Title:        "Fix: " + f.Title,
+				})
+				proposedKeys[key] = true
+				continue
+			}
+
+			priority := severityToPriority(f.Severity)
+			labels := fmt.Sprintf("auto,nen,%s,dedup:%s", f.Ability, key)
+			desc := fmt.Sprintf("Mission: %s\n\nFindings:\n- %s: %s (%s)\n\nEvidence:\n%s",
+				missionPath, f.ID, f.Title, f.Severity, formatEvidenceSummary(f.Evidence))
+
+			trackerID, err := createTrackerIssue("Fix: "+f.Title, priority, labels, desc)
+			if err != nil {
+				return fmt.Errorf("creating tracker issue for %s: %w", f.ID, err)
+			}
+
+			content, err := generateMission(f, trackerID)
+			if err != nil {
+				return fmt.Errorf("generating mission for %s: %w", f.ID, err)
+			}
+			if err := os.MkdirAll(filepath.Dir(missionPath), 0o755); err != nil {
+				return fmt.Errorf("creating mission dir: %w", err)
+			}
+			if err := os.WriteFile(missionPath, []byte(content), 0o644); err != nil {
+				return fmt.Errorf("writing mission file: %w", err)
+			}
+			if err := recordProposed(proposalsDB, key); err != nil {
+				return fmt.Errorf("recording proposal for %s: %w", f.ID, err)
+			}
+
+			out.Proposed = append(out.Proposed, proposal{
+				TrackerIssue: trackerID,
 				MissionFile:  missionPath,
 				FindingIDs:   []string{f.ID},
 				Severity:     f.Severity,
 				Title:        "Fix: " + f.Title,
 			})
 			proposedKeys[key] = true
-			continue
+			notifyChannels(trackerID, f)
 		}
-
-		// Create tracker issue first to get the ID for mission frontmatter
-		priority := severityToPriority(f.Severity)
-		labels := fmt.Sprintf("auto,nen,%s,dedup:%s", f.Ability, key)
-		desc := fmt.Sprintf("Mission: %s\n\nFindings:\n- %s: %s (%s)\n\nEvidence:\n%s",
-			missionPath, f.ID, f.Title, f.Severity, formatEvidenceSummary(f.Evidence))
-
-		trackerID, err := createTrackerIssue("Fix: "+f.Title, priority, labels, desc)
-		if err != nil {
-			return fmt.Errorf("creating tracker issue for %s: %w", f.ID, err)
-		}
-
-		// Generate and write mission file with tracker ID
-		content, err := generateMission(f, trackerID)
-		if err != nil {
-			return fmt.Errorf("generating mission for %s: %w", f.ID, err)
-		}
-		if err := os.MkdirAll(filepath.Dir(missionPath), 0o755); err != nil {
-			return fmt.Errorf("creating mission dir: %w", err)
-		}
-		if err := os.WriteFile(missionPath, []byte(content), 0o644); err != nil {
-			return fmt.Errorf("writing mission file: %w", err)
-		}
-
-		out.Proposed = append(out.Proposed, proposal{
-			TrackerIssue: trackerID,
-			MissionFile:  missionPath,
-			FindingIDs:   []string{f.ID},
-			Severity:     f.Severity,
-			Title:        "Fix: " + f.Title,
-		})
-		proposedKeys[key] = true
-
-		notifyChannels(trackerID, f)
 	}
 
 	// Process review-blocker findings grouped by workspace (scope_value).
 	for workspaceID, groupFindings := range groupReviewBlockers(reviewBlockers) {
+		if len(out.Proposed) >= rateLimitMax {
+			deferred += len(groupFindings)
+			for _, f := range groupFindings {
+				out.Skipped = append(out.Skipped, skippedFinding{
+					FindingID: f.ID,
+					Reason:    "rate limit reached — deferred to next cycle",
+				})
+			}
+			continue
+		}
+
 		key := computeDedupKey(groupFindings[0])
 		if proposedKeys[key] {
 			for _, f := range groupFindings {
@@ -246,11 +531,29 @@ func runPropose(args []string) error {
 			}
 			continue
 		}
+
+		if recent, err := wasRecentlyProposed(proposalsDB, key); err != nil {
+			return fmt.Errorf("checking proposal recency for workspace %s: %w", workspaceID, err)
+		} else if recent {
+			for _, f := range groupFindings {
+				out.Skipped = append(out.Skipped, skippedFinding{
+					FindingID: f.ID,
+					Reason:    "proposed within the last 24 hours",
+				})
+			}
+			continue
+		}
+
 		p, skipped, err := proposeReviewBlockerGroup(workspaceID, groupFindings, existing, *dryRun, *jsonOut)
 		if err != nil {
 			return fmt.Errorf("proposing review-blockers for workspace %s: %w", workspaceID, err)
 		}
 		out.Skipped = append(out.Skipped, skipped...)
+		if p != nil && !*dryRun {
+			if err := recordProposed(proposalsDB, key); err != nil {
+				return fmt.Errorf("recording proposal for workspace %s: %w", workspaceID, err)
+			}
+		}
 		if p != nil {
 			out.Proposed = append(out.Proposed, *p)
 			proposedKeys[key] = true
@@ -261,6 +564,9 @@ func runPropose(args []string) error {
 		return encodeJSON(out)
 	}
 
+	if deferred > 0 {
+		fmt.Printf("rate limit reached, %d findings deferred to next cycle\n", deferred)
+	}
 	if len(out.Proposed) > 0 {
 		fmt.Printf("Proposed %d remediation(s):\n", len(out.Proposed))
 		for _, p := range out.Proposed {
@@ -391,17 +697,72 @@ func queryProposableFindings(ctx context.Context) ([]proposableFinding, error) {
 
 func computeDedupKey(f proposableFinding) string {
 	h := sha256.Sum256([]byte(f.Ability + ":" + f.Category + ":" + f.ScopeKind + ":" + f.ScopeValue))
-	return fmt.Sprintf("%x", h[:4])
+	return fmt.Sprintf("%x", h[:8])
 }
 
 func findExistingIssue(issues []trackerIssue, dedupKey string) string {
 	label := "dedup:" + dedupKey
 	for _, issue := range issues {
-		if (issue.Status == "open" || issue.Status == "in-progress") && issue.hasLabel(label) {
+		if issue.hasLabel(label) {
 			return issue.displayID()
 		}
 	}
 	return ""
+}
+
+func proposalsDBPath() string {
+	dir, err := scan.Dir()
+	if err != nil {
+		home, _ := os.UserHomeDir()
+		return filepath.Join(home, ".alluka", "nen", "proposals.db")
+	}
+	return filepath.Join(dir, "nen", "proposals.db")
+}
+
+func openProposalsDB() (*sql.DB, error) {
+	path := proposalsDBPath()
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return nil, fmt.Errorf("create proposals db dir: %w", err)
+	}
+	db, err := sql.Open("sqlite", path+"?_journal_mode=WAL&_busy_timeout=5000")
+	if err != nil {
+		return nil, fmt.Errorf("open proposals.db: %w", err)
+	}
+	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS proposals (
+		dedup_key        TEXT PRIMARY KEY,
+		last_proposed_at DATETIME NOT NULL
+	)`); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("migrate proposals.db: %w", err)
+	}
+	return db, nil
+}
+
+func wasRecentlyProposed(db *sql.DB, dedupKey string) (bool, error) {
+	var lastAt string
+	err := db.QueryRow(`SELECT last_proposed_at FROM proposals WHERE dedup_key = ?`, dedupKey).Scan(&lastAt)
+	if err == sql.ErrNoRows {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("querying proposal for %s: %w", dedupKey, err)
+	}
+	t, err := time.Parse(time.RFC3339, lastAt)
+	if err != nil {
+		return false, fmt.Errorf("parsing last_proposed_at for %s: %w", dedupKey, err)
+	}
+	return time.Since(t) < 24*time.Hour, nil
+}
+
+func recordProposed(db *sql.DB, dedupKey string) error {
+	_, err := db.Exec(`INSERT INTO proposals (dedup_key, last_proposed_at)
+		VALUES (?, ?)
+		ON CONFLICT(dedup_key) DO UPDATE SET last_proposed_at = excluded.last_proposed_at`,
+		dedupKey, time.Now().UTC().Format(time.RFC3339))
+	if err != nil {
+		return fmt.Errorf("recording proposal for %s: %w", dedupKey, err)
+	}
+	return nil
 }
 
 func severityToPriority(severity string) string {

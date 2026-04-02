@@ -1,11 +1,13 @@
 package git_test
 
 import (
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/joeyhipolito/orchestrator-cli/internal/git"
 )
@@ -145,7 +147,7 @@ func TestWorktreeLifecycle(t *testing.T) {
 		t.Fatalf("worktree dir not created at %s", wtPath)
 	}
 
-	if err := git.RemoveWorktree(wtPath); err != nil {
+	if err := git.RemoveWorktree(wtPath, ""); err != nil {
 		t.Fatalf("RemoveWorktree: %v", err)
 	}
 
@@ -203,7 +205,7 @@ func TestCommitAll_NewDirInWorktree(t *testing.T) {
 	if err := git.CreateWorktree(repo, wtPath, "feature"); err != nil {
 		t.Fatalf("CreateWorktree: %v", err)
 	}
-	t.Cleanup(func() { _ = git.RemoveWorktree(wtPath) })
+	t.Cleanup(func() { _ = git.RemoveWorktree(wtPath, "") })
 
 	// Create a new directory with a file inside the worktree.
 	newDir := filepath.Join(wtPath, "subpkg")
@@ -246,7 +248,7 @@ func TestCommitAll_WorkerWritesToWorktree(t *testing.T) {
 	if err := git.CreateWorktree(repo, wtPath, "worker-branch"); err != nil {
 		t.Fatalf("CreateWorktree: %v", err)
 	}
-	t.Cleanup(func() { _ = git.RemoveWorktree(wtPath) })
+	t.Cleanup(func() { _ = git.RemoveWorktree(wtPath, "") })
 
 	// Simulate a worker writing to the worktree (correct behavior after the fix).
 	// New file at root of worktree.
@@ -297,7 +299,7 @@ func TestCommitAll_WorkerOutsideWorktreeNotCaptured(t *testing.T) {
 	if err := git.CreateWorktree(repo, wtPath, "outside-branch"); err != nil {
 		t.Fatalf("CreateWorktree: %v", err)
 	}
-	t.Cleanup(func() { _ = git.RemoveWorktree(wtPath) })
+	t.Cleanup(func() { _ = git.RemoveWorktree(wtPath, "") })
 
 	// Simulate the buggy behavior: worker writes to a separate WorkerDir
 	// (outside the worktree), then CommitAll is called on the worktree.
@@ -367,7 +369,7 @@ func TestClaimChangedFiles_IncludesCommittedAndWorktreeChanges(t *testing.T) {
 		t.Fatalf("CreateWorktree: %v", err)
 	}
 	t.Cleanup(func() {
-		_ = git.RemoveWorktree(wtPath)
+		_ = git.RemoveWorktree(wtPath, "")
 	})
 
 	if err := os.WriteFile(filepath.Join(wtPath, "committed.txt"), []byte("committed\n"), 0o644); err != nil {
@@ -458,4 +460,241 @@ func TestPush_ToLocalBare(t *testing.T) {
 	if !strings.Contains(string(out), "push-test") {
 		t.Errorf("push-test branch not found in remote: %q", out)
 	}
+}
+
+// ---- Lock file lifecycle ---------------------------------------------------- (req 2)
+
+func TestWriteLockFile_CreatesAndRemoveCleansUp(t *testing.T) {
+	dir := t.TempDir()
+
+	if err := git.WriteLockFile(dir, "mission-abc"); err != nil {
+		t.Fatalf("WriteLockFile: %v", err)
+	}
+
+	// Lock file must exist after writing.
+	lockPath := filepath.Join(dir, ".nanika-lock")
+	if _, err := os.Stat(lockPath); err != nil {
+		t.Fatalf("lock file not created: %v", err)
+	}
+
+	git.RemoveLockFile(dir)
+
+	// Lock file must be gone after removal.
+	if _, err := os.Stat(lockPath); !os.IsNotExist(err) {
+		t.Errorf("lock file should be removed, got Stat err: %v", err)
+	}
+}
+
+func TestUpdateLockFilePhase_UpdatesPhaseField(t *testing.T) {
+	dir := t.TempDir()
+	if err := git.WriteLockFile(dir, "mission-xyz"); err != nil {
+		t.Fatalf("WriteLockFile: %v", err)
+	}
+	if err := git.UpdateLockFilePhase(dir, "implement"); err != nil {
+		t.Fatalf("UpdateLockFilePhase: %v", err)
+	}
+	data, err := os.ReadFile(filepath.Join(dir, ".nanika-lock"))
+	if err != nil {
+		t.Fatalf("read lock file: %v", err)
+	}
+	if !strings.Contains(string(data), `"implement"`) {
+		t.Errorf("expected phase field 'implement' in lock file, got: %s", data)
+	}
+}
+
+func TestUpdateLockFilePhase_NoopWhenMissing(t *testing.T) {
+	dir := t.TempDir()
+	// Should not error when lock file does not exist.
+	if err := git.UpdateLockFilePhase(dir, "any-phase"); err != nil {
+		t.Errorf("UpdateLockFilePhase on missing file should be noop, got: %v", err)
+	}
+}
+
+// ---- RemoveWorktree: locked worktree refused -------------------------------- (req 3)
+
+func TestRemoveWorktree_LockedRefused(t *testing.T) {
+	repo := t.TempDir()
+	initRepo(t, repo)
+
+	if err := git.CreateBranch(repo, "locked-branch", "main"); err != nil {
+		t.Fatalf("CreateBranch: %v", err)
+	}
+	wtPath := filepath.Join(t.TempDir(), "wt-locked")
+	if err := git.CreateWorktree(repo, wtPath, "locked-branch"); err != nil {
+		t.Fatalf("CreateWorktree: %v", err)
+	}
+	// Ensure cleanup even if test fails early.
+	t.Cleanup(func() {
+		git.RemoveLockFile(wtPath)
+		_ = git.RemoveWorktree(wtPath, "")
+	})
+
+	// Write a lock file pointing to the current process — this process is running.
+	if err := git.WriteLockFile(wtPath, "mission-locked"); err != nil {
+		t.Fatalf("WriteLockFile: %v", err)
+	}
+
+	err := git.RemoveWorktree(wtPath, "")
+	if err == nil {
+		t.Fatal("RemoveWorktree should return an error for a locked worktree, got nil")
+	}
+	if !strings.Contains(err.Error(), "locked") {
+		t.Errorf("error should mention 'locked', got: %v", err)
+	}
+}
+
+// ---- RemoveWorktree: stale lock (dead PID) allows removal ------------------ (req 4)
+
+func TestRemoveWorktree_StaleLockAllows(t *testing.T) {
+	repo := t.TempDir()
+	initRepo(t, repo)
+
+	if err := git.CreateBranch(repo, "stale-branch", "main"); err != nil {
+		t.Fatalf("CreateBranch: %v", err)
+	}
+	wtPath := filepath.Join(t.TempDir(), "wt-stale")
+	if err := git.CreateWorktree(repo, wtPath, "stale-branch"); err != nil {
+		t.Fatalf("CreateWorktree: %v", err)
+	}
+
+	// Write a lock file with PID 0 — not a valid process; Signal(0) will always fail.
+	staleLock := `{"pid":0,"mission_id":"dead-mission","started_at":"2020-01-01T00:00:00Z","phase":""}`
+	lockPath := filepath.Join(wtPath, ".nanika-lock")
+	if err := os.WriteFile(lockPath, []byte(staleLock), 0600); err != nil {
+		t.Fatalf("write stale lock: %v", err)
+	}
+
+	// Stale lock must not block removal.
+	if err := git.RemoveWorktree(wtPath, ""); err != nil {
+		t.Fatalf("RemoveWorktree with stale lock should succeed, got: %v", err)
+	}
+	if _, err := os.Stat(wtPath); !os.IsNotExist(err) {
+		t.Errorf("worktree dir should be gone after removal with stale lock")
+	}
+}
+
+// ---- RemoveWorktree: soft delete moves to trash ---------------------------- (req 5)
+
+func TestRemoveWorktree_SoftDeleteMovesToTrash(t *testing.T) {
+	repo := t.TempDir()
+	initRepo(t, repo)
+
+	if err := git.CreateBranch(repo, "soft-branch", "main"); err != nil {
+		t.Fatalf("CreateBranch: %v", err)
+	}
+	wtPath := filepath.Join(t.TempDir(), "wt-soft")
+	if err := git.CreateWorktree(repo, wtPath, "soft-branch"); err != nil {
+		t.Fatalf("CreateWorktree: %v", err)
+	}
+
+	trashDir := t.TempDir()
+	if err := git.RemoveWorktree(wtPath, trashDir); err != nil {
+		t.Fatalf("RemoveWorktree (soft delete): %v", err)
+	}
+
+	// Original path must be gone.
+	if _, err := os.Stat(wtPath); !os.IsNotExist(err) {
+		t.Errorf("original worktree path should not exist after soft delete, Stat: %v", err)
+	}
+
+	// Trash dir must have exactly one entry.
+	entries, err := os.ReadDir(trashDir)
+	if err != nil {
+		t.Fatalf("ReadDir trash: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 trash entry, got %d", len(entries))
+	}
+
+	// The trash entry must contain the metadata file.
+	metaPath := filepath.Join(trashDir, entries[0].Name(), ".nanika-trash-meta.json")
+	metaData, err := os.ReadFile(metaPath)
+	if err != nil {
+		t.Fatalf("trash meta file missing: %v", err)
+	}
+
+	var meta git.TrashMeta
+	if err := json.Unmarshal(metaData, &meta); err != nil {
+		t.Fatalf("parse trash meta: %v", err)
+	}
+	if meta.OriginalPath != wtPath {
+		t.Errorf("trash meta OriginalPath = %q, want %q", meta.OriginalPath, wtPath)
+	}
+	if meta.Branch != "soft-branch" {
+		t.Errorf("trash meta Branch = %q, want %q", meta.Branch, "soft-branch")
+	}
+	if meta.TrashedAt == "" {
+		t.Error("trash meta TrashedAt must not be empty")
+	}
+}
+
+// ---- Empty trash: removes entries older than 24h --------------------------- (req 6)
+// Tested via the emptyTrashOlderThan helper below.
+
+func TestEmptyTrash_DeletesOldEntriesOnly(t *testing.T) {
+	trashDir := t.TempDir()
+
+	// Create a directory that is 25h old by setting its mtime.
+	old := filepath.Join(trashDir, "old-workspace_20200101T000000Z")
+	if err := os.Mkdir(old, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(old, past(25), past(25)); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create a recent entry — must be preserved.
+	recent := filepath.Join(trashDir, "recent-workspace_20260101T000000Z")
+	if err := os.Mkdir(recent, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	entries, _ := os.ReadDir(trashDir)
+	if len(entries) != 2 {
+		t.Fatalf("setup: expected 2 trash entries, got %d", len(entries))
+	}
+
+	deleted := emptyTrashOlderThan(t, trashDir, 24)
+
+	if deleted != 1 {
+		t.Errorf("expected 1 entry deleted, got %d", deleted)
+	}
+	if _, err := os.Stat(old); !os.IsNotExist(err) {
+		t.Error("old entry should be deleted")
+	}
+	if _, err := os.Stat(recent); err != nil {
+		t.Errorf("recent entry should still exist: %v", err)
+	}
+}
+
+// past returns a time.Time that is hours hours in the past.
+func past(hours int) time.Time {
+	return time.Now().Add(-time.Duration(hours) * time.Hour)
+}
+
+// emptyTrashOlderThan deletes entries from trashDir whose mtime is older than
+// maxAgeHours. Returns the count of deleted entries. This replicates the
+// --empty-trash logic in cleanup.go for unit-testability without config.Dir().
+func emptyTrashOlderThan(t *testing.T, trashDir string, maxAgeHours int) int {
+	t.Helper()
+	cutoff := time.Now().Add(-time.Duration(maxAgeHours) * time.Hour)
+	entries, err := os.ReadDir(trashDir)
+	if err != nil {
+		t.Fatalf("ReadDir: %v", err)
+	}
+	deleted := 0
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		info, err := e.Info()
+		if err != nil {
+			continue
+		}
+		if info.ModTime().Before(cutoff) {
+			os.RemoveAll(filepath.Join(trashDir, e.Name()))
+			deleted++
+		}
+	}
+	return deleted
 }

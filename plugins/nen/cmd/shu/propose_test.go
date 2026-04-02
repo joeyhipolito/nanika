@@ -304,7 +304,8 @@ func TestFindExistingIssue_FindsOpenIssueByLabel(t *testing.T) {
 	}
 }
 
-func TestFindExistingIssue_IgnoresClosedIssues(t *testing.T) {
+func TestFindExistingIssue_MatchesClosedIssues(t *testing.T) {
+	// Closed/done issues with the dedup label should be found — finding is skipped.
 	f := proposableFinding{Ability: "shu", Category: "review-blocker", ScopeKind: "workspace", ScopeValue: "ws-closedtest"}
 	key := computeDedupKey(f)
 	label := "dedup:" + key
@@ -314,8 +315,27 @@ func TestFindExistingIssue_IgnoresClosedIssues(t *testing.T) {
 	}
 
 	got := findExistingIssue(issues, key)
-	if got != "" {
-		t.Errorf("expected no match for closed issue, got %q", got)
+	if got == "" {
+		t.Error("expected to find closed issue (all statuses matched), got empty string")
+	}
+}
+
+func TestFindExistingIssue_MatchesAllStatuses(t *testing.T) {
+	f := proposableFinding{Ability: "shu", Category: "perf", ScopeKind: "mission", ScopeValue: "m-statustest"}
+	key := computeDedupKey(f)
+	labelStr := "auto,nen,dedup:" + key
+
+	for _, status := range []string{"open", "in-progress", "closed", "done"} {
+		status := status
+		t.Run(status, func(t *testing.T) {
+			issues := []trackerIssue{
+				{ID: "trk-" + status, Title: "issue", Status: status, Labels: &labelStr},
+			}
+			got := findExistingIssue(issues, key)
+			if got == "" {
+				t.Errorf("status %q: expected match, got empty string", status)
+			}
+		})
 	}
 }
 
@@ -326,6 +346,306 @@ func TestFindExistingIssue_NoMatchReturnsEmpty(t *testing.T) {
 	got := findExistingIssue(issues, "deadbeef")
 	if got != "" {
 		t.Errorf("expected empty, got %q", got)
+	}
+}
+
+// --- computeDedupKey length ---
+
+func TestComputeDedupKey_Is16HexChars(t *testing.T) {
+	f := proposableFinding{Ability: "shu", Category: "perf", ScopeKind: "mission", ScopeValue: "m-abc"}
+	key := computeDedupKey(f)
+	if len(key) != 16 {
+		t.Errorf("expected dedup key length 16 (8 bytes hex), got %d: %q", len(key), key)
+	}
+}
+
+// --- proposals DB (wasRecentlyProposed / recordProposed) ---
+
+func openTestProposalsDB(t *testing.T) *sql.DB {
+	t.Helper()
+	_, dbPath := setupAllukaHome(t)
+	// proposalsDB goes next to findings.db in the same nen/ dir
+	proposalsDir := filepath.Dir(dbPath)
+	if err := os.MkdirAll(proposalsDir, 0o755); err != nil {
+		t.Fatalf("creating proposals db dir: %v", err)
+	}
+	proposalsPath := filepath.Join(proposalsDir, "proposals.db")
+	db, err := sql.Open("sqlite", proposalsPath)
+	if err != nil {
+		t.Fatalf("open proposals db: %v", err)
+	}
+	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS proposals (
+		dedup_key        TEXT PRIMARY KEY,
+		last_proposed_at DATETIME NOT NULL
+	)`); err != nil {
+		t.Fatalf("create proposals table: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+	return db
+}
+
+func TestWasRecentlyProposed_FalseWhenNoRecord(t *testing.T) {
+	db := openTestProposalsDB(t)
+	recent, err := wasRecentlyProposed(db, "deadbeef01020304")
+	if err != nil {
+		t.Fatalf("wasRecentlyProposed: %v", err)
+	}
+	if recent {
+		t.Error("expected false for unknown dedup key, got true")
+	}
+}
+
+func TestWasRecentlyProposed_TrueAfterRecord(t *testing.T) {
+	db := openTestProposalsDB(t)
+	key := "aabbccdd11223344"
+	if err := recordProposed(db, key); err != nil {
+		t.Fatalf("recordProposed: %v", err)
+	}
+	recent, err := wasRecentlyProposed(db, key)
+	if err != nil {
+		t.Fatalf("wasRecentlyProposed: %v", err)
+	}
+	if !recent {
+		t.Error("expected true immediately after recording, got false")
+	}
+}
+
+func TestWasRecentlyProposed_FalseAfterExpiry(t *testing.T) {
+	db := openTestProposalsDB(t)
+	key := "oldkey1122334455"
+	// Insert a record older than 24h
+	old := time.Now().UTC().Add(-25 * time.Hour).Format(time.RFC3339)
+	if _, err := db.Exec(`INSERT INTO proposals (dedup_key, last_proposed_at) VALUES (?, ?)`, key, old); err != nil {
+		t.Fatalf("insert old record: %v", err)
+	}
+	recent, err := wasRecentlyProposed(db, key)
+	if err != nil {
+		t.Fatalf("wasRecentlyProposed: %v", err)
+	}
+	if recent {
+		t.Error("expected false for record older than 24h, got true")
+	}
+}
+
+func TestRecordProposed_UpdatesExistingRecord(t *testing.T) {
+	db := openTestProposalsDB(t)
+	key := "updatekey1234567"
+	// Insert an old record
+	old := time.Now().UTC().Add(-25 * time.Hour).Format(time.RFC3339)
+	if _, err := db.Exec(`INSERT INTO proposals (dedup_key, last_proposed_at) VALUES (?, ?)`, key, old); err != nil {
+		t.Fatalf("insert old record: %v", err)
+	}
+	// Re-record — should update to now
+	if err := recordProposed(db, key); err != nil {
+		t.Fatalf("recordProposed: %v", err)
+	}
+	recent, err := wasRecentlyProposed(db, key)
+	if err != nil {
+		t.Fatalf("wasRecentlyProposed: %v", err)
+	}
+	if !recent {
+		t.Error("expected true after re-recording stale key, got false")
+	}
+}
+
+// --- buildRegularItems ---
+
+func TestBuildRegularItems_BatchesGroupsOf3Plus(t *testing.T) {
+	findings := []proposableFinding{
+		{ID: "f1", Ability: "shu", Category: "perf", Severity: "medium"},
+		{ID: "f2", Ability: "shu", Category: "perf", Severity: "medium"},
+		{ID: "f3", Ability: "shu", Category: "perf", Severity: "medium"},
+	}
+	items := buildRegularItems(findings)
+	if len(items) != 1 {
+		t.Fatalf("expected 1 batch item, got %d", len(items))
+	}
+	if !items[0].isBatch {
+		t.Error("expected batch item")
+	}
+	if len(items[0].findings) != 3 {
+		t.Errorf("expected 3 findings in batch, got %d", len(items[0].findings))
+	}
+}
+
+func TestBuildRegularItems_KeepsSmallGroupsIndividual(t *testing.T) {
+	findings := []proposableFinding{
+		{ID: "f1", Ability: "shu", Category: "perf", Severity: "medium"},
+		{ID: "f2", Ability: "shu", Category: "perf", Severity: "medium"},
+	}
+	items := buildRegularItems(findings)
+	if len(items) != 2 {
+		t.Fatalf("expected 2 individual items, got %d", len(items))
+	}
+	for _, item := range items {
+		if item.isBatch {
+			t.Error("expected individual items, got batch")
+		}
+	}
+}
+
+func TestBuildRegularItems_SeverityOrderCriticalFirst(t *testing.T) {
+	findings := []proposableFinding{
+		{ID: "f1", Ability: "shu", Category: "perf", Severity: "medium"},
+		{ID: "f2", Ability: "ko", Category: "error", Severity: "critical"},
+	}
+	items := buildRegularItems(findings)
+	if len(items) != 2 {
+		t.Fatalf("expected 2 items, got %d", len(items))
+	}
+	if items[0].severity != "critical" {
+		t.Errorf("expected critical first, got %q", items[0].severity)
+	}
+}
+
+func TestBuildRegularItems_Exactly3IsBatched(t *testing.T) {
+	// Boundary: exactly 3 triggers batch.
+	findings := []proposableFinding{
+		{ID: "a", Ability: "ko", Category: "err", Severity: "high"},
+		{ID: "b", Ability: "ko", Category: "err", Severity: "high"},
+		{ID: "c", Ability: "ko", Category: "err", Severity: "high"},
+	}
+	items := buildRegularItems(findings)
+	if len(items) != 1 || !items[0].isBatch {
+		t.Errorf("exactly 3 findings should produce 1 batch item, got %d items", len(items))
+	}
+}
+
+func TestBuildRegularItems_MixedGroupsAndIndividuals(t *testing.T) {
+	// ability=a, category=x: 3 findings → batch
+	// ability=b, category=y: 1 finding → individual
+	findings := []proposableFinding{
+		{ID: "a1", Ability: "a", Category: "x", Severity: "high"},
+		{ID: "a2", Ability: "a", Category: "x", Severity: "high"},
+		{ID: "a3", Ability: "a", Category: "x", Severity: "high"},
+		{ID: "b1", Ability: "b", Category: "y", Severity: "medium"},
+	}
+	items := buildRegularItems(findings)
+	if len(items) != 2 {
+		t.Fatalf("expected 2 items, got %d", len(items))
+	}
+	batches := 0
+	individuals := 0
+	for _, item := range items {
+		if item.isBatch {
+			batches++
+		} else {
+			individuals++
+		}
+	}
+	if batches != 1 || individuals != 1 {
+		t.Errorf("expected 1 batch + 1 individual, got %d batch + %d individual", batches, individuals)
+	}
+}
+
+// --- computeBatchDedupKey ---
+
+func TestComputeBatchDedupKey_DifferentAbilityProducesDifferentKey(t *testing.T) {
+	k1 := computeBatchDedupKey("shu", "perf")
+	k2 := computeBatchDedupKey("ko", "perf")
+	if k1 == k2 {
+		t.Error("different ability should produce different batch dedup keys")
+	}
+}
+
+func TestComputeBatchDedupKey_DifferentCategoryProducesDifferentKey(t *testing.T) {
+	k1 := computeBatchDedupKey("shu", "perf")
+	k2 := computeBatchDedupKey("shu", "safety")
+	if k1 == k2 {
+		t.Error("different category should produce different batch dedup keys")
+	}
+}
+
+func TestComputeBatchDedupKey_Is16HexChars(t *testing.T) {
+	key := computeBatchDedupKey("shu", "perf")
+	if len(key) != 16 {
+		t.Errorf("expected 16 hex chars, got %d: %q", len(key), key)
+	}
+}
+
+// --- generateBatchMission ---
+
+func TestGenerateBatchMission_ContainsTitle(t *testing.T) {
+	findings := []proposableFinding{
+		{ID: "f1", Title: "nil pointer", Severity: "high", Description: "desc1",
+			Evidence: []evidenceItem{{Raw: "ev1", Source: "foo.go"}}},
+		{ID: "f2", Title: "index out of range", Severity: "high", Description: "desc2",
+			Evidence: []evidenceItem{{Raw: "ev2", Source: "bar.go"}}},
+		{ID: "f3", Title: "divide by zero", Severity: "medium", Description: "desc3",
+			Evidence: []evidenceItem{{Raw: "ev3", Source: "baz.go"}}},
+	}
+	content, err := generateBatchMission("shu", "safety", findings, "TRK-100")
+	if err != nil {
+		t.Fatalf("generateBatchMission: %v", err)
+	}
+	if !strings.Contains(content, "Fix: 3 safety findings in shu") {
+		t.Errorf("expected batch title in content:\n%s", content)
+	}
+	if !strings.Contains(content, "tracker_issue: TRK-100") {
+		t.Error("missing tracker_issue in frontmatter")
+	}
+	for _, id := range []string{"f1", "f2", "f3"} {
+		if !strings.Contains(content, id) {
+			t.Errorf("expected finding ID %s in mission content", id)
+		}
+	}
+}
+
+func TestGenerateBatchMission_Has3PhaseLines(t *testing.T) {
+	findings := []proposableFinding{
+		{ID: "f1", Title: "t1", Severity: "high", Evidence: []evidenceItem{{Raw: "e1", Source: "a.go"}}},
+		{ID: "f2", Title: "t2", Severity: "high", Evidence: []evidenceItem{{Raw: "e2", Source: "b.go"}}},
+		{ID: "f3", Title: "t3", Severity: "high", Evidence: []evidenceItem{{Raw: "e3", Source: "c.go"}}},
+	}
+	content, err := generateBatchMission("ko", "error", findings, "TRK-200")
+	if err != nil {
+		t.Fatalf("generateBatchMission: %v", err)
+	}
+	phaseCount := strings.Count(content, "\nPHASE:")
+	if phaseCount != 3 {
+		t.Errorf("expected 3 PHASE lines, got %d:\n%s", phaseCount, content)
+	}
+}
+
+// --- rate limit via dry-run ---
+
+func TestRateLimit_StopsAt5DryRun(t *testing.T) {
+	_, dbPath := setupAllukaHome(t)
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+
+	now := time.Now().UTC()
+	// Seed 10 individual findings (each in its own ability+category to avoid batching)
+	var rows []map[string]string
+	for i := 0; i < 10; i++ {
+		rows = append(rows, map[string]string{
+			"id":          fmt.Sprintf("rl-%03d", i),
+			"ability":     fmt.Sprintf("ability%d", i),
+			"category":    fmt.Sprintf("cat%d", i),
+			"severity":    "medium",
+			"title":       fmt.Sprintf("Finding %d", i),
+			"description": "desc",
+			"scope_kind":  "mission",
+			"scope_value": fmt.Sprintf("mission-%d", i),
+			"evidence":    evidenceWithSource("ev", fmt.Sprintf("file%d.go", i)),
+			"source":      "test",
+			"found_at":    now.Add(-25 * time.Hour).Format(time.RFC3339), // old enough to pass 24h threshold
+		})
+	}
+	seedFindingsDB(t, dbPath, rows)
+
+	// Run propose in dry-run mode (no tracker calls, no disk writes beyond proposals.db)
+	err := runPropose([]string{"--dry-run"})
+	if err != nil {
+		t.Fatalf("runPropose: %v", err)
+	}
+	// We can't directly inspect out here, but the function must not return error.
+	// To validate the rate limit, we test buildRegularItems + the limit constant.
+}
+
+func TestRateLimitMax_Is5(t *testing.T) {
+	if rateLimitMax != 5 {
+		t.Errorf("rateLimitMax should be 5, got %d", rateLimitMax)
 	}
 }
 

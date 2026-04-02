@@ -74,6 +74,11 @@ func (d *DB) migrate() error {
 		return fmt.Errorf("migrating schedule_type column: %w", err)
 	}
 
+	// Add priority column to jobs if missing (default P1).
+	if err := d.migratePriorityColumn(); err != nil {
+		return fmt.Errorf("migrating priority column: %w", err)
+	}
+
 	return nil
 }
 
@@ -160,6 +165,35 @@ func (d *DB) migrateScheduleTypeColumn() error {
 	}
 	// Backfill random-daily jobs.
 	_, err = d.db.Exec(`UPDATE jobs SET schedule_type = 'random' WHERE random_window IS NOT NULL AND random_window != ''`)
+	return err
+}
+
+// migratePriorityColumn adds the priority column to jobs if it doesn't exist (default P1).
+func (d *DB) migratePriorityColumn() error {
+	rows, err := d.db.Query(`PRAGMA table_info(jobs)`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var cid int
+		var name, colType string
+		var notNull int
+		var dfltValue sql.NullString
+		var pk int
+		if err := rows.Scan(&cid, &name, &colType, &notNull, &dfltValue, &pk); err != nil {
+			return err
+		}
+		if name == "priority" {
+			return nil // already migrated
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+
+	_, err = d.db.Exec(`ALTER TABLE jobs ADD COLUMN priority TEXT NOT NULL DEFAULT 'P1'`)
 	return err
 }
 
@@ -373,6 +407,7 @@ type Job struct {
 	TimeoutSec   int
 	ScheduleType string // "cron", "random", "at", "every", "delay"
 	RandomWindow string // "H:MM-H:MM" for random-daily jobs; empty for cron jobs
+	Priority     string // "P0", "P1" (default); P0 jobs run during peak hours
 	LastRunAt    *time.Time
 	NextRunAt    *time.Time
 	CreatedAt    time.Time
@@ -433,7 +468,7 @@ func (d *DB) CreateJob(ctx context.Context, name, command, schedule, shell, rand
 func (d *DB) GetJob(ctx context.Context, id int64) (*Job, error) {
 	row := d.db.QueryRowContext(ctx,
 		`SELECT id, name, command, schedule, shell, enabled, timeout_sec,
-		        schedule_type, random_window, last_run_at, next_run_at, created_at, updated_at
+		        schedule_type, random_window, priority, last_run_at, next_run_at, created_at, updated_at
 		 FROM jobs WHERE id = ?`, id)
 	return scanJob(row)
 }
@@ -442,7 +477,7 @@ func (d *DB) GetJob(ctx context.Context, id int64) (*Job, error) {
 func (d *DB) GetJobByName(ctx context.Context, name string) (*Job, error) {
 	row := d.db.QueryRowContext(ctx,
 		`SELECT id, name, command, schedule, shell, enabled, timeout_sec,
-		        schedule_type, random_window, last_run_at, next_run_at, created_at, updated_at
+		        schedule_type, random_window, priority, last_run_at, next_run_at, created_at, updated_at
 		 FROM jobs WHERE name = ?`, name)
 	return scanJob(row)
 }
@@ -451,7 +486,7 @@ func (d *DB) GetJobByName(ctx context.Context, name string) (*Job, error) {
 func (d *DB) ListJobs(ctx context.Context) ([]Job, error) {
 	rows, err := d.db.QueryContext(ctx,
 		`SELECT id, name, command, schedule, shell, enabled, timeout_sec,
-		        schedule_type, random_window, last_run_at, next_run_at, created_at, updated_at
+		        schedule_type, random_window, priority, last_run_at, next_run_at, created_at, updated_at
 		 FROM jobs ORDER BY name`)
 	if err != nil {
 		return nil, fmt.Errorf("listing jobs: %w", err)
@@ -499,6 +534,17 @@ func (d *DB) SetNextRunAt(ctx context.Context, id int64, t *time.Time) error {
 	return nil
 }
 
+// SetPriority updates a job's priority field ("P0", "P1", etc.).
+func (d *DB) SetPriority(ctx context.Context, id int64, priority string) error {
+	_, err := d.db.ExecContext(ctx,
+		`UPDATE jobs SET priority = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE id = ?`,
+		priority, id)
+	if err != nil {
+		return fmt.Errorf("setting priority for job %d: %w", id, err)
+	}
+	return nil
+}
+
 // DeleteJob removes a job and cascades to its runs.
 func (d *DB) DeleteJob(ctx context.Context, id int64) error {
 	_, err := d.db.ExecContext(ctx, `DELETE FROM jobs WHERE id = ?`, id)
@@ -516,12 +562,12 @@ type scanner interface {
 func scanJob(s scanner) (*Job, error) {
 	var j Job
 	var enabled int
-	var scheduleType, randomWindow, lastRunAt, nextRunAt, createdAt, updatedAt sql.NullString
+	var scheduleType, randomWindow, priority, lastRunAt, nextRunAt, createdAt, updatedAt sql.NullString
 
 	if err := s.Scan(
 		&j.ID, &j.Name, &j.Command, &j.Schedule, &j.Shell,
 		&enabled, &j.TimeoutSec,
-		&scheduleType, &randomWindow, &lastRunAt, &nextRunAt, &createdAt, &updatedAt,
+		&scheduleType, &randomWindow, &priority, &lastRunAt, &nextRunAt, &createdAt, &updatedAt,
 	); err != nil {
 		if err == sql.ErrNoRows {
 			return nil, fmt.Errorf("job not found")
@@ -535,6 +581,10 @@ func scanJob(s scanner) (*Job, error) {
 	}
 	if randomWindow.Valid {
 		j.RandomWindow = randomWindow.String
+	}
+	j.Priority = "P1" // default
+	if priority.Valid && priority.String != "" {
+		j.Priority = priority.String
 	}
 
 	if lastRunAt.Valid {
@@ -717,7 +767,7 @@ type JobWithLastExitCode struct {
 func (d *DB) ListJobsWithLastExitCode(ctx context.Context) ([]JobWithLastExitCode, error) {
 	rows, err := d.db.QueryContext(ctx, `
 		SELECT j.id, j.name, j.command, j.schedule, j.shell, j.enabled, j.timeout_sec,
-		       j.random_window, j.last_run_at, j.next_run_at, j.created_at, j.updated_at,
+		       j.schedule_type, j.random_window, j.priority, j.last_run_at, j.next_run_at, j.created_at, j.updated_at,
 		       (SELECT r.exit_code FROM runs r WHERE r.job_id = j.id ORDER BY r.started_at DESC LIMIT 1) AS last_exit_code
 		FROM jobs j
 		ORDER BY j.name`)
@@ -730,21 +780,28 @@ func (d *DB) ListJobsWithLastExitCode(ctx context.Context) ([]JobWithLastExitCod
 	for rows.Next() {
 		var j Job
 		var enabled int
-		var randomWindow, lastRunAt, nextRunAt, createdAt, updatedAt sql.NullString
+		var scheduleType, randomWindow, priority, lastRunAt, nextRunAt, createdAt, updatedAt sql.NullString
 		var lastExitCode sql.NullInt64
 
 		if err := rows.Scan(
 			&j.ID, &j.Name, &j.Command, &j.Schedule, &j.Shell,
 			&enabled, &j.TimeoutSec,
-			&randomWindow, &lastRunAt, &nextRunAt, &createdAt, &updatedAt,
+			&scheduleType, &randomWindow, &priority, &lastRunAt, &nextRunAt, &createdAt, &updatedAt,
 			&lastExitCode,
 		); err != nil {
 			return nil, fmt.Errorf("scanning job row: %w", err)
 		}
 
 		j.Enabled = enabled == 1
+		if scheduleType.Valid {
+			j.ScheduleType = scheduleType.String
+		}
 		if randomWindow.Valid {
 			j.RandomWindow = randomWindow.String
+		}
+		j.Priority = "P1"
+		if priority.Valid && priority.String != "" {
+			j.Priority = priority.String
 		}
 		if lastRunAt.Valid {
 			t, _ := time.Parse(time.RFC3339, lastRunAt.String)
@@ -776,7 +833,7 @@ func (d *DB) ListJobsWithLastExitCode(ctx context.Context) ([]JobWithLastExitCod
 func (d *DB) ListJobsMissingNextRun(ctx context.Context) ([]Job, error) {
 	rows, err := d.db.QueryContext(ctx,
 		`SELECT id, name, command, schedule, shell, enabled, timeout_sec,
-		        schedule_type, random_window, last_run_at, next_run_at, created_at, updated_at
+		        schedule_type, random_window, priority, last_run_at, next_run_at, created_at, updated_at
 		 FROM jobs WHERE enabled = 1 AND next_run_at IS NULL
 		   AND schedule_type NOT IN ('at', 'delay')`)
 	if err != nil {
@@ -802,7 +859,7 @@ func (d *DB) ListUpcomingJobs(ctx context.Context, limit int) ([]Job, error) {
 	}
 	rows, err := d.db.QueryContext(ctx, `
 		SELECT id, name, command, schedule, shell, enabled, timeout_sec,
-		       schedule_type, random_window, last_run_at, next_run_at, created_at, updated_at
+		       schedule_type, random_window, priority, last_run_at, next_run_at, created_at, updated_at
 		FROM jobs
 		WHERE enabled = 1 AND next_run_at IS NOT NULL
 		ORDER BY next_run_at ASC

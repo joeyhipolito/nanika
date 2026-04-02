@@ -32,7 +32,7 @@ func TestBuildPRBody_ContainsRequiredFields(t *testing.T) {
 		"## Files Changed",
 		"`cmd/run.go`",
 		"`internal/git/pr.go`",
-		"via orchestrator",
+		"nanika orchestrator",
 	}
 	for _, want := range checks {
 		if !strings.Contains(body, want) {

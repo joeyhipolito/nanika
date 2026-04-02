@@ -5,9 +5,11 @@ import {
   LineChart, Line, CartesianGrid,
 } from 'recharts'
 import { useMetrics } from '../hooks/useMetrics'
-import { claude, neutral } from '../colors'
+import type { RecentMission } from '../types'
+import { claude, neutral, status as statusColors } from '../colors'
 import { Badge } from './ui/badge'
 import { Button } from './ui/button'
+import { ActivityHeatmap } from './ActivityHeatmap'
 
 function formatDuration(s: number): string {
   if (s < 60) return `${s.toFixed(0)}s`
@@ -39,17 +41,34 @@ export function MetricsPanel() {
   const [last, setLast] = useState(25)
   const { metrics, loading, error, refresh } = useMetrics(last)
 
+  // Deduplicate recent by workspace_id — keeps highest-priority status per workspace
+  // as a frontend fallback if the backend sends multiple records for the same workspace.
+  const dedupeByWorkspace = (missions: RecentMission[]) => {
+    const STATUS_PRIORITY: Record<string, number> = { completed: 4, partial: 3, cancelled: 2, failed: 1, in_progress: 0 }
+    const seen = new Map<string, typeof missions[0]>()
+    for (const m of missions) {
+      const existing = seen.get(m.workspace_id)
+      if (!existing || (STATUS_PRIORITY[m.status] ?? -1) > (STATUS_PRIORITY[existing.status] ?? -1)) {
+        seen.set(m.workspace_id, m)
+      }
+    }
+    return Array.from(seen.values())
+  }
+
   const domainData = metrics
     ? Object.entries(metrics.by_domain).map(([domain, stats]) => ({
         domain: domain.length > 12 ? domain.slice(0, 12) + '…' : domain,
         completed: stats.completed,
         failed: stats.failed,
         cancelled: stats.cancelled,
+        partial: stats.partial ?? 0,
       }))
     : []
 
+  const dedupedRecent = metrics ? dedupeByWorkspace(metrics.recent) : []
+
   const trendData = metrics
-    ? metrics.recent
+    ? dedupedRecent
         .slice()
         .reverse()
         .map((m, i) => ({
@@ -60,7 +79,7 @@ export function MetricsPanel() {
     : []
 
   const personaData = metrics
-    ? Object.entries(metrics.by_persona)
+    ? Object.entries(metrics.phases_by_persona)
         .map(([name, stats]) => ({
           name: name.length > 14 ? name.slice(0, 14) + '…' : name,
           phases: stats.phases,
@@ -74,11 +93,12 @@ export function MetricsPanel() {
   const pieData = metrics
     ? [
         { name: 'Completed', value: metrics.completed, color: claude.chart1 },
+        { name: 'Partial', value: metrics.partial ?? 0, color: statusColors.warning },
         { name: 'Failed', value: metrics.failed, color: claude.chart2 },
         { name: 'Cancelled', value: metrics.cancelled, color: claude.chart3 },
         {
           name: 'Other',
-          value: Math.max(0, metrics.total - metrics.completed - metrics.failed - metrics.cancelled),
+          value: Math.max(0, metrics.total - metrics.completed - (metrics.partial ?? 0) - metrics.failed - metrics.cancelled),
           color: claude.chart4,
         },
       ].filter(d => d.value > 0)
@@ -126,12 +146,18 @@ export function MetricsPanel() {
           <div className="metrics-stats">
             <div className="metrics-stat">
               <span className="metrics-stat-value">{metrics.total}</span>
-              <span className="metrics-stat-label">total</span>
+              <span className="metrics-stat-label">missions</span>
             </div>
             <div className="metrics-stat">
               <span className="metrics-stat-value metrics-stat-value--green">{metrics.completed}</span>
               <span className="metrics-stat-label">completed</span>
             </div>
+            {(metrics.partial ?? 0) > 0 && (
+              <div className="metrics-stat">
+                <span className="metrics-stat-value" style={{ color: statusColors.warning }}>{metrics.partial}</span>
+                <span className="metrics-stat-label">partial</span>
+              </div>
+            )}
             <div className="metrics-stat">
               <span className="metrics-stat-value metrics-stat-value--red">{metrics.failed}</span>
               <span className="metrics-stat-label">failed</span>
@@ -162,6 +188,7 @@ export function MetricsPanel() {
                     />
                     <Tooltip {...TOOLTIP_STYLE} />
                     <Bar dataKey="completed" stackId="s" fill={claude.chart1} />
+                    <Bar dataKey="partial" stackId="s" fill={statusColors.warning} />
                     <Bar dataKey="failed" stackId="s" fill={claude.chart2} />
                     <Bar dataKey="cancelled" stackId="s" fill={claude.chart3} radius={[2, 2, 0, 0]} />
                   </BarChart>
@@ -265,12 +292,20 @@ export function MetricsPanel() {
             )}
           </div>
 
+          {/* Activity heatmap */}
+          {dedupedRecent.length > 0 && (
+            <div className="metrics-chart-section">
+              <h4 className="metrics-chart-title">Activity (last 6 months)</h4>
+              <ActivityHeatmap recent={dedupedRecent} />
+            </div>
+          )}
+
           {/* Recent missions */}
-          {metrics.recent.length > 0 && (
+          {dedupedRecent.length > 0 && (
             <div className="metrics-recent">
               <h4 className="metrics-chart-title">Recent</h4>
               <ul className="metrics-recent-list">
-                {metrics.recent.map((m, i) => (
+                {dedupedRecent.map((m, i) => (
                   <li key={i} className="metrics-recent-item">
                     <Badge
                       variant="outline"

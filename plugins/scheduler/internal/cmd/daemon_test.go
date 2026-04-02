@@ -2,12 +2,15 @@ package cmd
 
 import (
 	"context"
+	"fmt"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
 
-	"github.com/joeyhipolito/nanika-scheduler/internal/db"
 	cronutil "github.com/joeyhipolito/nanika-scheduler/internal/cron"
+	"github.com/joeyhipolito/nanika-scheduler/internal/db"
+	"github.com/joeyhipolito/nanika-scheduler/internal/executor"
 )
 
 // setupTestDB creates a fresh in-memory SQLite database for testing.
@@ -572,5 +575,104 @@ func BenchmarkBackfillNextRunAt(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		backfillNextRunAt(ctx, d)
+	}
+}
+
+// writePeakCfg writes a peak-hours.json to a temp dir and returns that dir.
+// Setting enabled=true with a 0–24 UTC window makes IsPeak return true on any
+// UTC weekday regardless of wall-clock time.
+func writePeakCfg(t *testing.T, enabled bool) string {
+	t.Helper()
+	home := t.TempDir()
+	alluka := filepath.Join(home, ".alluka")
+	if err := os.MkdirAll(alluka, 0o755); err != nil {
+		t.Fatalf("writePeakCfg: mkdir: %v", err)
+	}
+	content := fmt.Sprintf(
+		`{"enabled":%v,"start_hour":0,"end_hour":24,"timezone":"UTC"}`,
+		enabled,
+	)
+	if err := os.WriteFile(filepath.Join(alluka, "peak-hours.json"), []byte(content), 0o644); err != nil {
+		t.Fatalf("writePeakCfg: write: %v", err)
+	}
+	return home
+}
+
+// TestRunDueJobs_PeakDeferred verifies that non-P0 jobs are not dispatched
+// during peak hours (their next_run_at stays in the past, unchanged).
+func TestRunDueJobs_PeakDeferred(t *testing.T) {
+	if wd := time.Now().UTC().Weekday(); wd == time.Saturday || wd == time.Sunday {
+		t.Skip("peak package excludes weekends; run on a weekday")
+	}
+	d := setupTestDB(t)
+	ctx := context.Background()
+
+	// Create a P1 (non-priority-0) cron job due in the past.
+	id, err := d.CreateJob(ctx, "non-p0-job", "echo non-p0",
+		"0 * * * *", "/bin/sh", "", "cron", 0)
+	if err != nil {
+		t.Fatalf("CreateJob: %v", err)
+	}
+	if err := d.SetPriority(ctx, id, "P1"); err != nil {
+		t.Fatalf("SetPriority: %v", err)
+	}
+	past := time.Now().Add(-2 * time.Minute)
+	if err := d.SetNextRunAt(ctx, id, &past); err != nil {
+		t.Fatalf("SetNextRunAt: %v", err)
+	}
+
+	// Set HOME so peak.LoadConfig returns enabled=true (all-UTC-weekday window).
+	t.Setenv("HOME", writePeakCfg(t, true))
+
+	exec := executor.New(d, "/bin/sh", 2)
+	runDueJobs(ctx, d, exec, false)
+
+	// Job should NOT have been dispatched: next_run_at must remain in the past.
+	j, err := d.GetJob(ctx, id)
+	if err != nil {
+		t.Fatalf("GetJob after runDueJobs: %v", err)
+	}
+	if j.NextRunAt == nil || !j.NextRunAt.Before(time.Now()) {
+		t.Errorf("non-P0 job should be deferred during peak: next_run_at = %v (expected past value ~%v)",
+			j.NextRunAt, past)
+	}
+}
+
+// TestRunDueJobs_P0RunsDuringPeak verifies that P0 jobs ARE dispatched even
+// during peak hours, and that next_run_at advances to the future after the run.
+func TestRunDueJobs_P0RunsDuringPeak(t *testing.T) {
+	if wd := time.Now().UTC().Weekday(); wd == time.Saturday || wd == time.Sunday {
+		t.Skip("peak package excludes weekends; run on a weekday")
+	}
+	d := setupTestDB(t)
+	ctx := context.Background()
+
+	// Create a P0 cron job due in the past.
+	id, err := d.CreateJob(ctx, "p0-job", "echo p0",
+		"0 * * * *", "/bin/sh", "", "cron", 0)
+	if err != nil {
+		t.Fatalf("CreateJob: %v", err)
+	}
+	if err := d.SetPriority(ctx, id, "P0"); err != nil {
+		t.Fatalf("SetPriority: %v", err)
+	}
+	past := time.Now().Add(-2 * time.Minute)
+	if err := d.SetNextRunAt(ctx, id, &past); err != nil {
+		t.Fatalf("SetNextRunAt: %v", err)
+	}
+
+	// Set HOME so peak.LoadConfig returns enabled=true (all-UTC-weekday window).
+	t.Setenv("HOME", writePeakCfg(t, true))
+
+	exec := executor.New(d, "/bin/sh", 2)
+	runDueJobs(ctx, d, exec, false)
+
+	// P0 job should have been dispatched and next_run_at advanced.
+	j, err := d.GetJob(ctx, id)
+	if err != nil {
+		t.Fatalf("GetJob after runDueJobs: %v", err)
+	}
+	if j.NextRunAt == nil || !j.NextRunAt.After(time.Now()) {
+		t.Errorf("P0 job should run during peak: next_run_at = %v (expected future)", j.NextRunAt)
 	}
 }

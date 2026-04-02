@@ -52,12 +52,13 @@ type executorRegistry map[core.Runtime]PhaseExecutor
 
 var runtimeWarningWriter io.Writer = os.Stdout
 
-// defaultRegistry returns the production registry with RuntimeClaude
-// pre-registered as the sole executor. Additional runtimes are registered
-// by calling Engine.RegisterExecutor before the first Execute call.
+// defaultRegistry returns the production registry with RuntimeClaude and
+// RuntimeCodex pre-registered. Additional runtimes can be registered by
+// calling Engine.RegisterExecutor before the first Execute call.
 func defaultRegistry() executorRegistry {
 	return executorRegistry{
 		core.RuntimeClaude: ClaudeExecutor{},
+		core.RuntimeCodex:  NewCodexExecutor(),
 	}
 }
 

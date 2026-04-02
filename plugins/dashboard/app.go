@@ -1363,6 +1363,10 @@ func (a *App) GetMetrics() (string, error) {
 		if err := json.Unmarshal([]byte(line), &rec); err != nil {
 			continue
 		}
+		// Filter test/synthetic workspaces and zero-duration records.
+		if strings.HasPrefix(rec.WorkspaceID, "ws-") || strings.HasPrefix(rec.WorkspaceID, "test-") || rec.DurationSec == 0 {
+			continue
+		}
 		records = append(records, rec)
 	}
 	if err := sc.Err(); err != nil {
@@ -1434,6 +1438,10 @@ func (a *App) GetMetrics() (string, error) {
 				continue
 			}
 			wsID := we.Name()
+			// Skip test/synthetic workspace directories.
+			if strings.HasPrefix(wsID, "ws-") || strings.HasPrefix(wsID, "test-") {
+				continue
+			}
 			// Only count workspaces that have a checkpoint and a cancelled event.
 			cp := loadLocalCheckpoint(wsID)
 			if cp == nil {

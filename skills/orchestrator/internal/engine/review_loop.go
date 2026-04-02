@@ -354,6 +354,98 @@ func (e *Engine) injectReReviewPhase(originReview *core.Phase, fixPhase *core.Ph
 	return reReview
 }
 
+// mergeReviewFindings combines findings from two review executors (Claude and
+// Codex) into a single ReviewFindings. Blockers are deduplicated: two entries
+// are considered the same when they share the same Location AND their
+// descriptions are substantially similar (one contains the other, or they share
+// at least half their non-trivial words). When a duplicate is found the entry
+// with the longer description is kept — it typically has more actionable detail.
+// Warnings are unioned without deduplication.
+func mergeReviewFindings(claude, codex ReviewFindings) ReviewFindings {
+	merged := ReviewFindings{
+		Warnings: append(append([]ReviewItem{}, claude.Warnings...), codex.Warnings...),
+	}
+	merged.Blockers = deduplicateBlockers(append(append([]ReviewItem{}, claude.Blockers...), codex.Blockers...))
+	return merged
+}
+
+func deduplicateBlockers(items []ReviewItem) []ReviewItem {
+	out := make([]ReviewItem, 0, len(items))
+	for _, candidate := range items {
+		dup := false
+		for j, existing := range out {
+			if blockersAreSimilar(existing, candidate) {
+				if len(candidate.Description) > len(existing.Description) {
+					out[j] = candidate
+				}
+				dup = true
+				break
+			}
+		}
+		if !dup {
+			out = append(out, candidate)
+		}
+	}
+	return out
+}
+
+// blockersAreSimilar returns true when a and b describe the same finding.
+// Two blockers match when their locations agree (both empty, or both equal)
+// AND their descriptions overlap substantially.
+func blockersAreSimilar(a, b ReviewItem) bool {
+	if a.Location != b.Location {
+		return false
+	}
+	da := strings.ToLower(strings.TrimSpace(a.Description))
+	db := strings.ToLower(strings.TrimSpace(b.Description))
+	if da == db {
+		return true
+	}
+	if strings.Contains(da, db) || strings.Contains(db, da) {
+		return true
+	}
+	return reviewWordOverlap(da, db) >= 0.5
+}
+
+// reviewWordOverlap returns the Jaccard similarity of the non-trivial words in
+// two description strings. Returns 0 when either string is empty after
+// filtering.
+func reviewWordOverlap(a, b string) float64 {
+	wa, wb := reviewWordSet(a), reviewWordSet(b)
+	if len(wa) == 0 || len(wb) == 0 {
+		return 0
+	}
+	shared := 0
+	for w := range wa {
+		if wb[w] {
+			shared++
+		}
+	}
+	maxLen := len(wa)
+	if len(wb) > maxLen {
+		maxLen = len(wb)
+	}
+	return float64(shared) / float64(maxLen)
+}
+
+var reviewTrivialWords = map[string]bool{
+	"the": true, "a": true, "an": true, "is": true, "in": true, "on": true,
+	"at": true, "to": true, "of": true, "and": true, "or": true, "for": true,
+	"with": true, "this": true, "that": true, "it": true, "be": true,
+}
+
+func reviewWordSet(s string) map[string]bool {
+	words := strings.Fields(s)
+	set := make(map[string]bool, len(words))
+	for _, w := range words {
+		w = strings.TrimRight(w, ".,;:!?—")
+		if w != "" && !reviewTrivialWords[w] {
+			set[w] = true
+		}
+	}
+	return set
+}
+
 // emitReviewFindings emits a review.findings_emitted event carrying all parsed
 // findings from a review gate. Called unconditionally from handleReviewLoop so
 // that:

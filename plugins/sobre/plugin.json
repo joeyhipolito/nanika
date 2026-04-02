@@ -1,0 +1,29 @@
+{
+  "name": "sobre",
+  "version": "0.1.0",
+  "api_version": 1,
+  "description": "Personal finance CLI for managing accounts, transactions, and budgets. SQLite-backed with category tracking and reporting.",
+  "icon": "Wallet",
+  "binary": "sobre",
+  "build": "go build -ldflags \"-s -w\" -o bin/sobre ./cmd/sobre-cli",
+  "install": "ln -sf $(pwd)/bin/sobre ~/bin/sobre",
+  "tags": ["finance", "budgeting", "cli", "sqlite"],
+  "ui": true,
+  "actions": {
+    "query status": {
+      "command": "sobre query status --json",
+      "description": "Configuration and database status",
+      "output": "status"
+    },
+    "query items": {
+      "command": "sobre query items --json",
+      "description": "List configured items",
+      "output": "items"
+    },
+    "query actions": {
+      "command": "sobre query actions --json",
+      "description": "Available CLI actions",
+      "output": "actions"
+    }
+  }
+}

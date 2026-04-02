@@ -297,13 +297,14 @@ func (e *Engine) executeSequential(ctx context.Context, plan *core.Plan, start t
 		// Check whether this completed phase is a review gate with blockers,
 		// and if so inject a fix phase. The index loop will reach it on the
 		// next iteration because len(plan.Phases) is re-evaluated.
-		if fixPhase := e.handleReviewLoop(ctx, phase, output); fixPhase != nil {
+		if fixPhase := e.handleReviewLoop(ctx, phase, output, priorContext); fixPhase != nil {
 			e.phases[fixPhase.ID] = fixPhase
 			if e.config.Verbose {
 				fmt.Printf("[engine] review loop: injected fix phase %s\n", fixPhase.Name)
 			}
 		}
 
+		e.commitPhaseWork(phase)
 		e.saveCheckpoint(ctx)
 		phaseOutputs[phase.ID] = output
 	}
@@ -478,6 +479,8 @@ func (e *Engine) executeParallel(ctx context.Context, plan *core.Plan, start tim
 				if e.config.Verbose {
 					fmt.Printf("[engine] phase %s completed\n", phase.Name)
 				}
+
+				e.commitPhaseWork(phase)
 			}
 
 			e.saveCheckpoint(ctx)
@@ -508,6 +511,7 @@ func (e *Engine) executePhase(ctx context.Context, phase *core.Phase, priorConte
 	phase.Status = core.StatusRunning
 	now := time.Now()
 	phase.StartTime = &now
+	e.updateLockPhase(phase.Name)
 	phaseID := phaseRuntimeID(phase)
 
 	// Inherit workspace-level target dir when the phase has not specified its own.
@@ -1174,9 +1178,17 @@ func (e *Engine) skipRemainingSequential(ctx context.Context, plan *core.Plan, f
 //  3. When the loop is exhausted the final unresolved blockers are still
 //     visible via the findings event emitted in step 1.
 //
+// When phase.Runtime == RuntimeBoth the review is executed by both Claude
+// (already completed — output is the Claude result) and CodexExecutor
+// (executed here via runSecondaryExecutor). Findings from both are merged
+// via mergeReviewFindings before driving the fix loop.
+//
+// priorContext is variadic so existing callers (tests) remain compatible.
+// Production callers should pass the phase's dependency output string.
+//
 // Only called from executeSequential — the parallel executor does not support
 // dynamic phase injection in v1.
-func (e *Engine) handleReviewLoop(ctx context.Context, phase *core.Phase, output string) *core.Phase {
+func (e *Engine) handleReviewLoop(ctx context.Context, phase *core.Phase, output string, priorContext ...string) *core.Phase {
 	if !e.IsReviewGate(phase) {
 		return nil
 	}
@@ -1196,6 +1208,27 @@ func (e *Engine) handleReviewLoop(ctx context.Context, phase *core.Phase, output
 		}
 		// Loop exhausted — no retry available; fall through as pass-open.
 		return nil
+	}
+
+	// For RuntimeBoth review phases, run CodexExecutor as a second reviewer
+	// and merge its findings with the Claude findings already parsed above.
+	if phase.Runtime == core.RuntimeBoth {
+		pc := ""
+		if len(priorContext) > 0 {
+			pc = priorContext[0]
+		}
+		codexOutput, err := e.runSecondaryExecutor(ctx, phase, pc, e.resolveExecutor(core.RuntimeCodex))
+		if err != nil {
+			if e.config.Verbose {
+				fmt.Printf("[engine] review loop: codex secondary executor failed for %s: %v — using Claude findings only\n", phase.Name, err)
+			}
+		} else {
+			findings = mergeReviewFindings(findings, ParseReviewFindings(codexOutput))
+			if e.config.Verbose {
+				fmt.Printf("[engine] review loop: merged findings from both executors for %s: %d blocker(s), %d warning(s)\n",
+					phase.Name, len(findings.Blockers), len(findings.Warnings))
+			}
+		}
 	}
 
 	// Always emit findings — warnings and unresolved blockers must not be lost.
@@ -1230,6 +1263,60 @@ func (e *Engine) handleReviewLoop(ctx context.Context, phase *core.Phase, output
 	}
 
 	return fixPhase
+}
+
+// runSecondaryExecutor spawns a lightweight worker and executes it with ex,
+// bypassing quota gating, retries, and phase-state mutations. It is used
+// exclusively for the CodexExecutor leg of RuntimeBoth review phases.
+//
+// A phase clone with a "-codex" suffix is used so worker.Spawn creates a
+// distinct worker directory and resolves Codex-appropriate model names
+// without mutating the original phase.
+func (e *Engine) runSecondaryExecutor(ctx context.Context, phase *core.Phase, priorContext string, ex PhaseExecutor) (string, error) {
+	clone := *phase
+	clone.ID = phase.ID + "-codex"
+	clone.Runtime = core.RuntimeCodex
+
+	bundle := core.ContextBundle{
+		Objective:      phase.Objective,
+		MissionContext: extractMissionContext(e.plan.Task),
+		SkillIndex:     e.skillIndex,
+		Constraints:    phase.Constraints,
+		PriorContext:   priorContext,
+		Domain:         e.workspace.Domain,
+		WorkspaceID:    e.workspace.ID,
+		PhaseID:        clone.ID,
+		TargetDir:      phase.TargetDir,
+		Handoffs:       e.buildHandoffs(phase),
+		Role:           phase.Role,
+		Runtime:        core.RuntimeCodex,
+	}
+
+	config, err := worker.Spawn(e.workspace.Path, &clone, bundle)
+	if err != nil {
+		return "", fmt.Errorf("spawn secondary worker: %w", err)
+	}
+
+	if e.config.ForcedModel != "" {
+		config.Model = e.config.ForcedModel
+	}
+	if config.MaxTurns <= 0 {
+		if e.config.MaxTurns > 0 {
+			config.MaxTurns = e.config.MaxTurns
+		} else {
+			config.MaxTurns = 50
+		}
+	}
+	config.StallTimeout = phase.StallTimeout
+	if config.StallTimeout == 0 && e.config.StallTimeout > 0 {
+		config.StallTimeout = e.config.StallTimeout
+	}
+
+	output, _, _, err := ex.Execute(ctx, config, e.emitter, e.config.Verbose)
+	if err != nil {
+		return "", fmt.Errorf("secondary executor: %w", err)
+	}
+	return output, nil
 }
 
 // saveCheckpoint persists plan state and emits system.checkpoint_saved.
@@ -1412,4 +1499,53 @@ func extractSlugFromTask(taskHeader string) string {
 		}
 	}
 	return ""
+}
+
+// updateLockPhase updates the phase field in the worktree lock file when a phase starts.
+// No-op when git isolation is not active.
+func (e *Engine) updateLockPhase(phaseName string) {
+	if e.workspace.WorktreePath == "" {
+		return
+	}
+	if err := git.UpdateLockFilePhase(e.workspace.WorktreePath, phaseName); err != nil && e.config.Verbose {
+		fmt.Printf("[engine] lock file update failed: %v\n", err)
+	}
+}
+
+// commitPhaseWork commits all changes in the workspace worktree after a phase
+// completes successfully. It is a no-op when git isolation is not active.
+// Nothing-to-commit is silently ignored; other errors are logged but do not
+// fail the phase.
+func (e *Engine) commitPhaseWork(phase *core.Phase) {
+	if e.workspace.WorktreePath == "" {
+		return
+	}
+	obj := phase.Objective
+	if len(obj) > 72 {
+		obj = obj[:72]
+	}
+	msg := fmt.Sprintf("phase %s: %s", phase.Name, obj)
+
+	hasChanges, err := git.HasUncommittedChanges(e.workspace.WorktreePath)
+	if err != nil {
+		if e.config.Verbose {
+			fmt.Printf("[engine] phase %s: git status check failed: %v\n", phase.Name, err)
+		}
+		return
+	}
+	if !hasChanges {
+		return
+	}
+
+	if err := git.CommitAll(e.workspace.WorktreePath, msg); err != nil {
+		if e.config.Verbose {
+			fmt.Printf("[engine] phase %s: commit failed: %v\n", phase.Name, err)
+		}
+		return
+	}
+
+	hash, err := git.HeadSHA(e.workspace.WorktreePath)
+	if err == nil && len(hash) >= 8 {
+		fmt.Printf("[engine] phase %s: committed %s\n", phase.Name, hash[:8])
+	}
 }

@@ -517,7 +517,7 @@ function AbilitiesTab() {
   return (
     <div className="flex flex-col gap-3 p-4 flex-1 overflow-y-auto">
       <div style={{ fontSize: 12, color: neutral.textSecondary }}>
-        {nenHealth.abilities.length} ability{nenHealth.abilities.length !== 1 ? 'ies' : ''}
+        {nenHealth.abilities.length !== 1 ? `${nenHealth.abilities.length} abilities` : '1 ability'}
       </div>
 
       {nenHealth.loading && <div style={{ fontSize: 12, color: neutral.textSecondary }}>Loading…</div>}

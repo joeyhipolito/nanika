@@ -33,19 +33,20 @@ import (
 )
 
 var (
-	resume       string
-	noLearnings  bool
-	noReview     bool
-	gateMode     string
-	templateName string
-	saveTemplate string
-	gitIsolate   bool
-	noGit        bool
-	createPR     bool
-	noDraft      bool
-	codexReview  bool
-	noComment    bool
-	stallTimeout string
+	resume        string
+	noLearnings   bool
+	noReview      bool
+	reviewRuntime string
+	gateMode      string
+	templateName  string
+	saveTemplate  string
+	gitIsolate    bool
+	noGit         bool
+	createPR      bool
+	noDraft       bool
+	codexReview   bool
+	noComment     bool
+	stallTimeout  string
 )
 
 func init() {
@@ -67,6 +68,7 @@ Use --save-template to freeze a plan after execution:
 	runCmd.Flags().StringVar(&resume, "resume", "", "resume from workspace path")
 	runCmd.Flags().BoolVar(&noLearnings, "no-learnings", false, "skip learning retrieval and injection")
 	runCmd.Flags().BoolVar(&noReview, "no-review", false, "skip automatic review-phase injection after decomposition")
+	runCmd.Flags().StringVar(&reviewRuntime, "review-runtime", "", "runtime for auto-injected review phases (claude, codex, both); default uses policy")
 	runCmd.Flags().StringVar(&gateMode, "gate-mode", "block", "quality gate mode: block (fail phase on bad output) or warn (log and continue)")
 	runCmd.Flags().StringVar(&templateName, "template", "", "run from a saved template (skips decomposition)")
 	runCmd.Flags().StringVar(&saveTemplate, "save-template", "", "save plan as reusable template after execution")
@@ -232,6 +234,14 @@ func runTask(cmd *cobra.Command, args []string) error {
 		tc.SkipReviewInjection = true
 	}
 
+	// Wire --review-runtime flag: set runtime for auto-injected review phases.
+	if reviewRuntime != "" {
+		if tc == nil {
+			tc = &decompose.TargetContext{}
+		}
+		tc.ReviewRuntime = core.Runtime(reviewRuntime)
+	}
+
 	// Persist target ID to workspace so audit ingestion can map workspace→repo.
 	// Also persist task_type so resumed missions use the same classification
 	// without re-deriving it from the task text.
@@ -271,6 +281,14 @@ func runTask(cmd *cobra.Command, args []string) error {
 		if err := setupGitIsolation(ws, task, emitter, missionID); err != nil {
 			return fmt.Errorf("git isolation setup: %w", err)
 		}
+	}
+
+	if ws != nil && ws.WorktreePath != "" {
+		lockedPath := ws.WorktreePath
+		if lErr := git.WriteLockFile(lockedPath, missionID); lErr != nil && verbose {
+			fmt.Printf("warning: could not write lock file: %v\n", lErr)
+		}
+		defer git.RemoveLockFile(lockedPath)
 	}
 
 	// Advisory file-claim registry: claim the repo root for this mission so
@@ -2274,7 +2292,11 @@ func removeGitWorktree(ws *core.Workspace) {
 	if ws == nil || ws.WorktreePath == "" {
 		return
 	}
-	if err := git.RemoveWorktree(ws.WorktreePath); err != nil {
+	trashDir := ""
+	if base, err := config.Dir(); err == nil {
+		trashDir = filepath.Join(base, "trash")
+	}
+	if err := git.RemoveWorktree(ws.WorktreePath, trashDir); err != nil {
 		fmt.Printf("warning: could not remove worktree: %v\n", err)
 	}
 }

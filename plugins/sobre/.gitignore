@@ -1,0 +1,6 @@
+bin/
+sobre-cli
+.DS_Store
+*.swp
+*.swo
+*~

@@ -235,6 +235,34 @@ func TestContractResult_ErrorMessage_Unsatisfied(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// RuntimeBoth sentinel
+// ---------------------------------------------------------------------------
+
+// TestRuntimeBoth_Value ensures the constant is defined and distinct from the
+// other two named runtimes. The sentinel value "both" is used by ParsePhases
+// when the PHASE line has RUNTIME: both.
+func TestRuntimeBoth_Value(t *testing.T) {
+	if RuntimeBoth == "" {
+		t.Fatal("RuntimeBoth must be non-empty")
+	}
+	if RuntimeBoth == RuntimeClaude {
+		t.Fatalf("RuntimeBoth must differ from RuntimeClaude (%q)", RuntimeClaude)
+	}
+	if RuntimeBoth == RuntimeCodex {
+		t.Fatalf("RuntimeBoth must differ from RuntimeCodex (%q)", RuntimeCodex)
+	}
+}
+
+// TestRuntimeBoth_Effective verifies that RuntimeBoth.Effective() returns itself
+// (not RuntimeClaude), so the engine can detect the sentinel and dispatch to
+// both executors.
+func TestRuntimeBoth_Effective(t *testing.T) {
+	if RuntimeBoth.Effective() != RuntimeBoth {
+		t.Errorf("RuntimeBoth.Effective() = %q, want %q", RuntimeBoth.Effective(), RuntimeBoth)
+	}
+}
+
+// ---------------------------------------------------------------------------
 // SelectRuntime — runtime-selection policy
 // ---------------------------------------------------------------------------
 

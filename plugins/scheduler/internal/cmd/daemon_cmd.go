@@ -14,6 +14,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/joeyhipolito/nen/peak"
 	"github.com/spf13/cobra"
 
 	"github.com/joeyhipolito/nanika-scheduler/internal/config"
@@ -231,6 +232,13 @@ func runDueJobs(ctx context.Context, d *db.DB, exec *executor.Executor, notify b
 		return
 	}
 
+	// Load peak-hours config once per tick (file read; cheap).
+	peakCfg, err := peak.LoadConfig()
+	if err != nil {
+		log.Printf("peak: error loading config: %v", err)
+	}
+	inPeak := peak.IsPeak(peakCfg)
+
 	// Launch all due jobs concurrently; ListUpcomingJobs is sorted ASC so we can break early.
 	type pending struct {
 		job db.Job
@@ -257,6 +265,10 @@ func runDueJobs(ctx context.Context, d *db.DB, exec *executor.Executor, notify b
 		if runningSet[j.ID] {
 			log.Printf("[debug] job %d (%s): next_run_at=%s now=%s decision=skip (still running)",
 				j.ID, j.Name, nextRunAt.Format(time.RFC3339), now.Format(time.RFC3339))
+			continue
+		}
+		if inPeak && j.Priority != "P0" {
+			log.Printf("peak hours: deferring non-P0 job %s until off-peak", j.Name)
 			continue
 		}
 		missed := now.Sub(nextRunAt) > time.Minute

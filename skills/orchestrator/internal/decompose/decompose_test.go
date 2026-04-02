@@ -2325,6 +2325,152 @@ PHASE: impl | OBJECTIVE: Implement API | PERSONA: senior-backend-engineer | SKIL
 	}
 }
 
+// TestParsePhases_RuntimeBoth verifies that RUNTIME: both parses to RuntimeBoth.
+func TestParsePhases_RuntimeBoth(t *testing.T) {
+	input := `PHASE: build | OBJECTIVE: Build feature | PERSONA: senior-backend-engineer | RUNTIME: both`
+	phases, err := ParsePhases(input, nil)
+	if err != nil {
+		t.Fatalf("ParsePhases: %v", err)
+	}
+	if len(phases) != 1 {
+		t.Fatalf("len(phases) = %d, want 1", len(phases))
+	}
+	if phases[0].Runtime != core.RuntimeBoth {
+		t.Errorf("Runtime = %q, want %q", phases[0].Runtime, core.RuntimeBoth)
+	}
+}
+
+// TestParsePhases_RuntimeCaseInsensitive verifies that RUNTIME values are
+// normalized to lowercase so "CODEX", "Codex", and "codex" all resolve the same.
+func TestParsePhases_RuntimeCaseInsensitive(t *testing.T) {
+	cases := []struct {
+		rawRuntime  string
+		wantRuntime core.Runtime
+	}{
+		{"codex", core.RuntimeCodex},
+		{"CODEX", core.RuntimeCodex},
+		{"Codex", core.RuntimeCodex},
+		{"CLAUDE", core.RuntimeClaude},
+		{"Claude", core.RuntimeClaude},
+		{"BOTH", core.RuntimeBoth},
+		{"Both", core.RuntimeBoth},
+	}
+	for _, c := range cases {
+		input := `PHASE: build | OBJECTIVE: Build it | PERSONA: senior-backend-engineer | RUNTIME: ` + c.rawRuntime
+		phases, err := ParsePhases(input, nil)
+		if err != nil {
+			t.Fatalf("RUNTIME %q: ParsePhases error: %v", c.rawRuntime, err)
+		}
+		if phases[0].Runtime != c.wantRuntime {
+			t.Errorf("RUNTIME %q: got %q, want %q", c.rawRuntime, phases[0].Runtime, c.wantRuntime)
+		}
+	}
+}
+
+// TestParsePhases_RuntimeUnknownIgnored verifies that an unrecognized RUNTIME
+// value is silently dropped (zero value) so applyRuntimePolicy fills it in.
+func TestParsePhases_RuntimeUnknownIgnored(t *testing.T) {
+	input := `PHASE: build | OBJECTIVE: Build it | PERSONA: senior-backend-engineer | RUNTIME: unknown-runtime`
+	phases, err := ParsePhases(input, nil)
+	if err != nil {
+		t.Fatalf("ParsePhases: %v", err)
+	}
+	if phases[0].Runtime != "" {
+		t.Errorf("unknown RUNTIME should be empty (zero), got %q", phases[0].Runtime)
+	}
+}
+
+// TestEnsureCodeReviewPhase_ReviewRuntime verifies that the auto-injected
+// review phase picks up tc.ReviewRuntime when set.
+func TestEnsureCodeReviewPhase_ReviewRuntime(t *testing.T) {
+	persona.Load()
+	// Two implementer phases trigger injection via hasCodeProducingPhase.
+	plan := &core.Plan{
+		Task: "implement a cache layer",
+		Phases: []*core.Phase{
+			{
+				ID:        "phase-1",
+				Name:      "plan",
+				Objective: "Design the cache layer",
+				Persona:   "architect",
+				Role:      core.RolePlanner,
+				Status:    core.StatusPending,
+			},
+			{
+				ID:        "phase-2",
+				Name:      "implement",
+				Objective: "Implement the cache layer",
+				Persona:   "senior-backend-engineer",
+				Role:      core.RoleImplementer,
+				Status:    core.StatusPending,
+			},
+		},
+		ExecutionMode: "sequential",
+	}
+
+	tc := &TargetContext{ReviewRuntime: core.RuntimeCodex}
+	ensureCodeReviewPhase(plan, tc)
+
+	var review *core.Phase
+	for _, p := range plan.Phases {
+		if p.PersonaSelectionMethod == core.SelectionRequiredReview {
+			review = p
+			break
+		}
+	}
+	if review == nil {
+		t.Fatal("no review phase injected")
+	}
+	if review.Runtime != core.RuntimeCodex {
+		t.Errorf("injected review Runtime = %q, want %q", review.Runtime, core.RuntimeCodex)
+	}
+}
+
+// TestEnsureCodeReviewPhase_ReviewRuntimeEmpty verifies that when ReviewRuntime
+// is not set the injected review phase has no explicit runtime (policy will fill it).
+func TestEnsureCodeReviewPhase_ReviewRuntimeEmpty(t *testing.T) {
+	persona.Load()
+	// Two implementer phases trigger injection via hasCodeProducingPhase.
+	plan := &core.Plan{
+		Task: "implement a cache layer",
+		Phases: []*core.Phase{
+			{
+				ID:        "phase-1",
+				Name:      "plan",
+				Objective: "Design the cache layer",
+				Persona:   "architect",
+				Role:      core.RolePlanner,
+				Status:    core.StatusPending,
+			},
+			{
+				ID:        "phase-2",
+				Name:      "implement",
+				Objective: "Implement the cache layer",
+				Persona:   "senior-backend-engineer",
+				Role:      core.RoleImplementer,
+				Status:    core.StatusPending,
+			},
+		},
+		ExecutionMode: "sequential",
+	}
+
+	ensureCodeReviewPhase(plan, nil)
+
+	var review *core.Phase
+	for _, p := range plan.Phases {
+		if p.PersonaSelectionMethod == core.SelectionRequiredReview {
+			review = p
+			break
+		}
+	}
+	if review == nil {
+		t.Fatal("no review phase injected")
+	}
+	if review.Runtime != "" {
+		t.Errorf("injected review Runtime = %q, want empty (policy will fill)", review.Runtime)
+	}
+}
+
 // ─── applyRuntimePolicy ───────────────────────────────────────────────────────
 
 // TestApplyRuntimePolicy_FillsEmptyRuntime verifies that phases without an

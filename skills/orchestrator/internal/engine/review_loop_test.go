@@ -2,11 +2,13 @@ package engine
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 
 	"github.com/joeyhipolito/orchestrator-cli/internal/core"
 	"github.com/joeyhipolito/orchestrator-cli/internal/event"
+	"github.com/joeyhipolito/orchestrator-cli/internal/sdk"
 )
 
 // ---------------------------------------------------------------------------
@@ -1332,5 +1334,308 @@ func TestHandleReviewLoop_BoundedLoopShape_MaxLoops2(t *testing.T) {
 	// No additional phases should be appended.
 	if len(e.plan.Phases) != 6 {
 		t.Fatalf("after exhaustion: expected still 6 phases, got %d", len(e.plan.Phases))
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Test helpers for RuntimeBoth tests
+// ---------------------------------------------------------------------------
+
+// fakeExecutor is a PhaseExecutor stub whose output is controlled by outputFn.
+// If err is non-nil, Execute returns that error.
+type fakeExecutor struct {
+	outputFn func() string
+	err      error
+}
+
+func (f *fakeExecutor) Execute(_ context.Context, _ *core.WorkerConfig, _ event.Emitter, _ bool) (string, string, *sdk.CostInfo, error) {
+	if f.err != nil {
+		return "", "", nil, f.err
+	}
+	if f.outputFn != nil {
+		return f.outputFn(), "", nil, nil
+	}
+	return "", "", nil, nil
+}
+
+// recordingEmitter records every event emitted through it.
+type recordingEmitter struct {
+	fn func(event.Event)
+}
+
+func (r *recordingEmitter) Emit(_ context.Context, e event.Event) {
+	if r.fn != nil {
+		r.fn(e)
+	}
+}
+
+func (r *recordingEmitter) Close() error { return nil }
+
+// ---------------------------------------------------------------------------
+// mergeReviewFindings
+// ---------------------------------------------------------------------------
+
+func TestMergeReviewFindings_DedupsIdenticalBlockers(t *testing.T) {
+	a := ReviewFindings{
+		Blockers: []ReviewItem{{Location: "store.go:42", Description: "Missing error check on db.Query."}},
+	}
+	b := ReviewFindings{
+		Blockers: []ReviewItem{{Location: "store.go:42", Description: "Missing error check on db.Query."}},
+	}
+	merged := mergeReviewFindings(a, b)
+	if len(merged.Blockers) != 1 {
+		t.Fatalf("expected 1 blocker after dedup, got %d", len(merged.Blockers))
+	}
+}
+
+func TestMergeReviewFindings_KeepsLongerDescriptionOnDup(t *testing.T) {
+	a := ReviewFindings{
+		Blockers: []ReviewItem{{Location: "store.go:42", Description: "Missing error check."}},
+	}
+	b := ReviewFindings{
+		Blockers: []ReviewItem{{Location: "store.go:42", Description: "Missing error check on db.Query — wrap and return."}},
+	}
+	merged := mergeReviewFindings(a, b)
+	if len(merged.Blockers) != 1 {
+		t.Fatalf("expected 1 blocker after dedup, got %d", len(merged.Blockers))
+	}
+	if !strings.Contains(merged.Blockers[0].Description, "db.Query") {
+		t.Errorf("expected longer description to win, got: %q", merged.Blockers[0].Description)
+	}
+}
+
+func TestMergeReviewFindings_KeepsDistinctLocations(t *testing.T) {
+	a := ReviewFindings{
+		Blockers: []ReviewItem{{Location: "store.go:42", Description: "Missing error check."}},
+	}
+	b := ReviewFindings{
+		Blockers: []ReviewItem{{Location: "handler.go:10", Description: "Missing error check."}},
+	}
+	merged := mergeReviewFindings(a, b)
+	if len(merged.Blockers) != 2 {
+		t.Fatalf("expected 2 blockers for distinct locations, got %d", len(merged.Blockers))
+	}
+}
+
+func TestMergeReviewFindings_UnionsWarnings(t *testing.T) {
+	a := ReviewFindings{
+		Warnings: []ReviewItem{{Location: "foo.go:1", Description: "Exported func missing godoc."}},
+	}
+	b := ReviewFindings{
+		Warnings: []ReviewItem{{Location: "bar.go:2", Description: "Shadowed variable."}},
+	}
+	merged := mergeReviewFindings(a, b)
+	if len(merged.Warnings) != 2 {
+		t.Fatalf("expected 2 warnings (union), got %d", len(merged.Warnings))
+	}
+}
+
+func TestMergeReviewFindings_EmptyCodexPassthrough(t *testing.T) {
+	a := ReviewFindings{
+		Blockers: []ReviewItem{{Location: "store.go:42", Description: "Missing error check."}},
+		Warnings: []ReviewItem{{Location: "foo.go:1", Description: "Godoc missing."}},
+	}
+	b := ReviewFindings{}
+	merged := mergeReviewFindings(a, b)
+	if len(merged.Blockers) != 1 {
+		t.Fatalf("expected 1 blocker, got %d", len(merged.Blockers))
+	}
+	if len(merged.Warnings) != 1 {
+		t.Fatalf("expected 1 warning, got %d", len(merged.Warnings))
+	}
+}
+
+func TestMergeReviewFindings_SubstringDescriptionDedup(t *testing.T) {
+	// One description is a substring of the other at the same location.
+	a := ReviewFindings{
+		Blockers: []ReviewItem{{Location: "cmd.go:15", Description: "Nil pointer dereference."}},
+	}
+	b := ReviewFindings{
+		Blockers: []ReviewItem{{Location: "cmd.go:15", Description: "Nil pointer dereference on response.Body — add nil guard."}},
+	}
+	merged := mergeReviewFindings(a, b)
+	if len(merged.Blockers) != 1 {
+		t.Fatalf("expected 1 blocker (substring dedup), got %d: %v", len(merged.Blockers), merged.Blockers)
+	}
+}
+
+func TestMergeReviewFindings_WordOverlapDedup(t *testing.T) {
+	// Same location, descriptions share >50% non-trivial words.
+	a := ReviewFindings{
+		Blockers: []ReviewItem{{Location: "api.go:99", Description: "database connection not closed properly after query execution"}},
+	}
+	b := ReviewFindings{
+		Blockers: []ReviewItem{{Location: "api.go:99", Description: "connection not closed after query — resource leak"}},
+	}
+	merged := mergeReviewFindings(a, b)
+	if len(merged.Blockers) != 1 {
+		t.Fatalf("expected 1 blocker (word overlap dedup), got %d", len(merged.Blockers))
+	}
+}
+
+// ---------------------------------------------------------------------------
+// handleReviewLoop — RuntimeBoth merges findings from both executors
+// ---------------------------------------------------------------------------
+
+func TestHandleReviewLoop_RuntimeBoth_MergesFindings(t *testing.T) {
+	// Claude output has 1 blocker; Codex output has a different blocker.
+	// Merged findings should have 2 blockers and drive fix injection.
+	claudeOutput := `
+### Blockers
+- **[store.go:42]** Missing error check.
+
+### Warnings
+`
+	codexOutput := `
+### Blockers
+- **[handler.go:10]** Nil pointer on empty response.
+
+### Warnings
+`
+
+	implPhase := &core.Phase{
+		ID:      "phase-1",
+		Name:    "implement",
+		Role:    core.RoleImplementer,
+		Persona: "senior-backend-engineer",
+		Status:  core.StatusCompleted,
+	}
+	reviewPhase := &core.Phase{
+		ID:                     "phase-2",
+		Name:                   "review",
+		Role:                   core.RoleReviewer,
+		Persona:                "staff-code-reviewer",
+		Runtime:                core.RuntimeBoth,
+		PersonaSelectionMethod: core.SelectionRequiredReview,
+		Dependencies:           []string{"phase-1"},
+		MaxReviewLoops:         2,
+	}
+
+	capturedOutput := codexOutput
+	fakeCodex := &fakeExecutor{outputFn: func() string { return capturedOutput }}
+
+	e := &Engine{
+		plan:      &core.Plan{Task: "build something", Phases: []*core.Phase{implPhase, reviewPhase}},
+		phases:    map[string]*core.Phase{"phase-1": implPhase, "phase-2": reviewPhase},
+		emitter:   event.NoOpEmitter{},
+		config:    &core.OrchestratorConfig{},
+		workspace: &core.Workspace{Path: t.TempDir()},
+		executors: executorRegistry{
+			core.RuntimeClaude: ClaudeExecutor{},
+			core.RuntimeCodex:  fakeCodex,
+		},
+	}
+
+	fix := e.handleReviewLoop(context.Background(), reviewPhase, claudeOutput, "")
+	if fix == nil {
+		t.Fatal("expected fix phase to be injected for merged blockers")
+	}
+	if !strings.Contains(fix.Objective, "store.go") && !strings.Contains(fix.Objective, "handler.go") {
+		t.Errorf("fix objective should reference merged blockers, got: %q", fix.Objective)
+	}
+}
+
+func TestHandleReviewLoop_RuntimeBoth_DedupsBlockers(t *testing.T) {
+	// Both executors find the same blocker — only one should survive dedup.
+	sharedOutput := `
+### Blockers
+- **[store.go:42]** Missing error check on db.Query.
+
+### Warnings
+`
+	implPhase := &core.Phase{
+		ID:      "phase-1",
+		Name:    "implement",
+		Role:    core.RoleImplementer,
+		Persona: "senior-backend-engineer",
+		Status:  core.StatusCompleted,
+	}
+	reviewPhase := &core.Phase{
+		ID:                     "phase-2",
+		Name:                   "review",
+		Role:                   core.RoleReviewer,
+		Persona:                "staff-code-reviewer",
+		Runtime:                core.RuntimeBoth,
+		PersonaSelectionMethod: core.SelectionRequiredReview,
+		Dependencies:           []string{"phase-1"},
+		MaxReviewLoops:         2,
+	}
+
+	fakeCodex := &fakeExecutor{outputFn: func() string { return sharedOutput }}
+
+	var emittedData []map[string]any
+	rec := &recordingEmitter{fn: func(e event.Event) {
+		emittedData = append(emittedData, e.Data)
+	}}
+
+	eng := &Engine{
+		plan:      &core.Plan{Task: "build something", Phases: []*core.Phase{implPhase, reviewPhase}},
+		phases:    map[string]*core.Phase{"phase-1": implPhase, "phase-2": reviewPhase},
+		emitter:   rec,
+		config:    &core.OrchestratorConfig{},
+		workspace: &core.Workspace{Path: t.TempDir()},
+		executors: executorRegistry{
+			core.RuntimeClaude: ClaudeExecutor{},
+			core.RuntimeCodex:  fakeCodex,
+		},
+	}
+
+	eng.handleReviewLoop(context.Background(), reviewPhase, sharedOutput, "")
+
+	// Find the findings event and verify blockers are deduped to 1.
+	for _, d := range emittedData {
+		if count, ok := d["blocker_count"]; ok {
+			if count.(int) != 1 {
+				t.Errorf("expected 1 blocker after dedup, got %v", count)
+			}
+			return
+		}
+	}
+	t.Error("no blocker_count found in emitted events")
+}
+
+func TestHandleReviewLoop_RuntimeBoth_CodexFailureFallback(t *testing.T) {
+	// CodexExecutor fails — handleReviewLoop should still work using Claude findings alone.
+	claudeOutput := `
+### Blockers
+- **[store.go:42]** Missing error check.
+
+### Warnings
+`
+	implPhase := &core.Phase{
+		ID:      "phase-1",
+		Name:    "implement",
+		Role:    core.RoleImplementer,
+		Persona: "senior-backend-engineer",
+		Status:  core.StatusCompleted,
+	}
+	reviewPhase := &core.Phase{
+		ID:                     "phase-2",
+		Name:                   "review",
+		Role:                   core.RoleReviewer,
+		Persona:                "staff-code-reviewer",
+		Runtime:                core.RuntimeBoth,
+		PersonaSelectionMethod: core.SelectionRequiredReview,
+		Dependencies:           []string{"phase-1"},
+		MaxReviewLoops:         2,
+	}
+
+	fakeCodex := &fakeExecutor{err: fmt.Errorf("codex unavailable")}
+
+	e := &Engine{
+		plan:      &core.Plan{Task: "build something", Phases: []*core.Phase{implPhase, reviewPhase}},
+		phases:    map[string]*core.Phase{"phase-1": implPhase, "phase-2": reviewPhase},
+		emitter:   event.NoOpEmitter{},
+		config:    &core.OrchestratorConfig{},
+		workspace: &core.Workspace{Path: t.TempDir()},
+		executors: executorRegistry{
+			core.RuntimeClaude: ClaudeExecutor{},
+			core.RuntimeCodex:  fakeCodex,
+		},
+	}
+
+	fix := e.handleReviewLoop(context.Background(), reviewPhase, claudeOutput, "")
+	if fix == nil {
+		t.Fatal("expected fix phase from Claude findings when Codex fails")
 	}
 }

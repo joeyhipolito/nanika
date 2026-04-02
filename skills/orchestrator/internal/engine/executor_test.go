@@ -233,12 +233,12 @@ func TestExecutorRegistryDescribe_KnownRuntime(t *testing.T) {
 
 func TestExecutorRegistryDescribe_UnknownRuntime(t *testing.T) {
 	reg := defaultRegistry()
-	desc, known := reg.describe(core.Runtime("codex"))
+	desc, known := reg.describe(core.Runtime("unknown-runtime"))
 	if known {
-		t.Fatal("describe(codex) should return known=false when not registered")
+		t.Fatal("describe(unknown-runtime) should return known=false when not registered")
 	}
-	if desc.Name != core.Runtime("codex") {
-		t.Fatalf("desc.Name = %q, want %q", desc.Name, "codex")
+	if desc.Name != core.Runtime("unknown-runtime") {
+		t.Fatalf("desc.Name = %q, want %q", desc.Name, "unknown-runtime")
 	}
 }
 
@@ -297,7 +297,7 @@ func TestCheckContract_UnknownRuntimeSkipsValidation(t *testing.T) {
 		ID:      "phase-1",
 		Name:    "test",
 		Role:    core.RoleImplementer,
-		Runtime: core.Runtime("codex"),
+		Runtime: core.Runtime("unknown-custom-runtime"),
 	}
 	// Should not error — unknown runtimes get a warning, not a failure
 	if err := e.checkContract(context.Background(), phase); err != nil {

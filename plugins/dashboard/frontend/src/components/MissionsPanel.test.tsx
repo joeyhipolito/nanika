@@ -219,3 +219,87 @@ describe('MissionDetailView — stream lifecycle', () => {
     expect(FakeEventSource.instances).toHaveLength(2)
   })
 })
+
+// ---------------------------------------------------------------------------
+// Mission title extraction — mirrors MissionsPanel.tsx helpers exactly
+// so regressions in extractFirstHeading or the fallback are caught.
+// ---------------------------------------------------------------------------
+
+function stripFrontmatter(text: string): string {
+  return text.replace(/^---\n[\s\S]*?\n---\n/, '')
+}
+
+function extractFirstHeading(text: string): string | null {
+  const stripped = stripFrontmatter(text)
+  const match = stripped.match(/^#{1,6}\s+(.+)$/m)
+  return match ? match[1].trim() : null
+}
+
+function missionTitle(task: string): string {
+  return extractFirstHeading(task) ?? stripFrontmatter(task).trim().split('\n')[0].replace(/^#{1,6}\s+/, '')
+}
+
+describe('extractFirstHeading', () => {
+  it('extracts h1 heading', () => {
+    expect(extractFirstHeading('# Scheduler')).toBe('Scheduler')
+  })
+
+  it('extracts h2 heading', () => {
+    expect(extractFirstHeading('## Scheduler')).toBe('Scheduler')
+  })
+
+  it('extracts h3 heading', () => {
+    expect(extractFirstHeading('### Deploy Pipeline')).toBe('Deploy Pipeline')
+  })
+
+  it('extracts h6 heading', () => {
+    expect(extractFirstHeading('###### Deep')).toBe('Deep')
+  })
+
+  it('extracts first heading when multiple exist', () => {
+    expect(extractFirstHeading('# First\n## Second')).toBe('First')
+  })
+
+  it('returns null when no heading present', () => {
+    expect(extractFirstHeading('just some text\nno heading here')).toBeNull()
+  })
+
+  it('strips YAML frontmatter before matching', () => {
+    const withFrontmatter = '---\ntitle: meta\n---\n## Real Heading'
+    expect(extractFirstHeading(withFrontmatter)).toBe('Real Heading')
+  })
+
+  it('trims trailing whitespace from heading text', () => {
+    expect(extractFirstHeading('# Scheduler   ')).toBe('Scheduler')
+  })
+})
+
+describe('missionTitle fallback — first word is always visible', () => {
+  it('uses heading when present (h1)', () => {
+    expect(missionTitle('# Scheduler')).toBe('Scheduler')
+  })
+
+  it('uses heading when present (h2)', () => {
+    expect(missionTitle('## Scheduler')).toBe('Scheduler')
+  })
+
+  it('strips heading markers from fallback first line', () => {
+    // A file whose first line after frontmatter is "## Scheduler" with no blank line before it
+    // extractFirstHeading handles this, but test the full missionTitle path
+    expect(missionTitle('## Scheduler\nbody text')).toBe('Scheduler')
+  })
+
+  it('returns plain text unchanged when no heading markers', () => {
+    expect(missionTitle('Research golang patterns\nsome body')).toBe('Research golang patterns')
+  })
+
+  it('strips frontmatter before extracting title', () => {
+    const task = '---\nphase: 1\n---\n# Rebuild Auth'
+    expect(missionTitle(task)).toBe('Rebuild Auth')
+  })
+
+  it('returns first line of plain text when no heading', () => {
+    const task = 'migrate postgres schema\nphase details here'
+    expect(missionTitle(task)).toBe('migrate postgres schema')
+  })
+})

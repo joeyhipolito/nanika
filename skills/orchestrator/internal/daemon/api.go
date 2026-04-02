@@ -167,6 +167,9 @@ func NewAPIServer(bus *event.Bus, dropper event.DropReporter, cfg Config) *APISe
 	// REST — decomposition findings from learnings.db (counts by type, recent, trends).
 	mux.Handle("GET /api/decomposition-findings", auth(http.HandlerFunc(s.handleDecompositionFindings)))
 
+	// REST — nen ability findings from ~/.alluka/nen/findings.db.
+	mux.Handle("GET /api/findings", auth(http.HandlerFunc(s.handleFindings)))
+
 	// REST — spawn a new mission via orchestrator run in a background process.
 	mux.Handle("POST /api/missions/run", auth(http.HandlerFunc(s.handleRunMission)))
 
@@ -1884,6 +1887,11 @@ func readMetricsRecords(path string) ([]metricsRecord, map[string]bool, error) {
 		if err := json.Unmarshal([]byte(line), &rec); err != nil {
 			continue // skip malformed lines
 		}
+		// Filter test/synthetic workspaces and zero-duration records.
+		if strings.HasPrefix(rec.WorkspaceID, "ws-") || strings.HasPrefix(rec.WorkspaceID, "test-") || rec.DurationSec == 0 {
+			seen[rec.WorkspaceID] = true // mark as seen so cancelled scan skips it too
+			continue
+		}
 		records = append(records, rec)
 		seen[rec.WorkspaceID] = true
 	}
@@ -1905,6 +1913,10 @@ func scanCancelledWorkspaces(wsBase, eventsBase string, knownIDs map[string]bool
 		}
 		wsID := e.Name()
 		if knownIDs[wsID] {
+			continue
+		}
+		// Skip test/synthetic workspace directories.
+		if strings.HasPrefix(wsID, "ws-") || strings.HasPrefix(wsID, "test-") {
 			continue
 		}
 
@@ -2456,4 +2468,116 @@ func ensurePersonaStats(m map[string]*PersonaStats, p string) *PersonaStats {
 	ps := &PersonaStats{}
 	m[p] = ps
 	return ps
+}
+
+// ---- nen findings endpoint -----------------------------------------------
+
+// nenFindingScope is the nested scope object the frontend Finding type expects.
+type nenFindingScope struct {
+	Kind  string `json:"kind"`
+	Value string `json:"value"`
+}
+
+// NenFinding matches the Finding type in the frontend: scope is nested,
+// evidence is a JSON array parsed from the DB column.
+type NenFinding struct {
+	ID           string          `json:"id"`
+	Ability      string          `json:"ability"`
+	Category     string          `json:"category"`
+	Severity     string          `json:"severity"`
+	Title        string          `json:"title"`
+	Description  string          `json:"description"`
+	Scope        nenFindingScope `json:"scope"`
+	Evidence     json.RawMessage `json:"evidence"`
+	Source       string          `json:"source"`
+	FoundAt      string          `json:"found_at"`
+	ExpiresAt    string          `json:"expires_at,omitempty"`
+	SupersededBy string          `json:"superseded_by,omitempty"`
+	CreatedAt    string          `json:"created_at"`
+}
+
+// handleFindings queries ~/.alluka/nen/findings.db and returns active findings.
+// Supports optional query params: ability, severity, limit.
+func (s *APIServer) handleFindings(w http.ResponseWriter, r *http.Request) {
+	applyCORS(w, r)
+
+	base, err := config.Dir()
+	if err != nil {
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+
+	dbPath := filepath.Join(base, "nen", "findings.db")
+	if _, err := os.Stat(dbPath); os.IsNotExist(err) {
+		writeJSON(w, []NenFinding{})
+		return
+	}
+	db, err := sql.Open("sqlite", "file:"+dbPath+"?mode=ro&_busy_timeout=5000")
+	if err != nil {
+		http.Error(w, fmt.Sprintf("opening findings.db: %v", err), http.StatusInternalServerError)
+		return
+	}
+	defer db.Close()
+
+	q := r.URL.Query()
+	ability := q.Get("ability")
+	severity := q.Get("severity")
+	limit := 500
+	if l := q.Get("limit"); l != "" {
+		if n, err := strconv.Atoi(l); err == nil && n > 0 {
+			limit = n
+		}
+	}
+
+	query := `
+		SELECT id, ability, category, severity, title, description,
+		       scope_kind, scope_value, evidence, source, found_at,
+		       COALESCE(expires_at, ''), superseded_by, created_at
+		FROM findings
+		WHERE superseded_by = ''
+		  AND (expires_at IS NULL OR expires_at > datetime('now'))`
+	var args []any
+	if ability != "" {
+		query += " AND ability = ?"
+		args = append(args, ability)
+	}
+	if severity != "" {
+		query += " AND severity = ?"
+		args = append(args, severity)
+	}
+	query += " ORDER BY found_at DESC LIMIT ?"
+	args = append(args, limit)
+
+	rows, err := db.QueryContext(r.Context(), query, args...)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("querying findings: %v", err), http.StatusInternalServerError)
+		return
+	}
+	defer rows.Close()
+
+	findings := []NenFinding{}
+	for rows.Next() {
+		var f NenFinding
+		var scopeKind, scopeValue, evidenceRaw string
+		if err := rows.Scan(
+			&f.ID, &f.Ability, &f.Category, &f.Severity, &f.Title, &f.Description,
+			&scopeKind, &scopeValue, &evidenceRaw, &f.Source, &f.FoundAt,
+			&f.ExpiresAt, &f.SupersededBy, &f.CreatedAt,
+		); err != nil {
+			continue
+		}
+		f.Scope = nenFindingScope{Kind: scopeKind, Value: scopeValue}
+		if json.Valid([]byte(evidenceRaw)) {
+			f.Evidence = json.RawMessage(evidenceRaw)
+		} else {
+			f.Evidence = json.RawMessage("[]")
+		}
+		findings = append(findings, f)
+	}
+	if err := rows.Err(); err != nil {
+		http.Error(w, fmt.Sprintf("scanning findings: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	writeJSON(w, findings)
 }

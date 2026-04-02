@@ -17,7 +17,7 @@
     <key>EnvironmentVariables</key>
     <dict>
         <key>PATH</key>
-        <string>__HOME__/bin:__HOME__/.alluka/bin:/usr/local/bin:/usr/bin:/bin</string>
+        <string>__HOME__/.alluka/bin:__HOME__/bin:/usr/local/bin:/usr/bin:/bin</string>
     </dict>
 
     <!-- Redirect stdout/stderr to log files under ~/.alluka/logs/ -->

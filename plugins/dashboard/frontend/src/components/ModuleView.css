@@ -37,7 +37,7 @@
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  box-shadow: var(--module-shadow);
+  box-shadow: none;
   animation: module-view-in 0.18s ease;
 }
 
@@ -81,6 +81,10 @@
   position: relative;
   transition: filter 0.12s;
   flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 12px;
 }
 
 .module-view-tl:focus-visible {
@@ -172,4 +176,17 @@
   overflow-x: hidden;
   padding: 12px;
   min-height: 0;
+}
+
+/* Minimized — collapse to title bar only */
+
+.module-view--minimized .module-view-body {
+  display: none;
+}
+
+/* Maximized — fill viewport with 20px inset, ignore drag transform */
+
+.module-view--maximized {
+  position: fixed;
+  inset: 20px;
 }

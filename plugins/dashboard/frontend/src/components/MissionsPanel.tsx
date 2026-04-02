@@ -17,7 +17,7 @@ function stripFrontmatter(text: string): string {
 
 function extractFirstHeading(text: string): string | null {
   const stripped = stripFrontmatter(text)
-  const match = stripped.match(/^# (.+)$/m)
+  const match = stripped.match(/^#{1,6}\s+(.+)$/m)
   return match ? match[1].trim() : null
 }
 
@@ -380,7 +380,7 @@ function MissionRow({
         </div>
         {m.task && (
           <p className="missions-list-item-task">
-            {extractFirstHeading(m.task) ?? stripFrontmatter(m.task).trim().split('\n')[0]}
+            {extractFirstHeading(m.task) ?? stripFrontmatter(m.task).trim().split('\n')[0].replace(/^#{1,6}\s+/, '')}
           </p>
         )}
         <div className="missions-list-item-meta">
