@@ -325,6 +325,11 @@ func runPropose(args []string) error {
 	}
 	defer proposalsDB.Close()
 
+	qs, err := ko.NewQualityStore(proposalsDB)
+	if err != nil {
+		return fmt.Errorf("opening quality store: %w", err)
+	}
+
 	out := proposeOutput{Proposed: []proposal{}, Skipped: []skippedFinding{}}
 	proposedKeys := make(map[string]bool)
 	deferred := 0
@@ -372,7 +377,9 @@ func runPropose(args []string) error {
 				}
 				continue
 			}
-			if issueID := findBlockingIssue(existing, key, defaultDedupPolicy(), time.Now().UTC()); issueID != "" {
+			batchPolicy := defaultDedupPolicy()
+			batchPolicy.qualityMultiplier = qs.LookupScore(ctx, ability, category)
+			if issueID := findBlockingIssue(existing, key, batchPolicy, time.Now().UTC()); issueID != "" {
 				for _, f := range item.findings {
 					out.Skipped = append(out.Skipped, skippedFinding{FindingID: f.ID, Reason: fmt.Sprintf("blocking tracker issue %s covers same category", issueID)})
 				}
@@ -451,7 +458,9 @@ func runPropose(args []string) error {
 				out.Skipped = append(out.Skipped, skippedFinding{FindingID: f.ID, Reason: "proposed within the last 24 hours"})
 				continue
 			}
-			if issueID := findBlockingIssue(existing, key, defaultDedupPolicy(), time.Now().UTC()); issueID != "" {
+			findingPolicy := defaultDedupPolicy()
+			findingPolicy.qualityMultiplier = qs.LookupScore(ctx, f.Ability, f.Category)
+			if issueID := findBlockingIssue(existing, key, findingPolicy, time.Now().UTC()); issueID != "" {
 				out.Skipped = append(out.Skipped, skippedFinding{FindingID: f.ID, Reason: fmt.Sprintf("blocking tracker issue %s covers same category", issueID)})
 				continue
 			}
@@ -706,8 +715,24 @@ func computeDedupKey(f proposableFinding) string {
 // they are treated as resolved or rejected. `in-progress` always blocks. `open`
 // and `cancelled` block only while they are within their respective TTLs.
 type dedupBlockingPolicy struct {
-	staleOpenTTL time.Duration // how long an `open` issue suppresses new proposals
-	cancelledTTL time.Duration // how long a `cancelled` issue suppresses new proposals
+	staleOpenTTL      time.Duration // how long an `open` issue suppresses new proposals
+	cancelledTTL      time.Duration // how long a `cancelled` issue suppresses new proposals
+	qualityMultiplier float64       // ko quality score in [0,1]; 0 = no data (use base TTL unchanged)
+}
+
+// effectiveOpenTTL returns the TTL applied to `open` issues after quality scaling.
+// A qualityMultiplier of 0 (unset / no quality data) returns the base staleOpenTTL
+// unchanged, preserving backward-compatible behaviour. Otherwise the effective TTL
+// is staleOpenTTL × (2 × qualityMultiplier), which maps:
+//
+//	0.5 (ko.DefaultQualityScore, neutral) → 1.0× (no change from baseline)
+//	>0.5 (high quality, past proposals succeeded) → longer TTL, fewer re-proposals
+//	<0.5 (low quality, past proposals failed/stalled) → shorter TTL, faster retries
+func (p dedupBlockingPolicy) effectiveOpenTTL() time.Duration {
+	if p.qualityMultiplier == 0 {
+		return p.staleOpenTTL
+	}
+	return time.Duration(float64(p.staleOpenTTL) * 2 * p.qualityMultiplier)
 }
 
 func defaultDedupPolicy() dedupBlockingPolicy {
@@ -744,7 +769,7 @@ func findBlockingIssue(issues []trackerIssue, dedupKey string, policy dedupBlock
 		case "in-progress":
 			return issue.displayID()
 		case "open":
-			if withinTTL(issue.UpdatedAt, policy.staleOpenTTL, now) {
+			if withinTTL(issue.UpdatedAt, policy.effectiveOpenTTL(), now) {
 				return issue.displayID()
 			}
 		case "cancelled":

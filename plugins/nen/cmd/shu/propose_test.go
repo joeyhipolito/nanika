@@ -470,6 +470,48 @@ func TestFindBlockingIssue_CustomPolicy(t *testing.T) {
 	}
 }
 
+// --- quality-score TTL scaling ---
+
+func TestFindBlockingIssue_HighQualityScoreLengthensBlockingWindow(t *testing.T) {
+	now := time.Date(2026, 4, 5, 12, 0, 0, 0, time.UTC)
+	key := "qualityhigh00001"
+	// 30h-old open issue: normally OUTSIDE the 24h default staleOpenTTL → would not block.
+	issues := []trackerIssue{makeTrackerIssueWithLabel("trk-quality-high", "open", key, 30*time.Hour, now)}
+
+	// High quality score 0.8: effectiveOpenTTL = 24h × 2 × 0.8 = 38.4h.
+	// 30h < 38.4h → should block.
+	highPolicy := defaultDedupPolicy()
+	highPolicy.qualityMultiplier = 0.8
+	if got := findBlockingIssue(issues, key, highPolicy, now); got == "" {
+		t.Error("expected high-quality score to lengthen TTL and block 30h-old open issue, got empty string")
+	}
+
+	// Sanity: with default policy (qualityMultiplier=0), same issue should NOT block.
+	if got := findBlockingIssue(issues, key, defaultDedupPolicy(), now); got != "" {
+		t.Errorf("expected default policy to not block 30h-old open issue, got %q", got)
+	}
+}
+
+func TestFindBlockingIssue_LowQualityScoreShortensBlockingWindow(t *testing.T) {
+	now := time.Date(2026, 4, 5, 12, 0, 0, 0, time.UTC)
+	key := "qualitylow000001"
+	// 12h-old open issue: normally INSIDE the 24h default staleOpenTTL → would block.
+	issues := []trackerIssue{makeTrackerIssueWithLabel("trk-quality-low", "open", key, 12*time.Hour, now)}
+
+	// Low quality score 0.2: effectiveOpenTTL = 24h × 2 × 0.2 = 9.6h.
+	// 12h > 9.6h → should NOT block.
+	lowPolicy := defaultDedupPolicy()
+	lowPolicy.qualityMultiplier = 0.2
+	if got := findBlockingIssue(issues, key, lowPolicy, now); got != "" {
+		t.Errorf("expected low-quality score to shorten TTL and not block 12h-old open issue, got %q", got)
+	}
+
+	// Sanity: with default policy (qualityMultiplier=0), same issue should block.
+	if got := findBlockingIssue(issues, key, defaultDedupPolicy(), now); got == "" {
+		t.Error("expected default policy to block 12h-old open issue")
+	}
+}
+
 func TestFindBlockingIssue_PrefersFirstBlockingMatch(t *testing.T) {
 	// When multiple matching issues exist, return the first blocking one.
 	// Non-blocking matches (done/closed) should be skipped so the scan does
