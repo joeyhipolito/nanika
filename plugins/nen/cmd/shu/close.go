@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"strings"
 	"time"
 )
@@ -26,9 +25,8 @@ func runClose(args []string) error {
 	}
 
 	if *sweepFlag {
-		home, _ := os.UserHomeDir()
 		opts := sweepOptions{
-			MissionDir:       filepath.Join(home, ".alluka", "missions", "remediation"),
+			MissionDir:       remediationMissionDir(),
 			DryRun:           *dryRunFlag,
 			ConservativeMode: true,
 		}

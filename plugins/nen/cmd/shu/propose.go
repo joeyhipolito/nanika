@@ -175,15 +175,25 @@ func computeBatchDedupKey(ability, category string) string {
 	return fmt.Sprintf("%x", h[:8])
 }
 
+// remediationMissionDir returns the directory where remediation mission files are stored.
+// It honours ALLUKA_HOME (via scan.Dir) and falls back to ~/.alluka on error.
+func remediationMissionDir() string {
+	base, err := scan.Dir()
+	if err != nil {
+		home, _ := os.UserHomeDir()
+		base = filepath.Join(home, ".alluka")
+	}
+	return filepath.Join(base, "missions", "remediation")
+}
+
 // batchMissionFilePath returns the mission file path for a batched ability+category group.
 func batchMissionFilePath(ability, category string) string {
-	home, _ := os.UserHomeDir()
 	date := time.Now().Format("2006-01-02")
 	slug := slugify(fmt.Sprintf("batch-%s-%s", ability, category))
 	if len(slug) > 60 {
 		slug = slug[:60]
 	}
-	return filepath.Join(home, ".alluka", "missions", "remediation", fmt.Sprintf("%s-%s.md", date, slug))
+	return filepath.Join(remediationMissionDir(), fmt.Sprintf("%s-%s.md", date, slug))
 }
 
 type batchFindingDetail struct {
@@ -917,13 +927,12 @@ func severityToPriority(severity string) string {
 }
 
 func missionFilePath(f proposableFinding) string {
-	home, _ := os.UserHomeDir()
 	date := time.Now().Format("2006-01-02")
 	slug := slugify(f.Title)
 	if len(slug) > 60 {
 		slug = slug[:60]
 	}
-	return filepath.Join(home, ".alluka", "missions", "remediation", fmt.Sprintf("%s-%s.md", date, slug))
+	return filepath.Join(remediationMissionDir(), fmt.Sprintf("%s-%s.md", date, slug))
 }
 
 var slugRe = regexp.MustCompile(`[^a-z0-9]+`)

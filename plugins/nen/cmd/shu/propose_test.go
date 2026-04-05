@@ -1247,3 +1247,43 @@ func TestProposeReviewBlockerGroup_StaleOpenIssueDoesNotBlock(t *testing.T) {
 		}
 	}
 }
+
+// --- remediationMissionDir / missionFilePath ALLUKA_HOME tests ---
+
+func TestMissionFilePath_RespectsAllukaHome(t *testing.T) {
+	custom := t.TempDir()
+	t.Setenv("ALLUKA_HOME", custom)
+
+	f := proposableFinding{Title: "test finding"}
+	got := missionFilePath(f)
+
+	if !strings.HasPrefix(got, custom) {
+		t.Errorf("missionFilePath() = %q, want path under ALLUKA_HOME %q", got, custom)
+	}
+	home, _ := os.UserHomeDir()
+	if strings.HasPrefix(got, home) && !strings.HasPrefix(custom, home) {
+		t.Errorf("missionFilePath() = %q uses $HOME instead of ALLUKA_HOME %q", got, custom)
+	}
+}
+
+func TestBatchMissionFilePath_RespectsAllukaHome(t *testing.T) {
+	custom := t.TempDir()
+	t.Setenv("ALLUKA_HOME", custom)
+
+	got := batchMissionFilePath("gyo", "unchecked-error")
+
+	if !strings.HasPrefix(got, custom) {
+		t.Errorf("batchMissionFilePath() = %q, want path under ALLUKA_HOME %q", got, custom)
+	}
+}
+
+func TestRemediationMissionDir_RespectsAllukaHome(t *testing.T) {
+	custom := t.TempDir()
+	t.Setenv("ALLUKA_HOME", custom)
+
+	got := remediationMissionDir()
+
+	if !strings.HasPrefix(got, custom) {
+		t.Errorf("remediationMissionDir() = %q, want path under ALLUKA_HOME %q", got, custom)
+	}
+}

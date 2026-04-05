@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -69,6 +70,23 @@ func withTempFindingsPath(t *testing.T) (string, func()) {
 		} else {
 			os.Setenv("ALLUKA_HOME", orig)
 		}
+	}
+}
+
+// --- sweep mission dir ALLUKA_HOME tests ---
+
+func TestCloseSweepDir_RespectsAllukaHome(t *testing.T) {
+	custom := t.TempDir()
+	t.Setenv("ALLUKA_HOME", custom)
+
+	got := remediationMissionDir()
+
+	if !strings.HasPrefix(got, custom) {
+		t.Errorf("remediationMissionDir() = %q, want path under ALLUKA_HOME %q", got, custom)
+	}
+	home, _ := os.UserHomeDir()
+	if strings.HasPrefix(got, home) && !strings.HasPrefix(custom, home) {
+		t.Errorf("remediationMissionDir() = %q uses $HOME instead of ALLUKA_HOME %q", got, custom)
 	}
 }
 
