@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -159,28 +160,32 @@ func allFindingsSuperseded(ids []string) (bool, error) {
 	return activeCount == 0, nil
 }
 
-// trackerIssueStatus calls `tracker show <id> --json` and returns the status
-// field, or "" on error.
+// trackerIssueStatus fetches status via `tracker query items --json` and
+// returns the status for the given issueID (raw UUID or TRK-<n> display form).
 func trackerIssueStatus(ctx context.Context, issueID string) (string, error) {
-	out, err := exec.CommandContext(ctx, "tracker", "show", issueID, "--json").Output()
+	out, err := exec.CommandContext(ctx, "tracker", "query", "items", "--json").Output()
 	if err != nil {
-		return "", fmt.Errorf("tracker show %s: %w", issueID, err)
+		return "", fmt.Errorf("tracker query items: %w", err)
 	}
-	// Parse just the status field with a simple search to avoid import bloat.
-	// Output is a JSON object; look for "status":"<value>".
-	raw := string(out)
-	const key = `"status":`
-	idx := strings.Index(raw, key)
-	if idx < 0 {
-		return "", fmt.Errorf("tracker show %s: no status field in output", issueID)
+	var resp struct {
+		Items []struct {
+			ID     string `json:"id"`
+			SeqID  *int64 `json:"seq_id"`
+			Status string `json:"status"`
+		} `json:"items"`
 	}
-	rest := strings.TrimSpace(raw[idx+len(key):])
-	rest = strings.TrimPrefix(rest, `"`)
-	end := strings.IndexByte(rest, '"')
-	if end < 0 {
-		return "", fmt.Errorf("tracker show %s: unparseable status", issueID)
+	if err := json.Unmarshal(out, &resp); err != nil {
+		return "", fmt.Errorf("parse tracker items: %w", err)
 	}
-	return rest[:end], nil
+	for _, it := range resp.Items {
+		if it.ID == issueID {
+			return it.Status, nil
+		}
+		if it.SeqID != nil && fmt.Sprintf("TRK-%d", *it.SeqID) == issueID {
+			return it.Status, nil
+		}
+	}
+	return "", fmt.Errorf("issue %q not found in tracker", issueID)
 }
 
 // markTrackerDone calls `tracker update <id> --status done` and adds a comment.

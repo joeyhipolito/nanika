@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"database/sql"
 	"os"
 	"path/filepath"
@@ -262,6 +263,48 @@ func TestAllFindingsSuperseded_OneActive(t *testing.T) {
 		t.Error("expected not all superseded (one active), got true")
 	}
 }
+
+// --- trackerIssueStatus unit tests ---
+
+// writeStubTracker creates a shell script at stubDir/tracker that echoes the
+// given JSON payload, prepends stubDir to PATH, and restores PATH on cleanup.
+func writeStubTracker(t *testing.T, payload string) {
+	t.Helper()
+	stubDir := t.TempDir()
+	stubPath := filepath.Join(stubDir, "tracker")
+	script := "#!/bin/sh\necho '" + payload + "'\n"
+	if err := os.WriteFile(stubPath, []byte(script), 0o755); err != nil {
+		t.Fatalf("write stub tracker: %v", err)
+	}
+	orig := os.Getenv("PATH")
+	t.Setenv("PATH", stubDir+":"+orig)
+}
+
+func TestTrackerIssueStatus_ResolvesByDisplayID(t *testing.T) {
+	writeStubTracker(t, `{"items":[{"id":"abc-123","seq_id":42,"status":"open"}]}`)
+
+	status, err := trackerIssueStatus(context.Background(), "TRK-42")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if status != "open" {
+		t.Errorf("got %q, want %q", status, "open")
+	}
+}
+
+func TestTrackerIssueStatus_ResolvesByRawID(t *testing.T) {
+	writeStubTracker(t, `{"items":[{"id":"abc-123","seq_id":42,"status":"done"}]}`)
+
+	status, err := trackerIssueStatus(context.Background(), "abc-123")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if status != "done" {
+		t.Errorf("got %q, want %q", status, "done")
+	}
+}
+
+// --- allFindingsSuperseded tests ---
 
 func TestAllFindingsSuperseded_MissingIDs(t *testing.T) {
 	path, cleanup := withTempFindingsPath(t)
