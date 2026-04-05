@@ -147,6 +147,98 @@ func TestInjectContext_RecordsInjections(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// InjectContext — cold-start (empty query)
+// ---------------------------------------------------------------------------
+
+func TestInjectContext_EmptyQuery_EmptyDB(t *testing.T) {
+	db := newTestDB(t)
+	content, err := InjectContext(context.Background(), db, nil, "", "dev", 10)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if content != "" {
+		t.Errorf("expected empty string for empty DB, got %q", content)
+	}
+}
+
+func TestInjectContext_EmptyQuery_ReturnsBestLearnings(t *testing.T) {
+	db := newTestDB(t)
+	insertLearning(t, db, Learning{
+		ID:           "best",
+		Type:         TypePattern,
+		Content:      "Best learning with high quality.",
+		Domain:       "dev",
+		QualityScore: 0.9,
+		CreatedAt:    time.Now(),
+	})
+	insertLearning(t, db, Learning{
+		ID:           "worse",
+		Type:         TypeInsight,
+		Content:      "Lower quality learning.",
+		Domain:       "dev",
+		QualityScore: 0.3,
+		CreatedAt:    time.Now(),
+	})
+
+	content, err := InjectContext(context.Background(), db, nil, "", "dev", 10)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if content == "" {
+		t.Fatal("expected non-empty content from cold-start injection")
+	}
+	if !strings.Contains(content, "## Relevant Learnings") {
+		t.Errorf("expected heading in cold-start output, got: %q", content)
+	}
+	if !strings.Contains(content, "Best learning") {
+		t.Errorf("expected best learning in output, got: %q", content)
+	}
+}
+
+func TestInjectContext_EmptyQuery_WrongDomain(t *testing.T) {
+	db := newTestDB(t)
+	insertLearning(t, db, Learning{
+		ID:           "work-only",
+		Type:         TypeInsight,
+		Content:      "Work domain only.",
+		Domain:       "work",
+		QualityScore: 0.9,
+		CreatedAt:    time.Now(),
+	})
+
+	content, err := InjectContext(context.Background(), db, nil, "", "dev", 10)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if content != "" {
+		t.Errorf("expected empty string for wrong domain, got %q", content)
+	}
+}
+
+func TestInjectContext_EmptyQuery_RespectsLimit(t *testing.T) {
+	db := newTestDB(t)
+	for i := 0; i < 10; i++ {
+		insertLearning(t, db, Learning{
+			ID:           fmt.Sprintf("csl-%02d", i),
+			Type:         TypeInsight,
+			Content:      fmt.Sprintf("Cold start learning %d.", i),
+			Domain:       "dev",
+			QualityScore: 0.8,
+			CreatedAt:    time.Now(),
+		})
+	}
+
+	content, err := InjectContext(context.Background(), db, nil, "", "dev", 3)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	count := strings.Count(content, "\n- ")
+	if count > 3 {
+		t.Errorf("expected at most 3 results with limit=3, got %d", count)
+	}
+}
+
+// ---------------------------------------------------------------------------
 // FlushContext
 // ---------------------------------------------------------------------------
 

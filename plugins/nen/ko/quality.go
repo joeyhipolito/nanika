@@ -14,6 +14,31 @@ package ko
 // Scores are persisted in the same proposals.db shu already owns; ko opens
 // it read/write through NewQualityStore, adds the table via idempotent
 // CREATE TABLE IF NOT EXISTS, and upserts counts via INSERT…ON CONFLICT.
+//
+// # proposal_quality vs eval_results — not the same table, not the same data
+//
+// `proposal_quality` (this file, in proposals.db) and `eval_results`
+// (db.go, in ko-history.db) are orthogonal. They live in different
+// SQLite files, are written by different ko subcommands, and are built
+// from different inputs:
+//
+//	proposal_quality   ← `ko evaluate-proposals`
+//	                     input:  proposals rows ⋈ `tracker query items`
+//	                     shape:  per-(ability, category) aggregate counts
+//	                     target: ~/.alluka/nen/proposals.db
+//
+//	eval_results       ← `ko evaluate <config.yaml>`
+//	                     input:  YAML test case + LLM response
+//	                     shape:  per-test LLM-as-judge verdict rows
+//	                     target: ~/.alluka/ko-history.db
+//
+// proposal_quality is NOT a projected view over eval_results — there is
+// no data flow from one to the other. An empty proposal_quality table
+// alongside a populated eval_results table means `ko evaluate-proposals`
+// simply has not run yet (or ran against proposals with no enriched
+// columns / no matching tracker issue). It does not mean ko's writer is
+// pointing at the wrong DB. See also the resolution to memory-system
+// audit open-question #4.
 
 import (
 	"context"

@@ -97,18 +97,8 @@ func TestHooksFlushContext_CreatesNestedOutputDir(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// inject-context — required-flag test first
+// inject-context
 // ---------------------------------------------------------------------------
-
-func TestHooksInjectContext_MissingQueryFlag(t *testing.T) {
-	resetCmdFlags(t)
-	setTestConfigDir(t)
-
-	rootCmd.SetArgs([]string{"hooks", "inject-context"})
-	if err := rootCmd.Execute(); err == nil {
-		t.Error("expected error when --query flag is missing, got nil")
-	}
-}
 
 func TestHooksInjectContext_EmptyDB(t *testing.T) {
 	resetCmdFlags(t)
@@ -120,6 +110,17 @@ func TestHooksInjectContext_EmptyDB(t *testing.T) {
 	}
 }
 
+func TestHooksInjectContext_EmptyDB_NoQuery(t *testing.T) {
+	resetCmdFlags(t)
+	setTestConfigDir(t)
+
+	// Cold-start: --query is optional; empty DB should produce no output but no error.
+	rootCmd.SetArgs([]string{"hooks", "inject-context"})
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("inject-context cold-start with empty DB: %v", err)
+	}
+}
+
 func TestHooksInjectContext_CustomLimit(t *testing.T) {
 	resetCmdFlags(t)
 	setTestConfigDir(t)
@@ -127,6 +128,27 @@ func TestHooksInjectContext_CustomLimit(t *testing.T) {
 	rootCmd.SetArgs([]string{"hooks", "inject-context", "--query", "test", "--limit", "5"})
 	if err := rootCmd.Execute(); err != nil {
 		t.Fatalf("inject-context with custom limit: %v", err)
+	}
+}
+
+func TestHooksInjectContext_NanikaNoInject(t *testing.T) {
+	resetCmdFlags(t)
+	setTestConfigDir(t)
+	t.Setenv("NANIKA_NO_INJECT", "1")
+
+	rootCmd.SetArgs([]string{"hooks", "inject-context", "--query", "goroutine leaks"})
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("inject-context with NANIKA_NO_INJECT=1: %v", err)
+	}
+}
+
+func TestHooksInjectContext_MaxBytes(t *testing.T) {
+	resetCmdFlags(t)
+	setTestConfigDir(t)
+
+	rootCmd.SetArgs([]string{"hooks", "inject-context", "--max-bytes", "4096"})
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("inject-context with --max-bytes: %v", err)
 	}
 }
 

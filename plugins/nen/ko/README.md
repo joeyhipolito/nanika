@@ -354,6 +354,12 @@ AssertLength(output, criteria string) (bool, string)
 
 Each returns `(passed bool, message string)`.
 
+## Persistence
+
+Eval run history is stored in SQLite. The canonical path is `~/.alluka/ko-history.db` (`DefaultDBPath()`). The dashboard reads from the same path. Pass `--db <path>` to the `ko` CLI to override.
+
+> **Orphan note:** `~/.alluka/nen/ko-history.db` (zero bytes) was an old mis-placed placeholder and has been removed. The live database is always at `~/.alluka/ko-history.db`.
+
 ## Limitations & Future Work
 
 1. **LLM-rubric assertion**: Currently a placeholder. Full implementation would require a secondary LLM call.

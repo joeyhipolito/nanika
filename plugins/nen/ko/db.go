@@ -1,5 +1,29 @@
 package ko
 
+// Eval history storage.
+//
+// DB backs the `ko evaluate <config.yaml>` subcommand. It owns the two
+// tables that record LLM-as-judge verdicts produced by running YAML eval
+// configs through ko.Runner:
+//
+//	eval_runs      — one row per `ko evaluate` invocation (config, model, totals, cost)
+//	eval_results   — one row per test case within a run (passed, output, assertions, tokens)
+//
+// Canonical location is ~/.alluka/ko-history.db (DefaultDBPath). The
+// nen-subdir stub at ~/.alluka/nen/ko-history.db is a historical zero-byte
+// orphan from an earlier layout — readers should target the top-level path.
+//
+// # eval_results is NOT proposal_quality
+//
+// The `proposal_quality` table lives in a different DB file
+// (~/.alluka/nen/proposals.db) and is owned by ko.QualityStore in
+// quality.go. It is populated by a different subcommand
+// (`ko evaluate-proposals`) from a different input set
+// (shu proposals ⋈ tracker issues). There is no data flow from
+// eval_results into proposal_quality. An empty proposal_quality table
+// does not imply a wiring bug in this file. See the package-level
+// comment in quality.go for the full split.
+
 import (
 	"context"
 	"database/sql"

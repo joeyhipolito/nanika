@@ -32,12 +32,22 @@ func FlushContext(ctx context.Context, db *DB, embedder *Embedder, query, domain
 // InjectContext retrieves relevant learnings and formats them as a markdown context block
 // ready for prepending to a worker prompt. Records injection counts for compliance tracking.
 // Returns an empty string when no relevant learnings are found.
+//
+// When query is empty (cold-start), learnings are ranked by quality_score × recency_weight
+// instead of semantic relevance — no embedder call is made.
 func InjectContext(ctx context.Context, db *DB, embedder *Embedder, query, domain string, limit int) (string, error) {
 	if limit <= 0 {
 		limit = 10
 	}
 
-	learnings, err := db.FindRelevant(ctx, query, domain, limit, embedder)
+	var learnings []Learning
+	var err error
+	if query == "" {
+		// Cold-start: no task context available — rank by quality × recency.
+		learnings, err = db.FindTopByQuality(domain, limit)
+	} else {
+		learnings, err = db.FindRelevant(ctx, query, domain, limit, embedder)
+	}
 	if err != nil {
 		return "", fmt.Errorf("finding relevant learnings: %w", err)
 	}

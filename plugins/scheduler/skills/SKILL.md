@@ -10,7 +10,7 @@ version: "1.1.0"
 
 # Scheduler — Cron Job Runner
 
-Manages recurring shell jobs with cron expressions. All state is persisted in SQLite at `~/.alluka/scheduler/scheduler.db`.
+Manages recurring shell jobs with cron expressions. State is persisted in SQLite; the default DB path is `~/.alluka/scheduler/scheduler.db`. The active path is set by `db_path` in `~/.alluka/scheduler/config` — run `scheduler configure show` to verify.
 
 ## When to Use
 
@@ -172,7 +172,9 @@ shell = /bin/sh
 max_concurrent = 4
 ```
 
-Run `scheduler configure` to create it interactively. All keys are optional — missing keys use the defaults above.
+Run `scheduler configure` to create or update it interactively. All keys are optional — missing keys use the defaults above.
+
+> **DB path note:** Installations created with `scheduler-cli configure` (the old binary name) may have `db_path` pointing to the legacy location `~/.scheduler/scheduler.db`. Run `scheduler configure show` to see the active path. To migrate to the canonical location, update `db_path` to `~/.alluka/scheduler/scheduler.db` and copy the database file.
 
 ## Cron Expression Reference
 

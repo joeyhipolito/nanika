@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -34,12 +35,12 @@ func init() {
 	injectCtxCmd := &cobra.Command{
 		Use:   "inject-context",
 		Short: "Print relevant learnings as a context block to stdout",
-		Long:  "Queries the learning database and prints matching learnings as a markdown block for shell injection into a worker prompt.",
+		Long:  "Queries the learning database and prints matching learnings as a markdown block for shell injection into a worker prompt. When --query is omitted, cold-start mode ranks by quality × recency. Set NANIKA_NO_INJECT=1 to suppress output entirely.",
 		RunE:  runInjectContext,
 	}
-	injectCtxCmd.Flags().String("query", "", "query describing the current task context (required)")
+	injectCtxCmd.Flags().String("query", "", "query describing the current task context (omit for cold-start ranking by quality × recency)")
 	injectCtxCmd.Flags().Int("limit", 10, "max learnings to include")
-	injectCtxCmd.MarkFlagRequired("query")
+	injectCtxCmd.Flags().Int("max-bytes", 0, "truncate output to this many bytes (0 = unlimited)")
 
 	snapshotCmd := &cobra.Command{
 		Use:   "snapshot-session",
@@ -77,8 +78,13 @@ func runFlushContext(cmd *cobra.Command, args []string) error {
 }
 
 func runInjectContext(cmd *cobra.Command, args []string) error {
+	if os.Getenv("NANIKA_NO_INJECT") == "1" {
+		return nil
+	}
+
 	query, _ := cmd.Flags().GetString("query")
 	limit, _ := cmd.Flags().GetInt("limit")
+	maxBytes, _ := cmd.Flags().GetInt("max-bytes")
 
 	db, err := learning.OpenDB("")
 	if err != nil {
@@ -93,6 +99,14 @@ func runInjectContext(cmd *cobra.Command, args []string) error {
 	content, err := learning.InjectContext(ctx, db, embedder, query, domain, limit)
 	if err != nil {
 		return err
+	}
+
+	if maxBytes > 0 && len(content) > maxBytes {
+		content = content[:maxBytes]
+		// Trim to the last complete line to avoid a mid-line cutoff.
+		if idx := strings.LastIndex(content, "\n"); idx > 0 {
+			content = content[:idx+1]
+		}
 	}
 
 	if content != "" {

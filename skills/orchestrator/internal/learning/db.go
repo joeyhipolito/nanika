@@ -522,6 +522,46 @@ func computeRelevance(id string, normFTS, cosines map[string]float64) float64 {
 	}
 }
 
+// FindTopByQuality returns the top-K learnings ranked by quality_score × recency_weight,
+// for cold-start injection when no query context is available.
+// Applies the same compliance filter as FindRelevant (injection_count < 3 OR compliance_rate >= 0.15).
+func (d *DB) FindTopByQuality(domain string, limit int) ([]Learning, error) {
+	if limit <= 0 {
+		limit = 20
+	}
+
+	// Recency tiers mirror recencyWeight() — thresholds must be kept in sync.
+	rows, err := d.db.Query(`
+		SELECT id, type, content, context, domain, worker_name, workspace_id,
+		       tags, seen_count, used_count, quality_score, created_at, last_used_at, embedding,
+		       injection_count, compliance_rate
+		FROM learnings
+		WHERE domain = ? AND archived = 0
+		  AND (injection_count < 3 OR compliance_rate >= 0.15)
+		ORDER BY quality_score * CASE
+		    WHEN (julianday('now') - julianday(created_at)) < 30  THEN 1.0
+		    WHEN (julianday('now') - julianday(created_at)) < 90  THEN 0.8
+		    WHEN (julianday('now') - julianday(created_at)) < 180 THEN 0.6
+		    ELSE 0.4
+		END DESC
+		LIMIT ?
+	`, domain, limit)
+	if err != nil {
+		return nil, fmt.Errorf("querying top by quality: %w", err)
+	}
+	defer rows.Close()
+
+	var result []Learning
+	for rows.Next() {
+		l, err := scanLearning(rows)
+		if err != nil {
+			continue
+		}
+		result = append(result, l)
+	}
+	return result, rows.Err()
+}
+
 // Stats returns database statistics.
 func (d *DB) Stats() (total, withEmb int, err error) {
 	d.db.QueryRow("SELECT COUNT(*) FROM learnings").Scan(&total)

@@ -985,3 +985,229 @@ func TestEmbeddingScanBeyond500(t *testing.T) {
 		t.Errorf("target-551 (inserted at position %d) not found in top results; got: %v", targetPos, ids)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// FindTopByQuality (cold-start selection)
+// ---------------------------------------------------------------------------
+
+func TestFindTopByQuality_EmptyDB(t *testing.T) {
+	db := newTestDB(t)
+	results, err := db.FindTopByQuality("dev", 10)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(results) != 0 {
+		t.Errorf("expected 0 results for empty DB, got %d", len(results))
+	}
+}
+
+func TestFindTopByQuality_RanksByQualityTimesRecency(t *testing.T) {
+	db := newTestDB(t)
+
+	// high quality but old — should rank below high-quality recent
+	insertLearning(t, db, Learning{
+		ID:           "old-high",
+		Type:         TypeInsight,
+		Content:      "Old but high quality learning.",
+		Domain:       "dev",
+		QualityScore: 0.9,
+		CreatedAt:    time.Now().Add(-200 * 24 * time.Hour), // >180 days → recency 0.4
+	})
+	// moderate quality, recent — should rank below old-high (0.7*1.0=0.7 vs 0.9*0.4=0.36)
+	insertLearning(t, db, Learning{
+		ID:           "recent-mid",
+		Type:         TypeInsight,
+		Content:      "Recent but mid quality learning.",
+		Domain:       "dev",
+		QualityScore: 0.7,
+		CreatedAt:    time.Now().Add(-5 * 24 * time.Hour), // <30 days → recency 1.0
+	})
+	// best: high quality and recent
+	insertLearning(t, db, Learning{
+		ID:           "recent-high",
+		Type:         TypeInsight,
+		Content:      "Recent and high quality learning.",
+		Domain:       "dev",
+		QualityScore: 0.9,
+		CreatedAt:    time.Now().Add(-3 * 24 * time.Hour), // <30 days → recency 1.0
+	})
+
+	results, err := db.FindTopByQuality("dev", 10)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(results) != 3 {
+		t.Fatalf("expected 3 results, got %d", len(results))
+	}
+	// recent-high (0.9*1.0=0.90) > recent-mid (0.7*1.0=0.70) > old-high (0.9*0.4=0.36)
+	if results[0].ID != "recent-high" {
+		t.Errorf("first result should be recent-high, got %s", results[0].ID)
+	}
+	if results[1].ID != "recent-mid" {
+		t.Errorf("second result should be recent-mid, got %s", results[1].ID)
+	}
+	if results[2].ID != "old-high" {
+		t.Errorf("third result should be old-high, got %s", results[2].ID)
+	}
+}
+
+func TestFindTopByQuality_RespectsDomain(t *testing.T) {
+	db := newTestDB(t)
+	insertLearning(t, db, Learning{
+		ID:           "dev-learning",
+		Type:         TypeInsight,
+		Content:      "Dev domain learning.",
+		Domain:       "dev",
+		QualityScore: 0.8,
+		CreatedAt:    time.Now(),
+	})
+	insertLearning(t, db, Learning{
+		ID:           "work-learning",
+		Type:         TypeInsight,
+		Content:      "Work domain learning.",
+		Domain:       "work",
+		QualityScore: 0.9,
+		CreatedAt:    time.Now(),
+	})
+
+	results, err := db.FindTopByQuality("dev", 10)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result for 'dev' domain, got %d", len(results))
+	}
+	if results[0].ID != "dev-learning" {
+		t.Errorf("expected dev-learning, got %s", results[0].ID)
+	}
+}
+
+func TestFindTopByQuality_RespectsLimit(t *testing.T) {
+	db := newTestDB(t)
+	for i := 0; i < 10; i++ {
+		insertLearning(t, db, Learning{
+			ID:           fmt.Sprintf("learn-%02d", i),
+			Type:         TypeInsight,
+			Content:      fmt.Sprintf("Learning number %d.", i),
+			Domain:       "dev",
+			QualityScore: 0.8,
+			CreatedAt:    time.Now(),
+		})
+	}
+
+	results, err := db.FindTopByQuality("dev", 5)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(results) != 5 {
+		t.Errorf("expected 5 results with limit=5, got %d", len(results))
+	}
+}
+
+func TestFindTopByQuality_ZeroLimitDefaultsTwenty(t *testing.T) {
+	db := newTestDB(t)
+	for i := 0; i < 25; i++ {
+		insertLearning(t, db, Learning{
+			ID:           fmt.Sprintf("zl-%02d", i),
+			Type:         TypeInsight,
+			Content:      fmt.Sprintf("Zero limit learning %d.", i),
+			Domain:       "dev",
+			QualityScore: 0.8,
+			CreatedAt:    time.Now(),
+		})
+	}
+
+	results, err := db.FindTopByQuality("dev", 0)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(results) > 20 {
+		t.Errorf("expected at most 20 results with limit=0 (defaults to 20), got %d", len(results))
+	}
+}
+
+func TestFindTopByQuality_SkipsArchived(t *testing.T) {
+	db := newTestDB(t)
+	insertLearning(t, db, Learning{
+		ID:           "active",
+		Type:         TypeInsight,
+		Content:      "Active learning.",
+		Domain:       "dev",
+		QualityScore: 0.8,
+		CreatedAt:    time.Now(),
+	})
+	insertLearning(t, db, Learning{
+		ID:           "archived",
+		Type:         TypeInsight,
+		Content:      "Archived learning.",
+		Domain:       "dev",
+		QualityScore: 0.9,
+		CreatedAt:    time.Now(),
+	})
+	setArchived(t, db, "archived", 1)
+
+	results, err := db.FindTopByQuality("dev", 10)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	for _, l := range results {
+		if l.ID == "archived" {
+			t.Error("archived learning should not appear in FindTopByQuality results")
+		}
+	}
+}
+
+func TestFindTopByQuality_RespectsComplianceFilter(t *testing.T) {
+	db := newTestDB(t)
+	// Should appear: injection_count < 3
+	insertLearning(t, db, Learning{
+		ID:             "low-inject",
+		Type:           TypeInsight,
+		Content:        "Low injection count.",
+		Domain:         "dev",
+		QualityScore:   0.8,
+		InjectionCount: 2,
+		ComplianceRate: 0.05,
+		CreatedAt:      time.Now(),
+	})
+	// Should appear: injection_count >= 3 but compliance_rate >= 0.15
+	insertLearning(t, db, Learning{
+		ID:             "high-inject-good-compliance",
+		Type:           TypeInsight,
+		Content:        "High injection, good compliance.",
+		Domain:         "dev",
+		QualityScore:   0.8,
+		InjectionCount: 5,
+		ComplianceRate: 0.20,
+		CreatedAt:      time.Now(),
+	})
+	// Should NOT appear: injection_count >= 3 and compliance_rate < 0.15
+	insertLearning(t, db, Learning{
+		ID:             "overinjected",
+		Type:           TypeInsight,
+		Content:        "Over-injected with poor compliance.",
+		Domain:         "dev",
+		QualityScore:   0.9,
+		InjectionCount: 5,
+		ComplianceRate: 0.05,
+		CreatedAt:      time.Now(),
+	})
+
+	results, err := db.FindTopByQuality("dev", 10)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	ids := make(map[string]bool, len(results))
+	for _, l := range results {
+		ids[l.ID] = true
+	}
+	if !ids["low-inject"] {
+		t.Error("low-inject should appear (injection_count < 3)")
+	}
+	if !ids["high-inject-good-compliance"] {
+		t.Error("high-inject-good-compliance should appear (compliance_rate >= 0.15)")
+	}
+	if ids["overinjected"] {
+		t.Error("overinjected should be filtered out (injection_count >= 3 and compliance_rate < 0.15)")
+	}
+}

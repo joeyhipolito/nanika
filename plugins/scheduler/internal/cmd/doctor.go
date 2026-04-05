@@ -241,17 +241,20 @@ func checkDBSchemaVersion(path string) (int, error) {
 	return d.SchemaVersion(ctx)
 }
 
-// checkMultipleDBs scans the three known scheduler.db locations and returns a
-// warning if more than one exists. Returns empty strings when nothing to report.
+// checkMultipleDBs scans the two known non-zero scheduler.db locations and
+// returns a warning if more than one contains data. Zero-byte files are skipped
+// (they are orphaned placeholders, not live databases).
+// Returns empty strings when nothing to report.
 func checkMultipleDBs() (name, message, status string) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", "", ""
 	}
 
+	// ~/.alluka/scheduler.db was a zero-byte orphan and has been removed.
+	// Only the legacy path and the canonical default are checked here.
 	candidates := []string{
 		filepath.Join(home, ".scheduler", "scheduler.db"),
-		filepath.Join(home, ".alluka", "scheduler.db"),
 		filepath.Join(home, ".alluka", "scheduler", "scheduler.db"),
 	}
 
@@ -264,8 +267,8 @@ func checkMultipleDBs() (name, message, status string) {
 	var found []dbInfo
 	for _, p := range candidates {
 		info, err := os.Stat(p)
-		if err != nil {
-			continue
+		if err != nil || info.Size() == 0 {
+			continue // skip missing or zero-byte orphans
 		}
 		found = append(found, dbInfo{path: p, size: info.Size(), modTime: info.ModTime()})
 	}
@@ -275,7 +278,8 @@ func checkMultipleDBs() (name, message, status string) {
 	}
 
 	var sb strings.Builder
-	fmt.Fprintf(&sb, "%d scheduler.db files found — canonical is ~/.alluka/scheduler/scheduler.db:\n", len(found))
+	fmt.Fprintf(&sb, "%d scheduler.db files found — canonical default is ~/.alluka/scheduler/scheduler.db.\n", len(found))
+	fmt.Fprintf(&sb, "    Active path is set by db_path in ~/.alluka/scheduler/config (run 'scheduler configure show'):\n")
 	for _, f := range found {
 		fmt.Fprintf(&sb, "    %s  (%d bytes, modified %s)",
 			f.path, f.size, f.modTime.Format("2006-01-02 15:04:05"))

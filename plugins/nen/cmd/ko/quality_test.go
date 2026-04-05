@@ -39,6 +39,89 @@ func seedProposalsDB(t *testing.T, dir string, rows []proposalRow) *sql.DB {
 	return db
 }
 
+// TestCmdEvaluateProposals_PopulatesProposalQualityTable pins that a single
+// evaluateProposals call with matching proposals + tracker items leaves
+// proposal_quality non-empty with the expected per-(ability, category)
+// counts. The sibling idempotency test only compares two runs for equality,
+// which silently passes on an empty-list regression — this test closes that
+// gap so a future refactor that breaks the writer, drops the Replace call,
+// or regresses ClassifyOutcome fails loudly here.
+func TestCmdEvaluateProposals_PopulatesProposalQualityTable(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+
+	// Three proposals spanning two (ability, category) pairs, each bound
+	// to a tracker issue whose status classifies as non-pending — a
+	// pending-only input would leave proposal_quality empty and defeat
+	// the assertion below.
+	proposals := []proposalRow{
+		{DedupKey: "k-success", Ability: "shu", Category: "perf", TrackerIssue: "TRK-10"},
+		{DedupKey: "k-failure", Ability: "shu", Category: "perf", TrackerIssue: "TRK-11"},
+		{DedupKey: "k-stall", Ability: "ko", Category: "eval", TrackerIssue: "TRK-12"},
+	}
+	db := seedProposalsDB(t, dir, proposals)
+
+	qs, err := ko.NewQualityStore(db)
+	if err != nil {
+		t.Fatalf("NewQualityStore: %v", err)
+	}
+
+	// Past DefaultStallThreshold so open/in-progress classifies as stall.
+	staleTime := time.Now().UTC().Add(-ko.DefaultStallThreshold * 2).Format(time.RFC3339)
+	seq10, seq11, seq12 := int64(10), int64(11), int64(12)
+	items := []trackerItem{
+		{ID: "trk-10", SeqID: &seq10, Status: "done", UpdatedAt: staleTime},
+		{ID: "trk-11", SeqID: &seq11, Status: "cancelled", UpdatedAt: staleTime},
+		{ID: "trk-12", SeqID: &seq12, Status: "in-progress", UpdatedAt: staleTime},
+	}
+
+	summary, err := evaluateProposals(ctx, qs, proposals, items, ko.DefaultStallThreshold)
+	if err != nil {
+		t.Fatalf("evaluateProposals: %v", err)
+	}
+	if summary.Processed != len(proposals) {
+		t.Errorf("summary.Processed = %d, want %d", summary.Processed, len(proposals))
+	}
+	if summary.Skipped != 0 {
+		t.Errorf("summary.Skipped = %d, want 0 (all proposals enriched and have tracker matches)", summary.Skipped)
+	}
+
+	list, err := qs.List(ctx)
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(list) == 0 {
+		t.Fatal("proposal_quality is empty after evaluateProposals — writer regression")
+	}
+	// Two distinct (ability, category) pairs → two aggregate rows.
+	if len(list) != 2 {
+		t.Errorf("proposal_quality rows = %d, want 2", len(list))
+	}
+
+	// Verify each expected aggregate row exists with the right counts.
+	type key struct{ ability, category string }
+	byKey := make(map[key]ko.ProposalQuality, len(list))
+	for _, r := range list {
+		byKey[key{r.Ability, r.Category}] = r
+	}
+	shuPerf, ok := byKey[key{"shu", "perf"}]
+	if !ok {
+		t.Fatal("missing shu/perf row")
+	}
+	if shuPerf.SuccessCount != 1 || shuPerf.FailureCount != 1 || shuPerf.TotalCount != 2 {
+		t.Errorf("shu/perf counts = {ok:%d fail:%d total:%d}, want {1 1 2}",
+			shuPerf.SuccessCount, shuPerf.FailureCount, shuPerf.TotalCount)
+	}
+	koEval, ok := byKey[key{"ko", "eval"}]
+	if !ok {
+		t.Fatal("missing ko/eval row")
+	}
+	if koEval.StallCount != 1 || koEval.TotalCount != 1 {
+		t.Errorf("ko/eval counts = {stall:%d total:%d}, want {1 1}",
+			koEval.StallCount, koEval.TotalCount)
+	}
+}
+
 // TestCmdEvaluateProposals_IdempotentOnRepeatedRuns is the H1 regression guard.
 // Running evaluateProposals twice against identical proposals+tracker state
 // must produce identical quality counts — no score accumulation across runs.
