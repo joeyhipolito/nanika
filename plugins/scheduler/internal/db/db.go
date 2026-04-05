@@ -291,6 +291,23 @@ CREATE TABLE IF NOT EXISTS optimal_times (
 );
 
 CREATE INDEX IF NOT EXISTS idx_optimal_times_platform ON optimal_times(platform);
+
+-- job_audit records every admin write to the jobs table (create, update,
+-- delete). Daemon housekeeping (next_run_at ticks) is NOT recorded here.
+-- Rows survive job deletion — that's the whole point: we need to be able
+-- to answer "who wrote this command?" after the job itself is gone.
+CREATE TABLE IF NOT EXISTS job_audit (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    job_id      INTEGER NOT NULL,
+    op          TEXT    NOT NULL,
+    before_json TEXT,
+    after_json  TEXT,
+    actor       TEXT    NOT NULL DEFAULT '',
+    ts          TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_job_audit_job_id ON job_audit(job_id);
+CREATE INDEX IF NOT EXISTS idx_job_audit_ts     ON job_audit(ts DESC);
 `
 
 // seedSQL populates optimal_times if the table is empty.
@@ -449,7 +466,13 @@ func (d *DB) CreateJob(ctx context.Context, name, command, schedule, shell, rand
 		randWin = randomWindow
 	}
 
-	res, err := d.db.ExecContext(ctx,
+	tx, err := d.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, fmt.Errorf("begin tx for job %q: %w", name, err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	res, err := tx.ExecContext(ctx,
 		`INSERT INTO jobs (name, command, schedule, shell, timeout_sec, random_window, schedule_type)
 		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
 		name, command, schedule, shell, timeoutSec, randWin, scheduleType,
@@ -460,6 +483,30 @@ func (d *DB) CreateJob(ctx context.Context, name, command, schedule, shell, rand
 	id, err := res.LastInsertId()
 	if err != nil {
 		return 0, fmt.Errorf("getting job ID: %w", err)
+	}
+
+	// Capture the newly created row as the "after" snapshot. We synthesize
+	// it from arguments rather than re-SELECTing to keep the audit write
+	// cheap and avoid a second round-trip for fields the caller already
+	// knows.
+	after := snapshotJob(&Job{
+		ID:           id,
+		Name:         name,
+		Command:      command,
+		Schedule:     schedule,
+		Shell:        shell,
+		Enabled:      true,
+		TimeoutSec:   timeoutSec,
+		ScheduleType: scheduleType,
+		RandomWindow: randomWindow,
+		Priority:     "P1",
+	})
+	if err := recordJobAudit(ctx, tx, "create", id, "", after); err != nil {
+		return 0, err
+	}
+
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("commit create job %q: %w", name, err)
 	}
 	return id, nil
 }
@@ -510,11 +557,28 @@ func (d *DB) EnableJob(ctx context.Context, id int64, enabled bool) error {
 	if enabled {
 		flag = 1
 	}
-	_, err := d.db.ExecContext(ctx,
-		`UPDATE jobs SET enabled = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE id = ?`,
-		flag, id)
+	tx, err := d.db.BeginTx(ctx, nil)
 	if err != nil {
+		return fmt.Errorf("begin tx for enable job %d: %w", id, err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	before, err := getJobTx(ctx, tx, id)
+	if err != nil {
+		return fmt.Errorf("reading before-state for job %d: %w", id, err)
+	}
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE jobs SET enabled = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE id = ?`,
+		flag, id); err != nil {
 		return fmt.Errorf("updating job %d enabled=%v: %w", id, enabled, err)
+	}
+	after := *before
+	after.Enabled = enabled
+	if err := recordJobAudit(ctx, tx, "update", id, snapshotJob(before), snapshotJob(&after)); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit enable job %d: %w", id, err)
 	}
 	return nil
 }
@@ -536,22 +600,64 @@ func (d *DB) SetNextRunAt(ctx context.Context, id int64, t *time.Time) error {
 
 // SetPriority updates a job's priority field ("P0", "P1", etc.).
 func (d *DB) SetPriority(ctx context.Context, id int64, priority string) error {
-	_, err := d.db.ExecContext(ctx,
-		`UPDATE jobs SET priority = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE id = ?`,
-		priority, id)
+	tx, err := d.db.BeginTx(ctx, nil)
 	if err != nil {
+		return fmt.Errorf("begin tx for priority job %d: %w", id, err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	before, err := getJobTx(ctx, tx, id)
+	if err != nil {
+		return fmt.Errorf("reading before-state for job %d: %w", id, err)
+	}
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE jobs SET priority = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE id = ?`,
+		priority, id); err != nil {
 		return fmt.Errorf("setting priority for job %d: %w", id, err)
+	}
+	after := *before
+	after.Priority = priority
+	if err := recordJobAudit(ctx, tx, "update", id, snapshotJob(before), snapshotJob(&after)); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit priority job %d: %w", id, err)
 	}
 	return nil
 }
 
 // DeleteJob removes a job and cascades to its runs.
 func (d *DB) DeleteJob(ctx context.Context, id int64) error {
-	_, err := d.db.ExecContext(ctx, `DELETE FROM jobs WHERE id = ?`, id)
+	tx, err := d.db.BeginTx(ctx, nil)
 	if err != nil {
+		return fmt.Errorf("begin tx for delete job %d: %w", id, err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	before, err := getJobTx(ctx, tx, id)
+	if err != nil {
+		return fmt.Errorf("reading before-state for job %d: %w", id, err)
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM jobs WHERE id = ?`, id); err != nil {
 		return fmt.Errorf("deleting job %d: %w", id, err)
 	}
+	if err := recordJobAudit(ctx, tx, "delete", id, snapshotJob(before), ""); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit delete job %d: %w", id, err)
+	}
 	return nil
+}
+
+// getJobTx reads a single job row inside an open transaction. Used by
+// write paths that need before-state for audit logging.
+func getJobTx(ctx context.Context, tx *sql.Tx, id int64) (*Job, error) {
+	row := tx.QueryRowContext(ctx,
+		`SELECT id, name, command, schedule, shell, enabled, timeout_sec,
+		        schedule_type, random_window, priority, last_run_at, next_run_at, created_at, updated_at
+		 FROM jobs WHERE id = ?`, id)
+	return scanJob(row)
 }
 
 // scanner is satisfied by both *sql.Row and *sql.Rows.
