@@ -139,6 +139,69 @@ func trackerUpdateAge(it trackerItem, now time.Time) time.Duration {
 	return now.Sub(t)
 }
 
+// qualityKey indexes in-memory aggregation by (ability, category).
+type qualityKey struct{ ability, category string }
+
+// evaluateProposals aggregates proposal outcomes from proposals+tracker state
+// in-memory, then atomically replaces the proposal_quality table with fresh
+// counts. Calling it twice with the same inputs produces identical counts —
+// there is no accumulation across runs.
+func evaluateProposals(ctx context.Context, qs *ko.QualityStore, proposals []proposalRow, items []trackerItem, stallThreshold time.Duration) (ko.QualityEvalSummary, error) {
+	index := buildTrackerIndex(items)
+	now := time.Now().UTC()
+
+	type counts struct{ success, failure, stall int }
+	agg := map[qualityKey]*counts{}
+	summary := ko.QualityEvalSummary{}
+
+	for _, p := range proposals {
+		summary.Processed++
+		if p.Ability == "" || p.Category == "" || p.TrackerIssue == "" {
+			summary.Skipped++
+			continue
+		}
+		it, ok := index[p.TrackerIssue]
+		if !ok {
+			summary.Skipped++
+			continue
+		}
+		outcome := ko.ClassifyOutcome(it.Status, trackerUpdateAge(it, now), stallThreshold)
+		summary.Increment(outcome)
+		if outcome == ko.OutcomePending {
+			continue
+		}
+		k := qualityKey{p.Ability, p.Category}
+		if agg[k] == nil {
+			agg[k] = &counts{}
+		}
+		switch outcome {
+		case ko.OutcomeSuccess:
+			agg[k].success++
+		case ko.OutcomeFailure:
+			agg[k].failure++
+		case ko.OutcomeStall:
+			agg[k].stall++
+		}
+	}
+
+	rows := make([]ko.ProposalQuality, 0, len(agg))
+	for k, c := range agg {
+		rows = append(rows, ko.ProposalQuality{
+			Ability:      k.ability,
+			Category:     k.category,
+			SuccessCount: c.success,
+			FailureCount: c.failure,
+			StallCount:   c.stall,
+			TotalCount:   c.success + c.failure + c.stall,
+			LastUpdated:  now,
+		})
+	}
+	if err := qs.Replace(ctx, rows); err != nil {
+		return summary, fmt.Errorf("replace quality scores: %w", err)
+	}
+	return summary, nil
+}
+
 func cmdEvaluateProposals(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("evaluate-proposals", flag.ContinueOnError)
 	dbPath := fs.String("proposals-db", defaultProposalsDBPath(), "path to proposals.db")
@@ -182,29 +245,10 @@ func cmdEvaluateProposals(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	index := buildTrackerIndex(items)
 
-	now := time.Now().UTC()
-	summary := ko.QualityEvalSummary{}
-	for _, p := range proposals {
-		summary.Processed++
-		if p.Ability == "" || p.Category == "" || p.TrackerIssue == "" {
-			summary.Skipped++
-			continue
-		}
-		it, ok := index[p.TrackerIssue]
-		if !ok {
-			summary.Skipped++
-			continue
-		}
-		outcome := ko.ClassifyOutcome(it.Status, trackerUpdateAge(it, now), *stallThreshold)
-		summary.Increment(outcome)
-		if outcome == ko.OutcomePending {
-			continue
-		}
-		if err := qs.Record(ctx, p.Ability, p.Category, outcome); err != nil {
-			return fmt.Errorf("record outcome %s for %s/%s: %w", outcome, p.Ability, p.Category, err)
-		}
+	summary, err := evaluateProposals(ctx, qs, proposals, items, *stallThreshold)
+	if err != nil {
+		return err
 	}
 
 	if *jsonOut {

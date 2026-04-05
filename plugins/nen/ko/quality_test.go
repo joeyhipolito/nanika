@@ -364,6 +364,100 @@ func TestQualityStore_UpsertUpdatesExistingRow(t *testing.T) {
 	}
 }
 
+// --- Replace ---
+
+func TestQualityStore_ReplaceSwapsRows(t *testing.T) {
+	qs, _ := openTestQualityDB(t)
+	ctx := context.Background()
+
+	// Seed two rows via Record.
+	_ = qs.Record(ctx, "shu", "perf", OutcomeSuccess)
+	_ = qs.Record(ctx, "shu", "error", OutcomeFailure)
+	list, _ := qs.List(ctx)
+	if len(list) != 2 {
+		t.Fatalf("pre-Replace list = %d rows, want 2", len(list))
+	}
+
+	// Replace with a completely different set.
+	newRows := []ProposalQuality{
+		{Ability: "ko", Category: "eval", SuccessCount: 5, TotalCount: 5},
+	}
+	if err := qs.Replace(ctx, newRows); err != nil {
+		t.Fatalf("Replace: %v", err)
+	}
+
+	list, err := qs.List(ctx)
+	if err != nil {
+		t.Fatalf("List after Replace: %v", err)
+	}
+	if len(list) != 1 {
+		t.Fatalf("post-Replace list = %d rows, want 1", len(list))
+	}
+	if list[0].Ability != "ko" || list[0].Category != "eval" {
+		t.Errorf("unexpected row: %s/%s", list[0].Ability, list[0].Category)
+	}
+	if list[0].SuccessCount != 5 {
+		t.Errorf("success_count = %d, want 5", list[0].SuccessCount)
+	}
+}
+
+func TestQualityStore_ReplaceIsAtomic(t *testing.T) {
+	qs, _ := openTestQualityDB(t)
+	ctx := context.Background()
+
+	// Seed original rows A and B.
+	_ = qs.Record(ctx, "shu", "original-a", OutcomeSuccess)
+	_ = qs.Record(ctx, "shu", "original-b", OutcomeFailure)
+
+	// Call Replace with [valid, INVALID (empty ability), valid].
+	// The invalid row mid-slice should cause Replace to return an error and
+	// roll back the entire transaction — original rows must survive.
+	badRows := []ProposalQuality{
+		{Ability: "ko", Category: "new-row", SuccessCount: 1, TotalCount: 1},
+		{Ability: "", Category: "bad-row"}, // ← deliberate mid-insert error
+		{Ability: "ko", Category: "another-row", SuccessCount: 2, TotalCount: 2},
+	}
+	if err := qs.Replace(ctx, badRows); err == nil {
+		t.Fatal("Replace with empty ability should have returned an error")
+	}
+
+	// Rollback must have preserved the original rows.
+	list, err := qs.List(ctx)
+	if err != nil {
+		t.Fatalf("List after failed Replace: %v", err)
+	}
+	if len(list) != 2 {
+		t.Fatalf("after rollback: want 2 original rows, got %d", len(list))
+	}
+	for _, q := range list {
+		if q.Ability != "shu" {
+			t.Errorf("unexpected row %s/%s — should only have original shu rows", q.Ability, q.Category)
+		}
+	}
+
+	// New rows must not have been committed.
+	for _, label := range []string{"new-row", "another-row"} {
+		got, _ := qs.Lookup(ctx, "ko", label)
+		if got.TotalCount != 0 {
+			t.Errorf("row ko/%s should not exist after rollback (total=%d)", label, got.TotalCount)
+		}
+	}
+}
+
+func TestQualityStore_ReplaceEmptySliceClearsTable(t *testing.T) {
+	qs, _ := openTestQualityDB(t)
+	ctx := context.Background()
+
+	_ = qs.Record(ctx, "shu", "perf", OutcomeSuccess)
+	if err := qs.Replace(ctx, nil); err != nil {
+		t.Fatalf("Replace(nil): %v", err)
+	}
+	list, _ := qs.List(ctx)
+	if len(list) != 0 {
+		t.Errorf("after Replace(nil) table should be empty, got %d rows", len(list))
+	}
+}
+
 // --- Summary helper ---
 
 func TestQualityEvalSummary_Increment(t *testing.T) {

@@ -277,6 +277,49 @@ func (qs *QualityStore) List(ctx context.Context) ([]ProposalQuality, error) {
 	return out, rows.Err()
 }
 
+// Replace atomically replaces the entire proposal_quality table with the
+// provided rows. DELETE FROM proposal_quality and all INSERT statements
+// execute inside a single transaction — if any INSERT fails the DELETE is
+// rolled back and the original data is preserved.
+//
+// Replace is designed for stateless re-evaluation runs: the caller
+// aggregates fresh counts in-memory from the current proposals and tracker
+// state, then calls Replace once so repeated runs are idempotent.
+func (qs *QualityStore) Replace(ctx context.Context, rows []ProposalQuality) error {
+	tx, err := qs.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("replace quality: begin transaction: %w", err)
+	}
+	defer tx.Rollback() //nolint:errcheck — intentional best-effort rollback
+
+	if _, err := tx.ExecContext(ctx, `DELETE FROM proposal_quality`); err != nil {
+		return fmt.Errorf("replace quality: delete: %w", err)
+	}
+
+	now := time.Now().UTC().Format(time.RFC3339)
+	for _, r := range rows {
+		if r.Ability == "" || r.Category == "" {
+			return fmt.Errorf("replace quality: ability and category required (got %q/%q)", r.Ability, r.Category)
+		}
+		ts := now
+		if !r.LastUpdated.IsZero() {
+			ts = r.LastUpdated.UTC().Format(time.RFC3339)
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO proposal_quality
+			(ability, category, success_count, failure_count, stall_count, total_count, last_updated)
+			VALUES (?, ?, ?, ?, ?, ?, ?)`,
+			r.Ability, r.Category, r.SuccessCount, r.FailureCount, r.StallCount, r.TotalCount, ts,
+		); err != nil {
+			return fmt.Errorf("replace quality: insert %s/%s: %w", r.Ability, r.Category, err)
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("replace quality: commit: %w", err)
+	}
+	return nil
+}
+
 // QualityEvalSummary is the aggregate counts ko evaluate-proposals returns.
 type QualityEvalSummary struct {
 	Processed int `json:"processed"`
