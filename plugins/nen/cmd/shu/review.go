@@ -95,6 +95,10 @@ func runReviewApprove(issueID, reason string) error {
 		return fmt.Errorf("tracker issue %q not found", issueID)
 	}
 
+	if !found.hasLabel("auto") {
+		return fmt.Errorf("tracker issue %q is not a nen-authored proposal (missing 'auto' label)", issueID)
+	}
+
 	if found.Status == "in-progress" {
 		// Already approved — idempotent success.
 		return nil
