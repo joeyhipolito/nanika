@@ -134,40 +134,39 @@ Produce clear, scannable documentation that answers the reader's question within
 
 ## Examples
 
-**Input:** "Write the SKILL.md for the new reddit CLI plugin"
+**Input:** "Write the SKILL.md for the new tracker CLI plugin"
 
 **Output:**
 ```markdown
-# Reddit CLI — Skill Reference
+# Tracker CLI — Skill Reference
 
-Reddit CLI for reading feeds, posting content, commenting, and voting.
+Local issue tracker with hierarchical relationships and blocking links.
 
 ## Quick Start
 
 \`\`\`bash
-reddit configure cookies           # Extract cookies from Chrome
-reddit doctor                      # Verify setup
-reddit feed --subreddit golang     # Read a subreddit
+tracker init                                 # Create the local database
+tracker create "Fix login bug" --priority P0 # Open a new issue
+tracker list                                 # See what's open
 \`\`\`
 
 ## Commands
 
-### Feed Reading
+### Creating Issues
 \`\`\`bash
-reddit feed                        # Home feed
-reddit feed --subreddit golang     # Subreddit feed
-reddit feed --sort new             # Sort: hot/new/top/rising
+tracker create "Task title"
+tracker create "Subtask" --parent trk-ABC1
+tracker create "Task" --labels "backend,urgent"
 \`\`\`
 
-### Posting
+### Linking and Ready Detection
 \`\`\`bash
-reddit post --subreddit golang --title "Title" "body text"
+tracker link trk-ABC1 trk-XYZ2 --type blocks
+tracker list --status open
 \`\`\`
 
 ## Config
 
-Stored at `~/.reddit/config` (0600 permissions):
-- `reddit_session` — main session cookie
-- `csrf_token` — CSRF protection token
-- `username` — auto-detected
+Stored at `~/.alluka/tracker/tracker.db` (SQLite). Delete the file to reset
+state; use `tracker init` to recreate it.
 ```

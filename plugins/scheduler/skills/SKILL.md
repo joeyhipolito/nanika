@@ -1,22 +1,21 @@
 ---
 name: scheduler
-description: Schedules and runs cron jobs and the nanika publishing pipeline via scheduler CLI. Use when scheduling jobs, managing cron tasks, running the daemon, checking job history, or setting up the daily publishing pipeline.
+description: Schedules and runs cron jobs via scheduler CLI. Use when scheduling jobs, managing cron tasks, running the daemon, or checking job history.
 allowed-tools: Bash(scheduler:*)
 argument-hint: "[job-id]"
-keywords: scheduler, cron, jobs, daemon, pipeline, automation, history
+keywords: scheduler, cron, jobs, daemon, automation, history
 category: productivity
 version: "1.1.0"
 ---
 
-# Scheduler — Cron Job Runner + Publishing Pipeline
+# Scheduler — Cron Job Runner
 
-Manages recurring shell jobs with cron expressions. Powers the nanika publishing pipeline. All state is persisted in SQLite at `~/.alluka/scheduler/scheduler.db`.
+Manages recurring shell jobs with cron expressions. All state is persisted in SQLite at `~/.alluka/scheduler/scheduler.db`.
 
 ## When to Use
 
 - User wants to schedule a recurring shell command or script
 - User wants to run the daemon that executes scheduled jobs
-- User wants to set up or modify the nanika publishing pipeline
 - User asks about cron jobs, periodic tasks, or automation
 - User wants to view execution history or check job logs
 - User wants to verify their scheduler setup is working
@@ -57,27 +56,19 @@ scheduler daemon --stop
 scheduler daemon >> ~/.alluka/logs/scheduler.log 2>&1 &
 ```
 
-### Init — Nanika Publishing Pipeline
+### Init
 
-Creates the three default pipeline jobs in one step. Skips any job that already exists by name.
+Creates the scheduler database and registers any default jobs. The release ships with an empty default-job list — you add your own jobs via `scheduler jobs add`. The nen self-improvement loop registers its own jobs on first run via `shu propose --init`.
 
 ```bash
-# Create default pipeline jobs
+# Initialize the database
 scheduler init
 
-# Replace existing jobs (removes old ones first)
+# Replace existing jobs with the same name (used after adding default jobs)
 scheduler init --force
 ```
 
-Default jobs created:
-
-| Job | Schedule | Command |
-|---|---|---|
-| `daily-scout` | 8 AM daily | `scout gather` |
-| `daily-engage` | 9 AM daily | `engage scan && engage draft --reschedule-post` |
-| `weekly-brief` | Monday 10 AM | `scout intel` |
-
-After running `scheduler init`, start the daemon to activate the schedule:
+After `scheduler init`, start the daemon to activate the schedule:
 
 ```bash
 scheduler init
@@ -170,53 +161,6 @@ scheduler query action disable <job-id> --json
 scheduler query actions --json
 ```
 
-## Publishing Pipeline Schedule
-
-The `scheduler init` command sets up the nanika publishing pipeline with three jobs:
-
-```
-08:00 daily    scout gather                                # Pull fresh intelligence from all topics
-09:00 daily    engage scan && engage draft --reschedule-post  # Draft replies; seed posting loop
-10:00 Monday   scout intel                                 # Weekly intelligence brief
-```
-
-**How it works:**
-
-1. `daily-scout` at 8 AM runs `scout gather` to pull fresh articles and signals from all configured topics into the local scout store.
-2. `daily-engage` at 9 AM (after scout has run) calls `engage scan` to surface engagement opportunities, then `engage draft --reschedule-post` to generate draft responses. `--reschedule-post` seeds the posting loop: if any drafts were created, it schedules a one-shot `engage-commit-YYYYMMDD` job for tomorrow at a random time between 08:00–20:59. The `&&` ensures drafts only run if scan succeeds.
-3. After a human reviews and approves drafts via `engage review` + `engage approve`, the scheduled `engage-commit-YYYYMMDD` job fires and posts them via `engage commit --count 3 --reschedule`. The `--reschedule` flag re-queues itself for the following day if approved drafts remain — self-sustaining the loop.
-4. `weekly-brief` on Monday at 10 AM runs `scout intel` to produce a weekly intelligence summary across all topics.
-
-**Starting the pipeline:**
-
-```bash
-# One-time setup
-scheduler init
-
-# Start the daemon to activate the schedule
-scheduler daemon
-
-# Verify jobs were created
-scheduler jobs
-
-# After running for a while, check history
-scheduler history
-```
-
-**Modifying the pipeline:**
-
-```bash
-# Change daily-scout to 7 AM
-scheduler jobs remove <daily-scout-id>
-scheduler jobs add --name "daily-scout" --cron "0 7 * * *" --command "scout gather"
-
-# Disable weekly-brief temporarily
-scheduler jobs disable <weekly-brief-id>
-
-# Re-enable it
-scheduler jobs enable <weekly-brief-id>
-```
-
 ## Configuration
 
 Config file: `~/.alluka/scheduler/config` (key=value format)
@@ -252,8 +196,8 @@ Run `scheduler configure` to create it interactively. All keys are optional — 
 Every job run appends a JSON line to `~/.alluka/events/scheduler.jsonl`:
 
 ```json
-{"type":"schedule.completed","job_id":1,"job_name":"daily-scout","command":"scout gather","duration_ms":4201,"exit_code":0,"ts":"2026-03-25T08:00:04Z"}
-{"type":"schedule.failed","job_id":2,"job_name":"daily-engage","command":"engage scan && engage draft --reschedule-post","duration_ms":312,"exit_code":1,"stderr":"connection refused","ts":"2026-03-25T09:00:00Z"}
+{"type":"schedule.completed","job_id":1,"job_name":"daily-backup","command":"tar czf /tmp/backup.tgz ~/docs","duration_ms":4201,"exit_code":0,"ts":"2026-03-25T08:00:04Z"}
+{"type":"schedule.failed","job_id":2,"job_name":"health-check","command":"curl -s localhost:8080/health","duration_ms":312,"exit_code":1,"stderr":"connection refused","ts":"2026-03-25T09:00:00Z"}
 ```
 
 Use `scheduler history` to view this log in a readable tabular format, or tail it directly:
@@ -264,8 +208,8 @@ tail -f ~/.alluka/events/scheduler.jsonl | jq .
 
 ## Examples
 
-**User**: "schedule a daily email digest at 8am"
-**Action**: `scheduler jobs add --name "daily-digest" --cron "0 8 * * *" --command "gmail inbox --unread --json"`
+**User**: "schedule a nightly database dump at 2am"
+**Action**: `scheduler jobs add --name "nightly-dump" --cron "0 2 * * *" --command "pg_dump mydb > /backups/mydb-$(date +%F).sql"`
 
 **User**: "check what scheduled jobs are running"
 **Action**: `scheduler jobs`

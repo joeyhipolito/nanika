@@ -44,8 +44,7 @@ The orchestrator daemon emits structured events to JSONL files and a Unix domain
 
 ```
 orchestrator daemon  →  events.sock (UDS)  →  nen-daemon (scanners)
-                     →  events/*.jsonl     →  dashboard (UI)
-                                           →  discord/telegram (notifications)
+                     →  events/*.jsonl     →  discord/telegram (notifications)
 ```
 
 Plugins are **subscribers, not dependencies**. The orchestrator runs fine without any of them installed.
@@ -73,7 +72,7 @@ When findings exceed severity thresholds, `shu propose` auto-generates remediati
 
 ### Plugin Protocol
 
-Every plugin exposes a uniform query interface so the dashboard (and other plugins) can discover and render them without knowing implementation details:
+Every plugin exposes a uniform query interface so other plugins and tools can discover and render them without knowing implementation details:
 
 ```bash
 <plugin> query status --json   →  { "status": "ok", ... }
@@ -81,7 +80,7 @@ Every plugin exposes a uniform query interface so the dashboard (and other plugi
 <plugin> query actions --json  →  { "actions": [{ "name", "command", "description" }] }
 ```
 
-Declared in `plugin.json`. The dashboard polls these to render plugin cards, and plugins with `"ui": true` ship custom React components.
+Declared in `plugin.json`. Subscribers poll these to render plugin cards or surface actions, and plugins with `"ui": true` can ship custom components.
 
 ### Personas
 
@@ -119,7 +118,7 @@ PHASE: review    | PERSONA: security-auditor         | OBJECTIVE: Audit auth flo
 │         │  subscribe to events                         │
 ├────────────────────────────────────────────────────────┤
 │  Event Bus  (JSONL files + UDS socket)                 │
-│  orchestrator emits → nen, dashboard, channels consume │
+│  orchestrator emits → nen, channels consume            │
 ├────────────────────────────────────────────────────────┤
 │  ~/.alluka/                                            │
 │  missions/ · workspaces/ · metrics.db · findings.db    │
@@ -131,11 +130,12 @@ PHASE: review    | PERSONA: security-auditor         | OBJECTIVE: Audit auth flo
 - **decomposer** — breaks tasks into dependency-aware PHASE lines (knowledge-only, no binary)
 
 **Plugins** are the hands — domain-specific CLIs that skills invoke:
-- **Core**: **nen** (self-improvement scanners + eval engine)
-- **Recommended**: **scout** (intelligence gathering), **obsidian** (vault CLI), **tracker** (issue tracking, Rust), **scheduler** (cron + publishing), **gmail** (multi-account), **engage** (cross-platform comments)
-- **Optional**: **linkedin**, **youtube**, **reddit**, **substack**, **elevenlabs** (TTS), **ynab** (budgets), **dashboard** (macOS Spotlight overlay, Wails)
-- **Channels**: **discord** / **telegram** — notifications + native voice messages
-- **Examples**: **example-hello** / **example-bookmarks** — starter plugins for learning the system
+- **nen** — self-improvement scanners + eval engine (Shu, Gyo, Ko, En, Ryu, Zetsu)
+- **scheduler** — cron jobs and dispatch loop for mission runs
+- **tracker** — local issue tracker with hierarchical relationships and blocking links (Rust)
+- **discord** / **telegram** — channel notifications + native voice messages
+
+Build your own by dropping a CLI + `plugin.json` + `skills/SKILL.md` under `plugins/`.
 
 ## Quick Start
 
@@ -150,11 +150,11 @@ The installer is interactive — checks prerequisites, lets you pick plugins, bu
 ```bash
 scripts/install.sh                        # Interactive — pick what to install
 scripts/install.sh --core                 # Core only (orchestrator + nen + tracker + scheduler)
-scripts/install.sh --all                  # Core + discord, telegram, dashboard
+scripts/install.sh --all                  # Core + discord + telegram
 scripts/install.sh --plugins discord      # Core + specific plugins
 scripts/install.sh --no-interactive       # CI: core only, no prompts
 scripts/install.sh --dry-run              # Show what would be installed
-scripts/install.sh --repair              # Re-check prereqs, rebuild broken plugins
+scripts/install.sh --repair               # Re-check prereqs, rebuild broken plugins
 ```
 
 Open in Claude Code — it reads `CLAUDE.md` and discovers all skills automatically:
@@ -213,7 +213,7 @@ See [SKILL-STANDARD.md](docs/SKILL-STANDARD.md) for the full specification.
 
 ## Extending Nanika
 
-- **[Plugin Protocol](docs/PLUGIN-PROTOCOL.md)** — Full reference for `plugin.json`, the query protocol, dashboard microfrontend contract, and custom UI bundles.
+- **[Plugin Protocol](docs/PLUGIN-PROTOCOL.md)** — Full reference for `plugin.json` and the query protocol.
 - **[Event Bus](docs/EVENT-BUS.md)** — How to subscribe to orchestrator events (mission lifecycle, phase completions, anomalies) via the JSONL log or Unix domain socket.
 
 ## Requirements
@@ -222,9 +222,7 @@ See [SKILL-STANDARD.md](docs/SKILL-STANDARD.md) for the full specification.
 |-----------|---------|-------------|
 | Go | >= 1.25 | Skills and most plugins |
 | Claude Code | latest | Agent integration |
-| Rust/Cargo | latest | `tracker` plugin (optional) |
-| Node.js | >= 22 | `dashboard` plugin (optional) |
-| Wails | v2 | `dashboard` plugin (optional) |
+| Rust/Cargo | latest | `tracker` plugin |
 
 The installer checks only what you need based on selected plugins.
 

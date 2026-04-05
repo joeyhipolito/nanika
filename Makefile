@@ -17,7 +17,7 @@ BUILDABLE_SKILLS := $(shell \
 	done)
 
 .PHONY: FORCE help list \
-        build build-skills build-plugins build-dashboard \
+        build build-skills build-plugins \
         install install-skills setup doctor clean uninstall \
         build-all install-all test-all
 
@@ -78,7 +78,7 @@ test-all:     $(addprefix test-,$(BUILDABLE_SKILLS)) ## Test all skills
 # Reads the `build` field from each plugins/*/plugin.json and runs it.
 # Go plugins use GOWORK=off to isolate from the repo workspace.
 # Rust plugins (build starts with "cargo") run cargo directly.
-# Plugins without a build field (dashboard, nen) are skipped here.
+# Plugins without a build field are skipped here.
 build-plugins: ## Build all plugins via plugin.json build field
 	@for d in $(PLUGINS_DIR)/*/; do \
 		name=$$(basename "$$d"); \
@@ -127,14 +127,9 @@ install-plugin-%: FORCE
 	echo "  install  $$name"; \
 	(cd "$$d" && sh -c "$$install_cmd")
 
-# dashboard has its own Makefile; wails build produces a universal .app bundle.
-build-dashboard: ## Build Nanika.app via wails (darwin/universal)
-	@echo "  build  dashboard"
-	@cd $(PLUGINS_DIR)/dashboard && wails build -platform darwin/universal
-
 # ── top-level build ──────────────────────────────────────────────────────────
 
-build: build-skills build-plugins build-dashboard ## Build everything (skills + plugins + dashboard)
+build: build-skills build-plugins ## Build everything (skills + plugins)
 
 # ── install ──────────────────────────────────────────────────────────────────
 

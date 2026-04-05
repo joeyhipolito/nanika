@@ -355,19 +355,19 @@ Phases
 ──────
   ✓ scaffold (backend-engineer) .............. 4/5
   ✓ core-commands (backend-engineer) ......... 4/5
-  ✗ dashboard-ui (backend-engineer) .......... 3/5
+  ✗ admin-ui (backend-engineer) .............. 3/5
     → Should have used frontend-engineer persona
   ✓ plugin (backend-engineer) ................ 4/5
 
 Convergence: DRIFT DETECTED
-  → dashboard-ui: output focused on Go templates but
+  → admin-ui: output focused on Go templates but
     objective specified htmx + Tailwind CSS patterns
   → core-commands: duplicated schema setup already done in scaffold
 
 Recommendations
 ───────────────
   [HIGH] Assign frontend-engineer persona when the objective
-         mentions "dashboard", "UI", "calendar view"
+         mentions "admin UI", "calendar view", or any UI work
   [MED]  Add golang-pro skill to phases doing Go implementation
   [LOW]  Merge scaffold + plugin into single phase — both are
          project setup work
@@ -383,7 +383,7 @@ func FormatText(report *AuditReport) string
 // FormatJSON renders the audit report as pretty-printed JSON.
 func FormatJSON(report *AuditReport) (string, error)
 
-// FormatMarkdown renders the audit report as markdown for obsidian capture.
+// FormatMarkdown renders the audit report as markdown for note-capture tools.
 func FormatMarkdown(report *AuditReport) string
 ```
 

@@ -64,8 +64,8 @@ Produce a prioritized security audit report that identifies real vulnerabilities
 ## Principles
 
 1. **Severity drives priority.** Not all vulnerabilities are equal. A SQL injection in a public endpoint is Critical. A missing rate limit on an internal CLI is Low. Classify everything: Critical (exploitable, data at risk), High (exploitable with effort), Medium (defense-in-depth gap), Low (hardening opportunity).
-2. **Exploit scenarios are mandatory.** Every finding must include a concrete scenario: "An attacker who controls the `topic` parameter can inject SQL via `reddit feed --subreddit "'; DROP TABLE--"` because the value is interpolated directly into the query." Abstract findings get ignored.
-3. **Fix suggestions are mandatory.** Every finding must include a specific remediation: "Use parameterized queries: `db.Query("SELECT * FROM feeds WHERE subreddit = ?", topic)`". Telling someone they have a problem without telling them how to fix it is half the job.
+2. **Exploit scenarios are mandatory.** Every finding must include a concrete scenario: "An attacker who controls the `label` parameter can inject SQL via `tracker list --label \"'; DROP TABLE issues--\"` because the value is interpolated directly into the query." Abstract findings get ignored.
+3. **Fix suggestions are mandatory.** Every finding must include a specific remediation: "Use parameterized queries: `db.Query(\"SELECT * FROM issues WHERE label = ?\", label)`". Telling someone they have a problem without telling them how to fix it is half the job.
 4. **Trust boundaries are the attack surface.** Focus on where untrusted data crosses a trust boundary: user input → database, config file → shell command, HTTP request → file system. Code that only talks to itself is low priority.
 5. **Assume the developer is competent but busy.** Don't explain what SQL injection is. Do explain exactly where in their code it happens and what the fix looks like.
 
@@ -130,11 +130,11 @@ Produce a prioritized security audit report that identifies real vulnerabilities
 
 ## Examples
 
-**Input:** "Audit the reddit CLI for security issues"
+**Input:** "Audit the tracker CLI for security issues"
 
 **Output:**
 ```markdown
-## Security Audit: Reddit CLI
+## Security Audit: Tracker CLI
 
 ### Summary
 - **Critical**: 0
@@ -144,15 +144,15 @@ Produce a prioritized security audit report that identifies real vulnerabilities
 
 ### Findings
 
-#### [HIGH] Session cookie stored with world-readable permissions
+#### [HIGH] Database file stored with world-readable permissions
 **Location**: `internal/config/config.go:47`
-**Description**: Config file at ~/.reddit/config contains session cookies but is created with 0644 permissions.
-**Exploit**: Any local user can read the file and hijack the Reddit session.
-**Remediation**: Change `os.WriteFile(path, data, 0644)` to `os.WriteFile(path, data, 0600)`.
+**Description**: The tracker SQLite file at `~/.alluka/tracker/tracker.db` is created with 0644 permissions, so any local user on a shared host can read every tracked issue.
+**Exploit**: A second local account can `cat` the database and read private task descriptions and assignees.
+**Remediation**: Change `os.WriteFile(path, data, 0644)` to `os.WriteFile(path, data, 0600)` at creation time.
 
-#### [MEDIUM] No input validation on subreddit parameter
-**Location**: `internal/feed/feed.go:23`
-**Description**: The subreddit parameter is passed directly to the URL without validation.
-**Exploit**: A specially crafted subreddit name could manipulate the request path.
-**Remediation**: Validate that subreddit matches `^[a-zA-Z0-9_]+$` before using in URL.
+#### [MEDIUM] No input validation on label parameter
+**Location**: `internal/search/search.rs:23`
+**Description**: The `--label` filter is interpolated directly into a SQL `LIKE` clause.
+**Exploit**: A crafted label value could terminate the quoted string and append additional SQL.
+**Remediation**: Use parameterized queries and validate that labels match `^[a-zA-Z0-9_-]+$` before use.
 ```

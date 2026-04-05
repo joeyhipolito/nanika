@@ -28,16 +28,9 @@ Two-layer split:
 
 ## Voice Message Handling
 
-All channel platforms support voice messages. When an audio attachment arrives:
+Inbound voice messages are not transcribed by this skill. If a voice note arrives, ask the user to resend the request as text, or wire up your own transcription CLI and route the output back through normal command handling.
 
-1. Download the attachment via the platform's download tool
-2. Transcribe with `elevenlabs transcribe --input <path>`
-3. Treat the transcription as the user's message — route it through normal command handling
-4. Confirm what was heard before acting
-
-Supported audio formats: `audio/ogg`, `audio/mpeg`, `audio/mp4`, `audio/wav`, `audio/webm`
-
-Requires the elevenlabs plugin to be installed. Gracefully falls back to asking for text if unavailable.
+Outbound voice messages (sending a prerecorded audio file *to* a channel) are supported directly by the `discord` and `telegram` plugins via `send-voice-message`.
 
 ## Setup
 

@@ -169,7 +169,6 @@ format_item() { printf '%-16s %s' "$1" "$(plugin_desc "$1")"; }
 MODE=""
 SELECTED_LIST=""
 NO_INTERACTIVE=0
-SKIP_DASHBOARD=0
 DRY_RUN=0
 REPAIR=0
 JSON_OUTPUT=0
@@ -210,7 +209,6 @@ parse_flags() {
         [[ $# -gt 0 ]] || die "--plugins requires a comma-separated list"
         SELECTED_LIST="$1" ;;
       --no-interactive) NO_INTERACTIVE=1 ;;
-      --skip-dashboard) SKIP_DASHBOARD=1 ;;
       --dry-run)        DRY_RUN=1 ;;
       --repair)         REPAIR=1 ;;
       --json)           JSON_OUTPUT=1; NO_INTERACTIVE=1 ;;
@@ -230,13 +228,12 @@ usage() {
 Usage: scripts/install.sh [flags]
 
 Selection flags (mutually exclusive):
-  --all              Install everything (core + recommended + optional)
-  --core             Install core plugins only
-  --plugins LIST     Comma-separated plugin names (e.g. --plugins gmail,scout,ynab)
+  --all              Install core + optional channel plugins (discord, telegram)
+  --core             Install core plugins only (nen, tracker, scheduler)
+  --plugins LIST     Comma-separated plugin names (e.g. --plugins discord,telegram)
 
 Behavior flags:
   --no-interactive   Skip all prompts, install core plugins only
-  --skip-dashboard   Skip dashboard build (even with --all)
   --dry-run          Show what would be installed without doing it
   --repair           Re-run prerequisite checks and rebuild broken plugins
   --json             Machine-readable output (implies --no-interactive)
@@ -247,7 +244,7 @@ Examples:
   scripts/install.sh --all                     # Everything, still prompts for prereqs
   scripts/install.sh --core                    # Minimal install, no prompts
   scripts/install.sh --all --no-interactive    # CI: everything, no prompts
-  scripts/install.sh --plugins gmail,ynab      # Only core + selected plugins
+  scripts/install.sh --plugins discord         # Only core + selected plugins
   scripts/install.sh --repair                  # Fix broken install
 EOF
 }
@@ -257,7 +254,7 @@ EOF
 select_plugins() {
   case "$MODE" in
     all)
-      SELECTED_PLUGINS=("${CORE_PLUGINS[@]}" "${RECOMMENDED_PLUGINS[@]}" "${OPTIONAL_PLUGINS[@]}")
+      SELECTED_PLUGINS=("${CORE_PLUGINS[@]}" "${OPTIONAL_PLUGINS[@]}")
       ;;
     core)
       SELECTED_PLUGINS=("${CORE_PLUGINS[@]}")
@@ -280,16 +277,6 @@ select_plugins() {
       fi
       ;;
   esac
-
-  # Apply --skip-dashboard
-  if [[ "$SKIP_DASHBOARD" -eq 1 ]]; then
-    local filtered=()
-    local p
-    for p in "${SELECTED_PLUGINS[@]}"; do
-      [[ "$p" != "dashboard" ]] && filtered+=("$p")
-    done
-    SELECTED_PLUGINS=("${filtered[@]}")
-  fi
 }
 
 interactive_select() {
@@ -299,7 +286,7 @@ interactive_select() {
   if [[ "$USE_GUM" -eq 1 ]]; then
     choice=$(gum choose --cursor="● " \
       "Core          orchestrator + nen + tracker + scheduler" \
-      "Everything    Core + discord, telegram (requires Rust)" \
+      "Everything    Core + discord, telegram" \
       "Custom        Choose individual plugins")
     choice=$(echo "$choice" | awk '{print $1}' | tr '[:upper:]' '[:lower:]')
   else
@@ -323,7 +310,7 @@ interactive_select() {
       SELECTED_PLUGINS=("${CORE_PLUGINS[@]}")
       ;;
     everything*)
-      SELECTED_PLUGINS=("${CORE_PLUGINS[@]}" "${RECOMMENDED_PLUGINS[@]}" "${OPTIONAL_PLUGINS[@]}")
+      SELECTED_PLUGINS=("${CORE_PLUGINS[@]}" "${OPTIONAL_PLUGINS[@]}")
       ;;
     custom*)
       interactive_custom_select
@@ -334,27 +321,22 @@ interactive_select() {
 interactive_custom_select() {
   SELECTED_PLUGINS=("${CORE_PLUGINS[@]}")
 
-  local selectable=("${RECOMMENDED_PLUGINS[@]}" "${OPTIONAL_PLUGINS[@]}")
+  local selectable=("${OPTIONAL_PLUGINS[@]}")
 
   if [[ "$USE_GUM" -eq 1 ]]; then
     echo ""
-    echo "  Core (always installed): orchestrator, decomposer, nen"
+    echo "  Core (always installed): orchestrator, nen, tracker, scheduler"
     echo ""
 
-    # Build item list and pre-select recommended
-    local items=() selected_args=() p
+    local items=() p
     for p in "${selectable[@]}"; do
       items+=("$(format_item "$p")")
-    done
-    for p in "${RECOMMENDED_PLUGINS[@]}"; do
-      selected_args+=(--selected "$(format_item "$p")")
     done
 
     local chosen
     chosen=$(printf '%s\n' "${items[@]}" | gum choose --no-limit \
       --cursor-prefix="[ ] " --selected-prefix="[x] " --unselected-prefix="[ ] " \
-      "${selected_args[@]}" \
-      --header="Select plugins (Space to toggle, Enter to confirm):") || true
+      --header="Select optional plugins (Space to toggle, Enter to confirm):") || true
 
     while IFS= read -r line; do
       local name
@@ -363,27 +345,19 @@ interactive_custom_select() {
     done <<< "$chosen"
   else
     echo ""
-    echo "  Core (always installed): orchestrator, decomposer, nen"
-    echo ""
-    echo "  Recommended:"
-    local idx=1 p
-    for p in "${RECOMMENDED_PLUGINS[@]}"; do
-      printf "    %2d) %-16s %s\n" "$idx" "$p" "$(plugin_desc "$p")"
-      idx=$((idx + 1))
-    done
+    echo "  Core (always installed): orchestrator, nen, tracker, scheduler"
     echo ""
     echo "  Optional:"
+    local idx=1 p
     for p in "${OPTIONAL_PLUGINS[@]}"; do
       printf "    %2d) %-16s %s\n" "$idx" "$p" "$(plugin_desc "$p")"
       idx=$((idx + 1))
     done
     echo ""
-    echo "  Default (recommended): ${RECOMMENDED_PLUGINS[*]}"
-    echo ""
-    read -rp "  Enter names or numbers (comma-separated), 'a' for all, Enter for default: " input
+    read -rp "  Enter names or numbers (comma-separated), 'a' for all, Enter for none: " input
 
     if [[ -z "$input" ]]; then
-      SELECTED_PLUGINS+=("${RECOMMENDED_PLUGINS[@]}")
+      :
     elif [[ "$input" == "a" || "$input" == "all" ]]; then
       SELECTED_PLUGINS+=("${selectable[@]}")
     else
@@ -471,22 +445,17 @@ check_prerequisites() {
   fi
 
   # ── Conditionally required ──
-  local need_cargo=0 need_wails=0 need_node=0 p
+  local need_cargo=0 p
   for p in "${SELECTED_PLUGINS[@]}"; do
     case "$p" in
       tracker)   need_cargo=1 ;;
-      dashboard) need_wails=1; need_node=1 ;;
     esac
   done
 
   local conditional_missing=()
-  local has_conditional=$(( need_cargo + need_wails + need_node ))
-
-  if [[ "$has_conditional" -gt 0 ]]; then
-    [[ "$JSON_OUTPUT" -eq 0 ]] && echo "" && info "For selected plugins:"
-  fi
 
   if [[ "$need_cargo" -eq 1 ]]; then
+    [[ "$JSON_OUTPUT" -eq 0 ]] && echo "" && info "For selected plugins:"
     if command -v cargo >/dev/null 2>&1; then
       local cargo_ver
       cargo_ver=$(cargo --version 2>/dev/null)
@@ -500,40 +469,6 @@ check_prerequisites() {
     fi
   fi
 
-  if [[ "$need_wails" -eq 1 ]]; then
-    if command -v wails >/dev/null 2>&1; then
-      local wails_ver
-      wails_ver=$(wails version 2>/dev/null || echo "present")
-      ok "wails     $wails_ver"
-      record_prereq "wails" "ok" "$wails_ver" "dashboard"
-    else
-      fail "wails     not found (needed for dashboard)"
-      info "          Install: go install github.com/wailsapp/wails/v2/cmd/wails@latest"
-      record_prereq "wails" "missing" "" "dashboard"
-      conditional_missing+=("wails:dashboard")
-    fi
-  fi
-
-  if [[ "$need_node" -eq 1 ]]; then
-    if command -v node >/dev/null 2>&1; then
-      local node_raw node_major
-      node_raw=$(node --version)
-      node_major=$(parse_major "$node_raw")
-      if version_gte "$node_major" 22; then
-        ok "node      $node_raw"
-        record_prereq "node" "ok" "$node_raw" "dashboard"
-      else
-        fail "node      $node_raw (need >= 22)"
-        record_prereq "node" "old" "$node_raw" "dashboard"
-        conditional_missing+=("node:dashboard")
-      fi
-    else
-      fail "node      not found (needed for dashboard)"
-      record_prereq "node" "missing" "" "dashboard"
-      conditional_missing+=("node:dashboard")
-    fi
-  fi
-
   # ── Optional ──
   [[ "$JSON_OUTPUT" -eq 0 ]] && echo "" && info "Optional:"
 
@@ -543,22 +478,6 @@ check_prerequisites() {
   else
     warn "gemini    not found (orchestrator can still work without it)"
     record_prereq "gemini" "missing" "" ""
-  fi
-
-  if contains "linkedin" "${SELECTED_PLUGINS[@]}"; then
-    local chrome_found=0
-    if command -v google-chrome >/dev/null 2>&1 || command -v chromium >/dev/null 2>&1; then
-      chrome_found=1
-    elif [[ "$(uname)" == "Darwin" ]]; then
-      [[ -d "/Applications/Google Chrome.app" ]] || [[ -d "/Applications/Chromium.app" ]] && chrome_found=1
-    fi
-    if [[ "$chrome_found" -eq 1 ]]; then
-      ok "chrome    found"
-      record_prereq "chrome" "ok" "" "linkedin"
-    else
-      warn "chrome    not found (needed for linkedin browser automation)"
-      record_prereq "chrome" "missing" "" "linkedin"
-    fi
   fi
 
   # ── Handle conditional missing ──
@@ -581,7 +500,7 @@ check_prerequisites() {
       for entry in "${conditional_missing[@]}"; do
         tool="${entry%%:*}"
         plugin="${entry##*:}"
-        # Skip if already handled (e.g. dashboard needs both wails+node)
+        # Skip if already handled
         if [[ ${#SKIPPED_PLUGINS[@]} -gt 0 ]] && contains "$plugin" "${SKIPPED_PLUGINS[@]}"; then
           continue
         fi

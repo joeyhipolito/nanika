@@ -15,7 +15,7 @@ Config: `~/.alluka/channels/discord.json` — same file used by the orchestrator
 
 - User wants to send an audio file to Discord as a voice message
 - User wants to verify Discord channel config is working
-- After `elevenlabs generate`, pass the output as a voice message
+- User wants to deliver a prerecorded audio file through Discord
 
 ## Commands
 
@@ -43,7 +43,7 @@ discord reply --channel <channel-id> --message "Mission complete" --json
 
 ### query
 
-JSON-native subcommands for dashboard and agent use.
+JSON-native subcommands for agent and subscriber use.
 
 ```bash
 discord query status --json    # bot token status, channel count
@@ -75,9 +75,5 @@ discord doctor --json
 **User**: "send this audio to Discord"
 **Action**: `discord send-voice-message --channel <id> --audio /path/to/audio.mp3`
 
-**User**: "generate a voice message and send to Discord"
-**Action**:
-```bash
-elevenlabs generate narration.txt --output /tmp/
-discord send-voice-message --channel <id> --audio /tmp/narration.mp3
-```
+**User**: "send the recorded voice note to the #ops channel"
+**Action**: `discord send-voice-message --channel <ops-channel-id> --audio /tmp/note.mp3`

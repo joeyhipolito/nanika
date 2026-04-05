@@ -176,7 +176,7 @@ internal/
 ## Objective
 Goal description.
 
-PHASE: discover | OBJECTIVE: Research X | PERSONA: researcher | SKILLS: scout
+PHASE: discover | OBJECTIVE: Research prior art for X | PERSONA: academic-researcher
 PHASE: implement | OBJECTIVE: Build Y | PERSONA: senior-backend-engineer | DEPENDS: discover
 PHASE: review | OBJECTIVE: Review implementation | PERSONA: staff-code-reviewer | DEPENDS: implement
 ```

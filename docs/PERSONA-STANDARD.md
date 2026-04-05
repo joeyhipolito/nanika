@@ -74,7 +74,7 @@ The first line of the file → `Title`. The full file → `Content`. The filenam
 | Section | Parsed? | When to Include |
 |---------|---------|----------------|
 | `## Learning Focus` | Yes → `LearningFocus[]` | Technical personas that accumulate domain knowledge |
-| `## In-Mission Note Capture` | No | Content-producing personas (shows `obsidian capture` patterns) |
+| `## In-Mission Note Capture` | No | Content-producing personas (shows note-capture patterns) |
 | `## Examples` | No | When input/output examples clarify the persona's work |
 
 ## 3. WhenToUse Quality Criteria
@@ -278,7 +278,7 @@ output_requires:           # optional — list of section headers required in ou
 - `triggers` are short (1–3 word) keywords used by the keyword scorer when Haiku is unavailable. They complement `## When to Use` bullets — keep them terse and distinct.
 - `output_requires` is only needed for personas whose output must contain specific sections (e.g., reviewers that must emit `### Blockers` and `### Warnings`).
 - The `handoffs` list must exactly match filenames in `personas/` (no `.md` extension). Run `TestHandoffIntegrity` to verify.
-- The `role` field is informational — the orchestrator uses it for phase categorization and dashboard coloring (see `personaColor()` in `daemon/api.go`).
+- The `role` field is informational — the orchestrator uses it for phase categorization and UI coloring (see `personaColor()` in `daemon/api.go`).
 
 ---
 
