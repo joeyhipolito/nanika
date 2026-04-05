@@ -127,6 +127,17 @@ install-plugin-%: FORCE
 	echo "  install  $$name"; \
 	(cd "$$d" && sh -c "$$install_cmd")
 
+# nen_mcp: explicit targets needed because GNU Make 3.81 (macOS default) uses
+# first-match for pattern rules, so build-% wins over build-plugin-% on that version.
+build-plugin-nen_mcp: FORCE ## Build nen-mcp binary → plugins/nen_mcp/bin/nen-mcp
+	@echo "  build  nen_mcp"
+	@cd $(PLUGINS_DIR)/nen_mcp && GOWORK=off go build -ldflags "-s -w" -o bin/nen-mcp ./cmd/nen-mcp
+
+install-plugin-nen_mcp: FORCE ## Install nen-mcp binary → ~/bin/nen-mcp
+	@echo "  install  nen_mcp"
+	@cd $(PLUGINS_DIR)/nen_mcp && ln -sf $(PLUGINS_DIR)/nen_mcp/bin/nen-mcp $(HOME)/bin/nen-mcp
+
+
 # ── top-level build ──────────────────────────────────────────────────────────
 
 build: build-skills build-plugins ## Build everything (skills + plugins)

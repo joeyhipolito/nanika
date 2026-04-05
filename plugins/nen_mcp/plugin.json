@@ -1,0 +1,24 @@
+{
+  "name": "nen_mcp",
+  "version": "0.1.0",
+  "api_version": 1,
+  "description": "MCP server for the nen ability system. Exposes nen scanners and findings via the Model Context Protocol (stdio JSON-RPC transport).",
+  "icon": "MinimalisticMagnifer",
+  "binary": "nen-mcp",
+  "build": "go build -ldflags \"-s -w\" -o bin/nen-mcp ./cmd/nen-mcp",
+  "install": "ln -sf $(pwd)/bin/nen-mcp ~/bin/nen-mcp",
+  "tags": ["nen", "mcp", "model-context-protocol", "scanner"],
+  "mcp": {
+    "servers": {
+      "nen": {
+        "command": "nen-mcp",
+        "args": []
+      }
+    }
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/joeyhipolito/nanika",
+    "path": "plugins/nen_mcp"
+  }
+}
