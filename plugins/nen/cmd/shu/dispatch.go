@@ -43,6 +43,14 @@ type dispatchRow struct {
 	Outcome     string
 }
 
+// Overridable seams used by runDispatch — replaced in unit tests.
+var (
+	openProposalsDBFn    = openProposalsDB
+	selectDispatchableFn = selectNextDispatchable
+	orchestratorRunner   = runOrchestrator
+	trackerUpdater       = runTrackerUpdate
+)
+
 // checkThrottle inspects the dispatches table and returns whether a new dispatch
 // may start right now. Does not record anything — caller must call
 // recordDispatchStart on throttleAllow.
@@ -75,6 +83,77 @@ func checkThrottle(db *sql.DB, limits dispatchLimits, now time.Time) (throttleDe
 	}
 
 	return throttleAllow, nil
+}
+
+// reserveDispatchSlot atomically checks the throttle and inserts a new dispatch
+// row in a single BEGIN IMMEDIATE transaction, preventing two concurrent callers
+// from both passing the throttle check. Returns (rowID, decision, error).
+// On throttleDeferConcurrent or throttleDeferRate, rowID is 0.
+func reserveDispatchSlot(db *sql.DB, limits dispatchLimits, issueID, missionFile string, now time.Time) (int64, throttleDecision, error) {
+	conn, err := db.Conn(context.Background())
+	if err != nil {
+		return 0, throttleAllow, fmt.Errorf("acquiring db connection: %w", err)
+	}
+	defer conn.Close()
+
+	// Ensure the busy handler is active on this connection before acquiring the
+	// write lock. The DSN _busy_timeout param may not propagate to Conn().
+	if _, err := conn.ExecContext(context.Background(), "PRAGMA busy_timeout = 5000"); err != nil {
+		return 0, throttleAllow, fmt.Errorf("setting busy_timeout: %w", err)
+	}
+	if _, err := conn.ExecContext(context.Background(), "BEGIN IMMEDIATE"); err != nil {
+		return 0, throttleAllow, fmt.Errorf("begin immediate: %w", err)
+	}
+
+	rollback := func() {
+		_, _ = conn.ExecContext(context.Background(), "ROLLBACK")
+	}
+
+	// Count active (un-finished) dispatches.
+	var active int
+	if err := conn.QueryRowContext(context.Background(), `
+		SELECT COUNT(*) FROM dispatches WHERE finished_at IS NULL`,
+	).Scan(&active); err != nil {
+		rollback()
+		return 0, throttleAllow, fmt.Errorf("counting active dispatches: %w", err)
+	}
+	if active >= limits.MaxConcurrent {
+		rollback()
+		return 0, throttleDeferConcurrent, nil
+	}
+
+	// Count dispatches in the rolling 1-hour window.
+	windowStart := now.Add(-1 * time.Hour).UTC().Format(time.RFC3339)
+	var recent int
+	if err := conn.QueryRowContext(context.Background(), `
+		SELECT COUNT(*) FROM dispatches WHERE started_at >= ?`, windowStart,
+	).Scan(&recent); err != nil {
+		rollback()
+		return 0, throttleAllow, fmt.Errorf("counting recent dispatches: %w", err)
+	}
+	if recent >= limits.MaxPerHour {
+		rollback()
+		return 0, throttleDeferRate, nil
+	}
+
+	// Insert dispatch row while still holding the write lock.
+	result, err := conn.ExecContext(context.Background(), `
+		INSERT INTO dispatches (issue_id, mission_file, started_at) VALUES (?, ?, ?)`,
+		issueID, missionFile, now.UTC().Format(time.RFC3339))
+	if err != nil {
+		rollback()
+		return 0, throttleAllow, fmt.Errorf("inserting dispatch: %w", err)
+	}
+	rowID, err := result.LastInsertId()
+	if err != nil {
+		rollback()
+		return 0, throttleAllow, fmt.Errorf("getting dispatch row id: %w", err)
+	}
+
+	if _, err := conn.ExecContext(context.Background(), "COMMIT"); err != nil {
+		return 0, throttleAllow, fmt.Errorf("commit: %w", err)
+	}
+	return rowID, throttleAllow, nil
 }
 
 // recoverCrashedDispatches marks any dispatch row that started more than 6 h
@@ -209,7 +288,7 @@ type dispatchResult struct {
 }
 
 // runDispatch is the full dispatch pipeline:
-// recover crashed → check throttle → select issue → record start →
+// recover crashed → check throttle → select issue → reserve slot →
 // orchestrator run → shu close or revert → record finish.
 func runDispatch(args []string) error {
 	fs := flag.NewFlagSet("dispatch", flag.ContinueOnError)
@@ -224,7 +303,7 @@ func runDispatch(args []string) error {
 
 	limits := dispatchLimits{MaxConcurrent: *maxConcurrent, MaxPerHour: *maxPerHour}
 
-	db, err := openProposalsDB()
+	db, err := openProposalsDBFn()
 	if err != nil {
 		return fmt.Errorf("opening proposals.db: %w", err)
 	}
@@ -237,11 +316,12 @@ func runDispatch(args []string) error {
 		fmt.Fprintf(os.Stderr, "warning: %v\n", err)
 	}
 
+	// Fast-path non-transactional check to avoid the tracker query when
+	// clearly throttled. The authoritative check is in reserveDispatchSlot.
 	decision, err := checkThrottle(db, limits, now)
 	if err != nil {
 		return fmt.Errorf("checking throttle: %w", err)
 	}
-
 	if decision == throttleDeferConcurrent {
 		return printDispatchResult(*jsonOut, dispatchResult{
 			Action: "throttled",
@@ -258,7 +338,7 @@ func runDispatch(args []string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	issue, missionFile, err := selectNextDispatchable(ctx)
+	issue, missionFile, err := selectDispatchableFn(ctx)
 	if err != nil {
 		return fmt.Errorf("selecting dispatchable issue: %w", err)
 	}
@@ -277,23 +357,48 @@ func runDispatch(args []string) error {
 		})
 	}
 
-	rowID, err := recordDispatchStart(db, issue.displayID(), missionFile, now)
+	// Atomically check throttle + insert dispatch row.
+	rowID, slotDecision, err := reserveDispatchSlot(db, limits, issue.displayID(), missionFile, now)
 	if err != nil {
-		return fmt.Errorf("recording dispatch start: %w", err)
+		return fmt.Errorf("reserving dispatch slot: %w", err)
+	}
+	if slotDecision == throttleDeferConcurrent {
+		return printDispatchResult(*jsonOut, dispatchResult{
+			Action: "throttled",
+			Reason: fmt.Sprintf("concurrent limit reached (%d)", limits.MaxConcurrent),
+		})
+	}
+	if slotDecision == throttleDeferRate {
+		return printDispatchResult(*jsonOut, dispatchResult{
+			Action: "throttled",
+			Reason: fmt.Sprintf("rate limit reached (%d/hour)", limits.MaxPerHour),
+		})
 	}
 
-	workspaceID, runErr := runOrchestrator(missionFile)
+	orchCtx, orchCancel := context.WithTimeout(context.Background(), 4*time.Hour)
+	defer orchCancel()
+
+	workspaceID, runErr := orchestratorRunner(orchCtx, missionFile)
 	if runErr != nil {
+		outcome := "failure"
+		if orchCtx.Err() == context.DeadlineExceeded {
+			outcome = "timeout"
+		}
 		// Revert tracker issue to open so it can be retried.
-		_ = runTrackerUpdate(issue.displayID(), "open")
+		if revertErr := trackerUpdater(issue.displayID(), "open"); revertErr != nil {
+			fmt.Fprintf(os.Stderr, "warning: tracker revert failed for %s: %v\n", issue.displayID(), revertErr)
+			if outcome == "failure" {
+				outcome = "failure-stuck"
+			}
+		}
 		finishTime := time.Now().UTC()
-		_ = recordDispatchFinish(db, rowID, "failure", workspaceID, finishTime)
+		_ = recordDispatchFinish(db, rowID, outcome, workspaceID, finishTime)
 		return printDispatchResult(*jsonOut, dispatchResult{
 			Action:      "failure",
 			IssueID:     issue.displayID(),
 			MissionFile: missionFile,
 			WorkspaceID: workspaceID,
-			Outcome:     "failure",
+			Outcome:     outcome,
 			Reason:      runErr.Error(),
 		})
 	}
@@ -332,13 +437,16 @@ func runDispatch(args []string) error {
 
 // runOrchestrator invokes `orchestrator run <missionFile>` and returns the
 // workspace ID extracted from its stdout. Returns an error if the process exits
-// non-zero.
-func runOrchestrator(missionFile string) (string, error) {
-	cmd := exec.Command("orchestrator", "run", missionFile)
+// non-zero or if the context deadline is exceeded.
+func runOrchestrator(ctx context.Context, missionFile string) (string, error) {
+	cmd := exec.CommandContext(ctx, "orchestrator", "run", missionFile)
 	out, err := cmd.Output()
 	outStr := string(out)
 	workspaceID := extractWorkspaceID(outStr)
 	if err != nil {
+		if ctx.Err() == context.DeadlineExceeded {
+			return workspaceID, fmt.Errorf("orchestrator run %s timed out: %w", missionFile, context.DeadlineExceeded)
+		}
 		return workspaceID, fmt.Errorf("orchestrator run %s: %w", missionFile, err)
 	}
 	return workspaceID, nil

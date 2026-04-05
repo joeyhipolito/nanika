@@ -1,7 +1,14 @@
 package main
 
 import (
+	"context"
 	"database/sql"
+	"errors"
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -241,6 +248,205 @@ func TestRecordDispatchFinish_UpdatesOutcome(t *testing.T) {
 	}
 	if finishedAt == "" {
 		t.Error("finished_at should be set")
+	}
+}
+
+// --- reserveDispatchSlot tests ---
+
+func TestReserveDispatchSlot_ConcurrentCallers(t *testing.T) {
+	// Use a file-based SQLite DB so the WAL+busy_timeout can mediate concurrent
+	// writers (in-memory :memory: databases are per-connection and don't share state).
+	dbPath := filepath.Join(t.TempDir(), "proposals.db")
+	setup, err := sql.Open("sqlite", dbPath+"?_journal_mode=WAL&_busy_timeout=5000")
+	if err != nil {
+		t.Fatalf("open setup db: %v", err)
+	}
+	for _, stmt := range []string{
+		`CREATE TABLE IF NOT EXISTS proposals (dedup_key TEXT PRIMARY KEY, last_proposed_at DATETIME NOT NULL)`,
+		`CREATE TABLE IF NOT EXISTS dispatches (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			issue_id TEXT NOT NULL,
+			mission_file TEXT NOT NULL,
+			workspace_id TEXT NOT NULL DEFAULT '',
+			started_at DATETIME NOT NULL,
+			finished_at DATETIME,
+			outcome TEXT NOT NULL DEFAULT ''
+		)`,
+	} {
+		if _, err := setup.Exec(stmt); err != nil {
+			t.Fatalf("migrate: %v", err)
+		}
+	}
+	setup.Close()
+
+	openDB := func(t *testing.T) *sql.DB {
+		t.Helper()
+		db, err := sql.Open("sqlite", dbPath+"?_journal_mode=WAL&_busy_timeout=5000")
+		if err != nil {
+			t.Fatalf("open db: %v", err)
+		}
+		return db
+	}
+
+	limits := dispatchLimits{MaxConcurrent: 1, MaxPerHour: 6}
+	now := time.Now().UTC()
+
+	type result struct {
+		rowID    int64
+		decision throttleDecision
+		err      error
+	}
+
+	results := make([]result, 2)
+	var wg sync.WaitGroup
+	wg.Add(2)
+
+	for i := range results {
+		i := i
+		go func() {
+			defer wg.Done()
+			db := openDB(t)
+			defer db.Close()
+			rowID, decision, err := reserveDispatchSlot(db, limits, "TRK-1", "/mission.md", now)
+			results[i] = result{rowID, decision, err}
+		}()
+	}
+	wg.Wait()
+
+	var allowCount int
+	for _, r := range results {
+		if r.err != nil {
+			t.Fatalf("unexpected error: %v", r.err)
+		}
+		if r.decision == throttleAllow {
+			allowCount++
+			if r.rowID <= 0 {
+				t.Error("expected positive rowID for the allowed dispatch")
+			}
+		}
+	}
+	if allowCount != 1 {
+		t.Fatalf("expected exactly 1 allowed dispatch, got %d", allowCount)
+	}
+}
+
+// --- runOrchestrator timeout tests ---
+
+func TestRunOrchestrator_TimeoutKillsChild(t *testing.T) {
+	// Build a tiny Go binary that sleeps 10s so exec.CommandContext can kill
+	// the actual process (not a grandchild of a shell interpreter).
+	srcDir := t.TempDir()
+	src := filepath.Join(srcDir, "main.go")
+	if err := os.WriteFile(src, []byte(`package main
+import "time"
+func main() { time.Sleep(10 * time.Second) }
+`), 0o644); err != nil {
+		t.Fatalf("write stub src: %v", err)
+	}
+
+	binDir := t.TempDir()
+	stub := filepath.Join(binDir, "orchestrator")
+	buildOut, buildErr := exec.Command("go", "build", "-o", stub, src).CombinedOutput()
+	if buildErr != nil {
+		t.Fatalf("build stub: %v\n%s", buildErr, buildOut)
+	}
+
+	t.Setenv("PATH", binDir+":"+os.Getenv("PATH"))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
+	defer cancel()
+
+	_, err := runOrchestrator(ctx, "/fake/mission.md")
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if ctx.Err() != context.DeadlineExceeded {
+		t.Fatalf("expected ctx.Err()=DeadlineExceeded, got %v", ctx.Err())
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("expected error to wrap context.DeadlineExceeded, got: %v", err)
+	}
+}
+
+// --- runDispatch integration tests ---
+
+func TestRunDispatch_TrackerRevertFailureRecordedAsStuck(t *testing.T) {
+	// Set up a temp file SQLite DB so runDispatch can open+close it normally.
+	dbPath := filepath.Join(t.TempDir(), "proposals.db")
+	{
+		db, err := sql.Open("sqlite", dbPath+"?_journal_mode=WAL&_busy_timeout=5000")
+		if err != nil {
+			t.Fatalf("open temp db: %v", err)
+		}
+		for _, stmt := range []string{
+			`CREATE TABLE IF NOT EXISTS proposals (dedup_key TEXT PRIMARY KEY, last_proposed_at DATETIME NOT NULL)`,
+			`CREATE TABLE IF NOT EXISTS dispatches (
+				id INTEGER PRIMARY KEY AUTOINCREMENT,
+				issue_id TEXT NOT NULL,
+				mission_file TEXT NOT NULL,
+				workspace_id TEXT NOT NULL DEFAULT '',
+				started_at DATETIME NOT NULL,
+				finished_at DATETIME,
+				outcome TEXT NOT NULL DEFAULT ''
+			)`,
+		} {
+			if _, err := db.Exec(stmt); err != nil {
+				t.Fatalf("migrate: %v", err)
+			}
+		}
+		db.Close()
+	}
+
+	// Override global seams; restore after test.
+	origOpenDB := openProposalsDBFn
+	origOrch := orchestratorRunner
+	origTracker := trackerUpdater
+	origSelect := selectDispatchableFn
+	t.Cleanup(func() {
+		openProposalsDBFn = origOpenDB
+		orchestratorRunner = origOrch
+		trackerUpdater = origTracker
+		selectDispatchableFn = origSelect
+	})
+
+	openProposalsDBFn = func() (*sql.DB, error) {
+		return sql.Open("sqlite", dbPath+"?_journal_mode=WAL&_busy_timeout=5000")
+	}
+
+	labels := "auto"
+	seqID := int64(99)
+	fakeIssue := &trackerIssue{
+		ID:     "trk-99",
+		SeqID:  &seqID,
+		Status: "in-progress",
+		Labels: &labels,
+	}
+	selectDispatchableFn = func(ctx context.Context) (*trackerIssue, string, error) {
+		return fakeIssue, "/fake/mission.md", nil
+	}
+	orchestratorRunner = func(ctx context.Context, missionFile string) (string, error) {
+		return "", fmt.Errorf("orchestrator exploded")
+	}
+	trackerUpdater = func(issueID, status string) error {
+		return fmt.Errorf("tracker offline")
+	}
+
+	// runDispatch returns nil even on orchestrator failure (failure captured in result).
+	_ = runDispatch([]string{})
+
+	// Reopen DB to verify outcome.
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("reopen db: %v", err)
+	}
+	defer db.Close()
+
+	var outcome string
+	if err := db.QueryRow(`SELECT outcome FROM dispatches ORDER BY id DESC LIMIT 1`).Scan(&outcome); err != nil {
+		t.Fatalf("query outcome: %v", err)
+	}
+	if outcome != "failure-stuck" {
+		t.Errorf("expected outcome=failure-stuck, got %q", outcome)
 	}
 }
 
