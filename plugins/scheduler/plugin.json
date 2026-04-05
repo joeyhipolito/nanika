@@ -5,7 +5,7 @@
   "icon": "Calendar",
   "binary": "scheduler",
   "build": "go build -ldflags \"-s -w\" -o bin/scheduler ./cmd/scheduler-cli",
-  "install": "ln -sf $(pwd)/bin/scheduler ~/bin/scheduler",
+  "install": "ln -sf $(pwd)/bin/scheduler ~/.alluka/bin/scheduler",
   "tags": ["scheduler", "cron", "jobs", "daemon", "init", "history"],
   "repository": {
     "type": "git",

@@ -1,0 +1,35 @@
+{
+  "name": "substack",
+  "version": "0.1.0",
+  "api_version": 1,
+  "description": "Substack CLI — create drafts, publish posts, browse feed, engage with notes, and output scout-compatible intel via --scout.",
+  "icon": "PenNewSquare",
+  "binary": "substack",
+  "build": "go build -ldflags \"-s -w\" -o bin/substack ./cmd/substack-cli",
+  "install": "ln -sf $(pwd)/bin/substack ~/.alluka/bin/substack",
+  "tags": ["substack", "publishing", "blog", "feed", "scout"],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/joeyhipolito/nanika",
+    "path": "plugins/substack"
+  },
+  "ui": true,
+  "provides": ["publication", "drafts"],
+  "actions": {
+    "query status": {
+      "command": "substack query status --json",
+      "description": "Auth and config status: configured, authenticated, publication_url, subdomain",
+      "output": "status"
+    },
+    "query items": {
+      "command": "substack query items --json",
+      "description": "Configured publication resources: publication_url, subdomain, site_url",
+      "output": "items"
+    },
+    "query actions": {
+      "command": "substack query actions --json",
+      "description": "Available CLI actions with commands and descriptions",
+      "output": "actions"
+    }
+  }
+}

@@ -698,7 +698,7 @@ build_all() {
 install_all() {
   step "Installing binaries"
 
-  mkdir -p ~/bin
+  mkdir -p ~/bin ~/.alluka/bin
   cd "$REPO_ROOT"
 
   # Install skills — link from repo bin/ to ~/bin/
@@ -729,6 +729,26 @@ install_all() {
       : # spin already printed ✓
     else
       : # spin already printed ✗
+    fi
+  done
+
+  # Create ~/bin backwards-compat symlinks → ~/.alluka/bin/ for all nanika plugins
+  local nanika_plugins=(discord elevenlabs engage gmail linkedin obsidian reddit scheduler scout substack telegram tracker ynab youtube)
+  local p
+  for p in "${nanika_plugins[@]}"; do
+    if [[ -f "$HOME/.alluka/bin/$p" ]] || [[ -L "$HOME/.alluka/bin/$p" ]]; then
+      ln -sf "$HOME/.alluka/bin/$p" "$HOME/bin/$p"
+      ok "$p → ~/bin/$p (→ ~/.alluka/bin/$p)"
+    fi
+  done
+
+  # agent-browser lives in asdf shims — symlink into ~/.alluka/bin so daemons find it
+  local ab_src
+  for ab_src in "$HOME/.asdf/shims/agent-browser" "$HOME/.local/share/mise/shims/agent-browser" "$HOME/bin/agent-browser"; do
+    if [[ -f "$ab_src" ]]; then
+      ln -sf "$ab_src" "$HOME/.alluka/bin/agent-browser"
+      ok "agent-browser → ~/.alluka/bin/agent-browser"
+      break
     fi
   done
 

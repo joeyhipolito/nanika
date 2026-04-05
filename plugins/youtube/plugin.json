@@ -1,0 +1,35 @@
+{
+  "name": "youtube",
+  "version": "0.1.0",
+  "api_version": 1,
+  "description": "YouTube CLI — scan channels, post comments, like videos, and manage OAuth from the terminal.",
+  "icon": "PlayCircle",
+  "binary": "youtube",
+  "build": "go build -ldflags \"-s -w\" -o bin/youtube ./cmd/youtube-cli",
+  "install": "ln -sf $(pwd)/bin/youtube ~/.alluka/bin/youtube",
+  "tags": ["youtube", "social", "video", "engagement"],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/joeyhipolito/nanika",
+    "path": "plugins/youtube"
+  },
+  "ui": true,
+  "provides": ["channels", "videos"],
+  "actions": {
+    "query status": {
+      "command": "youtube query status --json",
+      "description": "Config and auth status: configured, has_api_key, authenticated, channel_count, budget",
+      "output": "status"
+    },
+    "query items": {
+      "command": "youtube query items --json",
+      "description": "Configured YouTube channels",
+      "output": "items"
+    },
+    "query actions": {
+      "command": "youtube query actions --json",
+      "description": "Available CLI actions with commands and descriptions",
+      "output": "actions"
+    }
+  }
+}

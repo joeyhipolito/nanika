@@ -6,7 +6,7 @@
   "icon": "ChatRoundDots",
   "binary": "telegram",
   "build": "go build -ldflags \"-s -w\" -o bin/telegram ./cmd/telegram-cli",
-  "install": "ln -sf $(pwd)/bin/telegram ~/bin/telegram",
+  "install": "ln -sf $(pwd)/bin/telegram ~/.alluka/bin/telegram",
   "tags": ["telegram", "messaging", "voice"],
   "ui": true,
   "actions": {

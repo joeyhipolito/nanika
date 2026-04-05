@@ -1,0 +1,34 @@
+{
+  "name": "ynab",
+  "version": "3.1.0",
+  "api_version": 1,
+  "description": "YNAB (You Need A Budget) command-line interface — manage budgets, transactions, and accounts from the terminal. Supports query status/items/actions for budget summary and overspent categories.",
+  "icon": "Wallet",
+  "binary": "ynab",
+  "build": "go build -ldflags \"-s -w\" -o bin/ynab ./cmd/ynab-cli",
+  "install": "ln -sf $(pwd)/bin/ynab ~/.alluka/bin/ynab",
+  "tags": ["finance", "budget", "ynab", "money"],
+  "ui": true,
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/joeyhipolito/nanika",
+    "path": "plugins/ynab"
+  },
+  "actions": {
+    "query status": {
+      "command": "ynab query status --json",
+      "description": "Budget summary: budget name, month, total budgeted, activity, balance",
+      "output": "status"
+    },
+    "query items": {
+      "command": "ynab query items --json",
+      "description": "Overspent categories this month",
+      "output": "items"
+    },
+    "query actions": {
+      "command": "ynab query actions --json",
+      "description": "Available CLI actions with commands and descriptions",
+      "output": "actions"
+    }
+  }
+}

@@ -1,0 +1,99 @@
+{
+  "name": "memory",
+  "version": "0.1.0",
+  "api_version": 1,
+  "description": "Compiled symbolic memory for agents: append-only log, direct entity state lookups, and fast lexical retrieval without embeddings or vector search.",
+  "icon": "Database",
+  "binary": "memory",
+  "build": "go build -ldflags \"-s -w\" -o bin/memory ./cmd/memory-cli",
+  "install": "ln -sf $(pwd)/bin/memory ~/bin/memory",
+  "tags": [
+    "memory",
+    "search",
+    "knowledge",
+    "symbolic",
+    "agent"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/joeyhipolito/nanika",
+    "path": "plugins/memory"
+  },
+  "provides": [
+    "status",
+    "items",
+    "actions"
+  ],
+  "actions": {
+    "status": "memory query status --json",
+    "items": "memory query items --json",
+    "actions": "memory query actions --json",
+    "action_rebuild": "memory query action rebuild --json"
+  },
+  "ui": false,
+  "capabilities": {
+    "description": "Stores and retrieves durable agent memory using a symbolic-first compiled index instead of embeddings. Use when the user wants to remember facts, search prior notes, or inspect the current state of an entity.",
+    "triggers": [
+      "remember this",
+      "store this in memory",
+      "what do we know about Alice",
+      "search memory for deployment notes",
+      "show the state for this entity",
+      "rebuild the memory index"
+    ],
+    "entities": {
+      "memory_entity": {
+        "pattern": "<entity-name>",
+        "mentionable": true,
+        "description": "A normalized entity tracked in the memory state table"
+      }
+    },
+    "commands": {
+      "add": {
+        "description": "Append a memory entry with optional entity, slots, and tags",
+        "args": [
+          "<text>",
+          "--entity <name>",
+          "--slot <key=value>",
+          "--tag <key=value>",
+          "--source <name>"
+        ]
+      },
+      "remember": {
+        "description": "Update direct entity state and store the supporting evidence entry",
+        "args": [
+          "<entity>",
+          "--slot <key=value>",
+          "--text <note>",
+          "--tag <key=value>",
+          "--source <name>"
+        ]
+      },
+      "find": {
+        "description": "Search the compiled symbolic index",
+        "args": [
+          "<query>",
+          "--top <n>"
+        ]
+      },
+      "state": {
+        "description": "Return the current slot state for an entity",
+        "args": [
+          "<entity>"
+        ]
+      },
+      "log": {
+        "description": "Show recent memory entries",
+        "args": [
+          "--limit <n>"
+        ]
+      },
+      "rebuild": {
+        "description": "Rebuild the compiled index from the append-only log"
+      },
+      "doctor": {
+        "description": "Validate storage paths and report memory stats"
+      }
+    }
+  }
+}

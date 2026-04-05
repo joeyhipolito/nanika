@@ -6,7 +6,7 @@
   "icon": "ChatRoundDots",
   "binary": "discord",
   "build": "go build -ldflags \"-s -w\" -o bin/discord ./cmd/discord-cli",
-  "install": "ln -sf $(pwd)/bin/discord ~/bin/discord",
+  "install": "ln -sf $(pwd)/bin/discord ~/.alluka/bin/discord",
   "tags": ["discord", "messaging", "voice"],
   "ui": true,
   "actions": {

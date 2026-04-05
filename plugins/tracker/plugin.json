@@ -5,7 +5,7 @@
   "icon": "ListCheck",
   "binary": "tracker",
   "build": "cargo build --release",
-  "install": "cp target/release/tracker ~/bin/tracker",
+  "install": "ln -sf $(pwd)/target/release/tracker ~/.alluka/bin/tracker",
   "tags": ["issue-tracking", "task-management", "project-management"],
   "repository": {
     "type": "git",

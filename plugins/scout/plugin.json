@@ -1,0 +1,23 @@
+{
+  "name": "scout",
+  "version": "1.0.0",
+  "description": "Intelligence gathering CLI — monitors configurable topics via RSS, HackerNews, Reddit, GitHub, Dev.to, Bluesky, arXiv, YouTube, and more. Produces scored intel files for downstream use by agents and LLMs.",
+  "icon": "MagniferZoomIn",
+  "binary": "scout",
+  "build": "go build -ldflags \"-s -w\" -o bin/scout ./cmd/scout-cli",
+  "install": "ln -sf $(pwd)/bin/scout ~/.alluka/bin/scout",
+  "tags": ["intel", "monitoring", "scraping", "rss", "news"],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/joeyhipolito/nanika",
+    "path": "plugins/scout"
+  },
+  "api_version": 1,
+  "ui": true,
+  "provides": ["status", "items", "action"],
+  "actions": {
+    "status": "scout query status --json",
+    "items": "scout query items --json",
+    "action_gather": "scout query action gather --json"
+  }
+}
