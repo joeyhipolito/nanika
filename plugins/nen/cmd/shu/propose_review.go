@@ -191,12 +191,12 @@ func proposeReviewBlockerGroup(workspaceID string, findings []proposableFinding,
 	}
 
 	key := computeDedupKey(findings[0])
-	if issueID := findExistingIssue(existing, key); issueID != "" {
+	if issueID := findBlockingIssue(existing, key, defaultDedupPolicy(), time.Now().UTC()); issueID != "" {
 		var skipped []skippedFinding
 		for _, f := range findings {
 			skipped = append(skipped, skippedFinding{
 				FindingID: f.ID,
-				Reason:    fmt.Sprintf("existing tracker issue %s covers workspace %s review-blockers", issueID, workspaceID),
+				Reason:    fmt.Sprintf("blocking tracker issue %s covers workspace %s review-blockers", issueID, workspaceID),
 			})
 		}
 		return nil, skipped, nil

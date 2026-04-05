@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/joeyhipolito/nen/internal/scan"
+	"github.com/joeyhipolito/nen/ko"
 )
 
 // --- Types shared with review.go ---
@@ -371,9 +372,9 @@ func runPropose(args []string) error {
 				}
 				continue
 			}
-			if issueID := findExistingIssue(existing, key); issueID != "" {
+			if issueID := findBlockingIssue(existing, key, defaultDedupPolicy(), time.Now().UTC()); issueID != "" {
 				for _, f := range item.findings {
-					out.Skipped = append(out.Skipped, skippedFinding{FindingID: f.ID, Reason: fmt.Sprintf("existing tracker issue %s covers same category", issueID)})
+					out.Skipped = append(out.Skipped, skippedFinding{FindingID: f.ID, Reason: fmt.Sprintf("blocking tracker issue %s covers same category", issueID)})
 				}
 				continue
 			}
@@ -424,7 +425,7 @@ func runPropose(args []string) error {
 			if err := os.WriteFile(missionPath, []byte(content), 0o644); err != nil {
 				return fmt.Errorf("writing batch mission file: %w", err)
 			}
-			if err := recordProposed(proposalsDB, key); err != nil {
+			if err := recordProposed(proposalsDB, key, ability, category, trackerID); err != nil {
 				return fmt.Errorf("recording batch proposal for %s/%s: %w", ability, category, err)
 			}
 
@@ -450,8 +451,8 @@ func runPropose(args []string) error {
 				out.Skipped = append(out.Skipped, skippedFinding{FindingID: f.ID, Reason: "proposed within the last 24 hours"})
 				continue
 			}
-			if issueID := findExistingIssue(existing, key); issueID != "" {
-				out.Skipped = append(out.Skipped, skippedFinding{FindingID: f.ID, Reason: fmt.Sprintf("existing tracker issue %s covers same category", issueID)})
+			if issueID := findBlockingIssue(existing, key, defaultDedupPolicy(), time.Now().UTC()); issueID != "" {
+				out.Skipped = append(out.Skipped, skippedFinding{FindingID: f.ID, Reason: fmt.Sprintf("blocking tracker issue %s covers same category", issueID)})
 				continue
 			}
 
@@ -492,7 +493,7 @@ func runPropose(args []string) error {
 			if err := os.WriteFile(missionPath, []byte(content), 0o644); err != nil {
 				return fmt.Errorf("writing mission file: %w", err)
 			}
-			if err := recordProposed(proposalsDB, key); err != nil {
+			if err := recordProposed(proposalsDB, key, f.Ability, f.Category, trackerID); err != nil {
 				return fmt.Errorf("recording proposal for %s: %w", f.ID, err)
 			}
 
@@ -550,7 +551,7 @@ func runPropose(args []string) error {
 		}
 		out.Skipped = append(out.Skipped, skipped...)
 		if p != nil && !*dryRun {
-			if err := recordProposed(proposalsDB, key); err != nil {
+			if err := recordProposed(proposalsDB, key, groupFindings[0].Ability, groupFindings[0].Category, p.TrackerIssue); err != nil {
 				return fmt.Errorf("recording proposal for workspace %s: %w", workspaceID, err)
 			}
 		}
@@ -604,7 +605,7 @@ func queryProposableFindings(ctx context.Context) ([]proposableFinding, error) {
 		FROM findings
 		WHERE superseded_by = ''
 		  AND (expires_at IS NULL OR expires_at > ?)
-		  AND scope_kind IN ('mission', 'phase', 'workspace')
+		  AND scope_kind IN ('mission', 'phase', 'workspace', 'eval-config')
 		  AND evidence != '[]'
 		  AND severity IN ('critical', 'high', 'medium')
 		ORDER BY
@@ -700,14 +701,75 @@ func computeDedupKey(f proposableFinding) string {
 	return fmt.Sprintf("%x", h[:8])
 }
 
-func findExistingIssue(issues []trackerIssue, dedupKey string) string {
+// dedupBlockingPolicy captures how long each tracker-issue status suppresses new
+// proposals with the same dedup label. `done` and `closed` issues never block —
+// they are treated as resolved or rejected. `in-progress` always blocks. `open`
+// and `cancelled` block only while they are within their respective TTLs.
+type dedupBlockingPolicy struct {
+	staleOpenTTL time.Duration // how long an `open` issue suppresses new proposals
+	cancelledTTL time.Duration // how long a `cancelled` issue suppresses new proposals
+}
+
+func defaultDedupPolicy() dedupBlockingPolicy {
+	return dedupBlockingPolicy{
+		staleOpenTTL: 24 * time.Hour,
+		cancelledTTL: 7 * 24 * time.Hour,
+	}
+}
+
+// findBlockingIssue returns the displayID of the first tracker issue that should
+// suppress a new proposal with the given dedup key, respecting the policy. It
+// returns "" when no issue blocks. Callers must pass `now` so tests can pin time.
+//
+// Policy table:
+//
+//	in-progress → always blocks (actively being worked)
+//	open        → blocks while updated_at is within policy.staleOpenTTL
+//	cancelled   → blocks while updated_at is within policy.cancelledTTL
+//	done        → never blocks (recurrence means the fix did not stick; re-propose)
+//	closed      → never blocks (rejected or superseded)
+//	other       → never blocks (unknown statuses do not silently suppress)
+//
+// If updated_at is missing or unparseable for a status with a TTL, the issue is
+// treated as expired (not blocking). The whole point of this policy is that
+// permanent suppression by stale tracker data is the bug being fixed — broken
+// data should fail open (propose), not fail closed (suppress forever).
+func findBlockingIssue(issues []trackerIssue, dedupKey string, policy dedupBlockingPolicy, now time.Time) string {
 	label := "dedup:" + dedupKey
 	for _, issue := range issues {
-		if issue.hasLabel(label) {
+		if !issue.hasLabel(label) {
+			continue
+		}
+		switch issue.Status {
+		case "in-progress":
 			return issue.displayID()
+		case "open":
+			if withinTTL(issue.UpdatedAt, policy.staleOpenTTL, now) {
+				return issue.displayID()
+			}
+		case "cancelled":
+			if withinTTL(issue.UpdatedAt, policy.cancelledTTL, now) {
+				return issue.displayID()
+			}
+		default:
+			// done, closed, or any other status — never blocks.
 		}
 	}
 	return ""
+}
+
+// withinTTL reports whether the given RFC3339 timestamp is newer than `now - ttl`.
+// Unparseable or empty timestamps return false so broken data does not permanently
+// suppress proposals.
+func withinTTL(updatedAt string, ttl time.Duration, now time.Time) bool {
+	if updatedAt == "" {
+		return false
+	}
+	t, err := time.Parse(time.RFC3339, updatedAt)
+	if err != nil {
+		return false
+	}
+	return now.Sub(t) < ttl
 }
 
 func proposalsDBPath() string {
@@ -735,6 +797,50 @@ func openProposalsDB() (*sql.DB, error) {
 		db.Close()
 		return nil, fmt.Errorf("migrate proposals.db: %w", err)
 	}
+	// Additive enrichment columns so ko evaluate-proposals can join a
+	// tracker issue back to its ability+category without re-parsing labels.
+	// ALTER TABLE ADD COLUMN is idempotent here because we swallow the
+	// "duplicate column name" error on re-runs.
+	enrichments := []string{
+		`ALTER TABLE proposals ADD COLUMN ability       TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE proposals ADD COLUMN category      TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE proposals ADD COLUMN tracker_issue TEXT NOT NULL DEFAULT ''`,
+	}
+	for _, stmt := range enrichments {
+		if _, err := db.Exec(stmt); err != nil {
+			if !strings.Contains(err.Error(), "duplicate column name") {
+				db.Close()
+				return nil, fmt.Errorf("migrate proposals.db (enrichment): %w", err)
+			}
+		}
+	}
+	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS dispatches (
+		id            INTEGER PRIMARY KEY AUTOINCREMENT,
+		issue_id      TEXT     NOT NULL,
+		mission_file  TEXT     NOT NULL,
+		workspace_id  TEXT     NOT NULL DEFAULT '',
+		started_at    DATETIME NOT NULL,
+		finished_at   DATETIME,
+		outcome       TEXT     NOT NULL DEFAULT ''
+	)`); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("migrate proposals.db (dispatches): %w", err)
+	}
+	if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_dispatches_started_at ON dispatches(started_at)`); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("migrate proposals.db (dispatch started index): %w", err)
+	}
+	if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_dispatches_active ON dispatches(finished_at)`); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("migrate proposals.db (dispatch active index): %w", err)
+	}
+	// Ensure the ko.QualityStore schema is in place so any subsequent
+	// propose run can read quality scores back out without a separate
+	// migration step.
+	if _, err := ko.NewQualityStore(db); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("migrate proposals.db (quality): %w", err)
+	}
 	return db, nil
 }
 
@@ -754,11 +860,20 @@ func wasRecentlyProposed(db *sql.DB, dedupKey string) (bool, error) {
 	return time.Since(t) < 24*time.Hour, nil
 }
 
-func recordProposed(db *sql.DB, dedupKey string) error {
-	_, err := db.Exec(`INSERT INTO proposals (dedup_key, last_proposed_at)
-		VALUES (?, ?)
-		ON CONFLICT(dedup_key) DO UPDATE SET last_proposed_at = excluded.last_proposed_at`,
-		dedupKey, time.Now().UTC().Format(time.RFC3339))
+// recordProposed upserts a proposal into proposals.db with the enrichment
+// columns (ability, category, tracker_issue) ko evaluate-proposals needs.
+// A call with empty ability/category/trackerIssue still succeeds — the dry-run
+// path and legacy callers fall into that shape — so downstream ko evaluation
+// just skips rows where the columns are blank.
+func recordProposed(db *sql.DB, dedupKey, ability, category, trackerIssue string) error {
+	_, err := db.Exec(`INSERT INTO proposals (dedup_key, last_proposed_at, ability, category, tracker_issue)
+		VALUES (?, ?, ?, ?, ?)
+		ON CONFLICT(dedup_key) DO UPDATE SET
+			last_proposed_at = excluded.last_proposed_at,
+			ability          = CASE WHEN excluded.ability       != '' THEN excluded.ability       ELSE proposals.ability       END,
+			category         = CASE WHEN excluded.category      != '' THEN excluded.category      ELSE proposals.category      END,
+			tracker_issue    = CASE WHEN excluded.tracker_issue != '' THEN excluded.tracker_issue ELSE proposals.tracker_issue END`,
+		dedupKey, time.Now().UTC().Format(time.RFC3339), ability, category, trackerIssue)
 	if err != nil {
 		return fmt.Errorf("recording proposal for %s: %w", dedupKey, err)
 	}
@@ -1023,7 +1138,7 @@ func runProposeInit() error {
 		if out, err := exec.Command("scheduler", "jobs", "add",
 			"--name", "dispatch-approved",
 			"--cron", "*/15 * * * *",
-			"--command", fmt.Sprintf("bash %s", scriptPath),
+			"--command", "shu dispatch --max-concurrent 1 --max-per-hour 6",
 		).CombinedOutput(); err != nil {
 			return fmt.Errorf("adding dispatch job: %s: %w", strings.TrimSpace(string(out)), err)
 		}
@@ -1045,6 +1160,23 @@ func runProposeInit() error {
 			return fmt.Errorf("adding evaluate-weekly job: %s: %w", strings.TrimSpace(string(out)), err)
 		}
 		fmt.Println("Added scheduler job: evaluate-weekly (Mondays 10am)")
+	}
+
+	exists, err = schedulerJobExists("close-sweep")
+	if err != nil {
+		return fmt.Errorf("checking close-sweep job: %w", err)
+	}
+	if exists {
+		fmt.Println("Scheduler job already exists: close-sweep (skipping)")
+	} else {
+		if out, err := exec.Command("scheduler", "jobs", "add",
+			"--name", "close-sweep",
+			"--cron", "*/15 * * * *",
+			"--command", "shu close --sweep --json",
+		).CombinedOutput(); err != nil {
+			return fmt.Errorf("adding close-sweep job: %s: %w", strings.TrimSpace(string(out)), err)
+		}
+		fmt.Println("Added scheduler job: close-sweep (every 15m)")
 	}
 
 	remDir := filepath.Join(home, ".alluka", "missions", "remediation")

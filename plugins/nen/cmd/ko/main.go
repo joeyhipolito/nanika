@@ -31,6 +31,8 @@ func main() {
 	switch cmd {
 	case "evaluate":
 		err = cmdEvaluate(ctx, os.Args[2:])
+	case "evaluate-proposals":
+		err = cmdEvaluateProposals(ctx, os.Args[2:])
 	case "results":
 		err = cmdResults(ctx, os.Args[2:])
 	case "history":
@@ -55,20 +57,22 @@ func printUsage() {
 	fmt.Fprint(os.Stderr, `ko — LLM eval engine + audit apply
 
 Usage:
-  ko evaluate <config.yaml>  [--model MODEL] [--concurrency N] [--db PATH]
-                             [--cache] [--no-cache] [--cache-ttl DURATION] [--cache-db PATH]
-                             [--dual-judge] [--use-cli]
-  ko results  [config.yaml]  [--run N] [--failures] [--json] [--db PATH]
-  ko history                 [--limit N] [--config PATH] [--db PATH]
-  ko improve  <config.yaml>  [--model MODEL] [--db PATH]
-  ko apply    <workspace-id> [--dry-run] [--model MODEL] [--format text|json]
+  ko evaluate            <config.yaml>  [--model MODEL] [--concurrency N] [--db PATH]
+                                         [--cache] [--no-cache] [--cache-ttl DURATION] [--cache-db PATH]
+                                         [--dual-judge] [--use-cli]
+  ko evaluate-proposals                  [--proposals-db PATH] [--stall-threshold DUR] [--show] [--json]
+  ko results             [config.yaml]  [--run N] [--failures] [--json] [--db PATH]
+  ko history                            [--limit N] [--config PATH] [--db PATH]
+  ko improve             <config.yaml>  [--model MODEL] [--db PATH]
+  ko apply               <workspace-id> [--dry-run] [--model MODEL] [--format text|json]
 
 Commands:
-  evaluate    Run evals from a YAML config and store results in history
-  results     Show per-test results for a past run (table or JSON)
-  history     Show past eval runs
-  improve     Analyze last run's failures and suggest improvements via Claude
-  apply       Apply audit recommendations to persona files and SKILL.md
+  evaluate            Run evals from a YAML config and store results in history
+  evaluate-proposals  Score past shu proposals by tracker outcome → proposal_quality table
+  results             Show per-test results for a past run (table or JSON)
+  history             Show past eval runs
+  improve             Analyze last run's failures and suggest improvements via Claude
+  apply               Apply audit recommendations to persona files and SKILL.md
 
 Flags:
   --use-cli   Use claude CLI instead of Anthropic API (defaults to claude-haiku-4-5 for cost efficiency)

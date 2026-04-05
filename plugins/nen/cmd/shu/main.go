@@ -170,7 +170,7 @@ func queryFindings(ctx context.Context, limit int) ([]FindingSummary, int, error
 
 func main() {
 	flag.Usage = func() {
-		fmt.Fprintf(os.Stderr, "Usage: shu <command> [flags]\n\nCommands:\n  evaluate      Evaluate nanika component health\n  propose       Propose remediation missions from findings\n  propose --init  Create scheduler jobs (propose every 4h, dispatch every 15m, evaluate weekly)\n  close         Close a tracker issue and mark findings as superseded\n  review        Interactively approve/reject pending proposals\n  query         Query latest evaluation results (status|items|actions)\n")
+		fmt.Fprintf(os.Stderr, "Usage: shu <command> [flags]\n\nCommands:\n  evaluate      Evaluate nanika component health\n  propose       Propose remediation missions from findings\n  propose --init  Create scheduler jobs (propose every 4h, dispatch every 15m, evaluate weekly)\n  dispatch      Dispatch the next approved mission (throttle-aware)\n  close         Close a tracker issue and mark findings as superseded\n  close --sweep Sweep remediation missions and reconcile resolved tracker issues\n  review        Interactively approve/reject pending proposals\n  review --approve <ID>  Approve a proposal (open → in-progress)\n  query         Query latest evaluation results (status|items|actions)\n")
 	}
 
 	args := os.Args[1:]
@@ -188,6 +188,11 @@ func main() {
 	case "propose":
 		if err := runPropose(args[1:]); err != nil {
 			fmt.Fprintf(os.Stderr, "shu propose: %v\n", err)
+			os.Exit(1)
+		}
+	case "dispatch":
+		if err := runDispatch(args[1:]); err != nil {
+			fmt.Fprintf(os.Stderr, "shu dispatch: %v\n", err)
 			os.Exit(1)
 		}
 	case "close":

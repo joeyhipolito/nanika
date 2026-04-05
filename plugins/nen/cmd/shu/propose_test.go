@@ -285,67 +285,206 @@ func TestGenerateReviewBlockerMission_BlockerDetailsEmbedded(t *testing.T) {
 	}
 }
 
-// --- findExistingIssue (dedup) ---
+// --- findBlockingIssue (status + age dedup policy) ---
+//
+// Regression guard: tracker issues with a dedup label previously suppressed new
+// proposals forever. See findBlockingIssue for the status × age policy these
+// tests exercise.
 
-func TestFindExistingIssue_FindsOpenIssueByLabel(t *testing.T) {
-	f := proposableFinding{Ability: "shu", Category: "review-blocker", ScopeKind: "workspace", ScopeValue: "ws-deduptest"}
-	key := computeDedupKey(f)
-	label := "dedup:" + key
-
-	seqID := int64(42)
-	labelStr := "auto,nen," + label
-	issues := []trackerIssue{
-		{ID: "trk-abc", SeqID: &seqID, Title: "existing", Status: "open", Labels: &labelStr},
+func makeTrackerIssueWithLabel(id, status, dedupKey string, age time.Duration, now time.Time) trackerIssue {
+	labels := "auto,nen,dedup:" + dedupKey
+	updatedAt := now.Add(-age).UTC().Format(time.RFC3339)
+	return trackerIssue{
+		ID:        id,
+		Title:     "fixture",
+		Status:    status,
+		Labels:    &labels,
+		UpdatedAt: updatedAt,
 	}
+}
 
-	got := findExistingIssue(issues, key)
+func TestFindBlockingIssue_InProgress(t *testing.T) {
+	now := time.Date(2026, 4, 5, 12, 0, 0, 0, time.UTC)
+	key := "dkey000000000001"
+	issues := []trackerIssue{makeTrackerIssueWithLabel("trk-inprog", "in-progress", key, 30*24*time.Hour, now)}
+
+	got := findBlockingIssue(issues, key, defaultDedupPolicy(), now)
 	if got == "" {
-		t.Error("expected to find existing issue, got empty string")
+		t.Error("expected in-progress issue to block, got empty string")
 	}
 }
 
-func TestFindExistingIssue_MatchesClosedIssues(t *testing.T) {
-	// Closed/done issues with the dedup label should be found — finding is skipped.
-	f := proposableFinding{Ability: "shu", Category: "review-blocker", ScopeKind: "workspace", ScopeValue: "ws-closedtest"}
-	key := computeDedupKey(f)
-	label := "dedup:" + key
-	labelStr := "auto,nen," + label
-	issues := []trackerIssue{
-		{ID: "trk-old", Title: "closed issue", Status: "done", Labels: &labelStr},
-	}
+func TestFindBlockingIssue_OpenWithinTTL(t *testing.T) {
+	now := time.Date(2026, 4, 5, 12, 0, 0, 0, time.UTC)
+	key := "dkey000000000002"
+	issues := []trackerIssue{makeTrackerIssueWithLabel("trk-open-fresh", "open", key, 12*time.Hour, now)}
 
-	got := findExistingIssue(issues, key)
+	got := findBlockingIssue(issues, key, defaultDedupPolicy(), now)
 	if got == "" {
-		t.Error("expected to find closed issue (all statuses matched), got empty string")
+		t.Error("expected 12h-old open issue to block, got empty string")
 	}
 }
 
-func TestFindExistingIssue_MatchesAllStatuses(t *testing.T) {
-	f := proposableFinding{Ability: "shu", Category: "perf", ScopeKind: "mission", ScopeValue: "m-statustest"}
-	key := computeDedupKey(f)
-	labelStr := "auto,nen,dedup:" + key
+func TestFindBlockingIssue_OpenExpiredTTL(t *testing.T) {
+	// Core stale-dedup regression guard: open issues past staleOpenTTL
+	// must release the suppression so the next cycle can re-propose.
+	now := time.Date(2026, 4, 5, 12, 0, 0, 0, time.UTC)
+	key := "dkey000000000003"
+	issues := []trackerIssue{makeTrackerIssueWithLabel("trk-open-stale", "open", key, 48*time.Hour, now)}
 
-	for _, status := range []string{"open", "in-progress", "closed", "done"} {
-		status := status
-		t.Run(status, func(t *testing.T) {
-			issues := []trackerIssue{
-				{ID: "trk-" + status, Title: "issue", Status: status, Labels: &labelStr},
-			}
-			got := findExistingIssue(issues, key)
-			if got == "" {
-				t.Errorf("status %q: expected match, got empty string", status)
-			}
-		})
-	}
-}
-
-func TestFindExistingIssue_NoMatchReturnsEmpty(t *testing.T) {
-	issues := []trackerIssue{
-		{ID: "trk-other", Title: "unrelated", Status: "open"},
-	}
-	got := findExistingIssue(issues, "deadbeef")
+	got := findBlockingIssue(issues, key, defaultDedupPolicy(), now)
 	if got != "" {
-		t.Errorf("expected empty, got %q", got)
+		t.Errorf("expected 48h-old open issue to NOT block, got %q", got)
+	}
+}
+
+func TestFindBlockingIssue_CancelledWithinTTL(t *testing.T) {
+	// Protects an explicit human rejection from being immediately re-proposed.
+	now := time.Date(2026, 4, 5, 12, 0, 0, 0, time.UTC)
+	key := "dkey000000000004"
+	issues := []trackerIssue{makeTrackerIssueWithLabel("trk-cancel-recent", "cancelled", key, 3*24*time.Hour, now)}
+
+	got := findBlockingIssue(issues, key, defaultDedupPolicy(), now)
+	if got == "" {
+		t.Error("expected 3d-old cancelled issue to block, got empty string")
+	}
+}
+
+func TestFindBlockingIssue_CancelledExpiredTTL(t *testing.T) {
+	now := time.Date(2026, 4, 5, 12, 0, 0, 0, time.UTC)
+	key := "dkey000000000005"
+	issues := []trackerIssue{makeTrackerIssueWithLabel("trk-cancel-stale", "cancelled", key, 10*24*time.Hour, now)}
+
+	got := findBlockingIssue(issues, key, defaultDedupPolicy(), now)
+	if got != "" {
+		t.Errorf("expected 10d-old cancelled issue to NOT block, got %q", got)
+	}
+}
+
+func TestFindBlockingIssue_Done(t *testing.T) {
+	// Recurrence means the fix did not stick, so re-propose — never block on done.
+	now := time.Date(2026, 4, 5, 12, 0, 0, 0, time.UTC)
+	key := "dkey000000000006"
+	issues := []trackerIssue{makeTrackerIssueWithLabel("trk-done", "done", key, time.Second, now)}
+
+	got := findBlockingIssue(issues, key, defaultDedupPolicy(), now)
+	if got != "" {
+		t.Errorf("expected done issue to NOT block, got %q", got)
+	}
+}
+
+func TestFindBlockingIssue_Closed(t *testing.T) {
+	now := time.Date(2026, 4, 5, 12, 0, 0, 0, time.UTC)
+	key := "dkey000000000007"
+	issues := []trackerIssue{makeTrackerIssueWithLabel("trk-closed", "closed", key, 5*time.Minute, now)}
+
+	got := findBlockingIssue(issues, key, defaultDedupPolicy(), now)
+	if got != "" {
+		t.Errorf("expected closed issue to NOT block, got %q", got)
+	}
+}
+
+func TestFindBlockingIssue_NoMatchingLabel(t *testing.T) {
+	now := time.Date(2026, 4, 5, 12, 0, 0, 0, time.UTC)
+	issues := []trackerIssue{makeTrackerIssueWithLabel("trk-other", "in-progress", "otherkey00000000", time.Hour, now)}
+
+	got := findBlockingIssue(issues, "mismatchkey00000", defaultDedupPolicy(), now)
+	if got != "" {
+		t.Errorf("expected empty for mismatched key, got %q", got)
+	}
+}
+
+func TestFindBlockingIssue_UnparseableUpdatedAt(t *testing.T) {
+	// Broken updated_at should fail open (not block). We prefer a redundant
+	// proposal — which a human can notice and fix — over permanent suppression
+	// caused by bad tracker data. in-progress still blocks because its TTL is
+	// not consulted.
+	key := "dkey000000000008"
+	labels := "auto,nen,dedup:" + key
+	now := time.Date(2026, 4, 5, 12, 0, 0, 0, time.UTC)
+
+	t.Run("open-with-broken-updated-at-does-not-block", func(t *testing.T) {
+		issues := []trackerIssue{{ID: "trk-broken", Status: "open", Labels: &labels, UpdatedAt: "not-a-timestamp"}}
+		if got := findBlockingIssue(issues, key, defaultDedupPolicy(), now); got != "" {
+			t.Errorf("expected unparseable open updated_at to NOT block, got %q", got)
+		}
+	})
+	t.Run("open-with-empty-updated-at-does-not-block", func(t *testing.T) {
+		issues := []trackerIssue{{ID: "trk-empty", Status: "open", Labels: &labels, UpdatedAt: ""}}
+		if got := findBlockingIssue(issues, key, defaultDedupPolicy(), now); got != "" {
+			t.Errorf("expected empty open updated_at to NOT block, got %q", got)
+		}
+	})
+	t.Run("in-progress-with-broken-updated-at-still-blocks", func(t *testing.T) {
+		issues := []trackerIssue{{ID: "trk-inprog", Status: "in-progress", Labels: &labels, UpdatedAt: "garbage"}}
+		if got := findBlockingIssue(issues, key, defaultDedupPolicy(), now); got == "" {
+			t.Error("expected in-progress to block even with broken updated_at")
+		}
+	})
+}
+
+func TestFindBlockingIssue_StaleOpenRegression(t *testing.T) {
+	// Simulates multiple stale open batch issues lingering days past the TTL.
+	// None of them may block a fresh proposal — otherwise the dedup label
+	// permanently suppresses the category, which is the original bug.
+	now := time.Date(2026, 4, 5, 12, 0, 0, 0, time.UTC)
+	createdAt := now.Add(-5 * 24 * time.Hour)
+	age := now.Sub(createdAt)
+
+	key := "dkey000000000009"
+	labels := "auto,nen,gyo,dedup:" + key
+	updatedAt := createdAt.Format(time.RFC3339)
+
+	issues := []trackerIssue{
+		{ID: "trk-0E8F", Status: "open", Labels: &labels, UpdatedAt: updatedAt},
+		{ID: "trk-6C01", Status: "open", Labels: &labels, UpdatedAt: updatedAt},
+		{ID: "trk-F121", Status: "open", Labels: &labels, UpdatedAt: updatedAt},
+		{ID: "trk-7F3A", Status: "open", Labels: &labels, UpdatedAt: updatedAt},
+		{ID: "trk-3C08", Status: "open", Labels: &labels, UpdatedAt: updatedAt},
+	}
+
+	if age < 24*time.Hour {
+		t.Fatalf("test setup bug: simulated age %s should be > 24h", age)
+	}
+
+	got := findBlockingIssue(issues, key, defaultDedupPolicy(), now)
+	if got != "" {
+		t.Errorf("regression: expected stale open issues (%s old) to NOT block, got %q", age, got)
+	}
+}
+
+func TestFindBlockingIssue_CustomPolicy(t *testing.T) {
+	// Verify the policy is actually consulted (not hardcoded 24h/7d).
+	now := time.Date(2026, 4, 5, 12, 0, 0, 0, time.UTC)
+	key := "dkey00000000000a"
+	strict := dedupBlockingPolicy{staleOpenTTL: time.Hour, cancelledTTL: time.Hour}
+
+	issues := []trackerIssue{makeTrackerIssueWithLabel("trk-open-2h", "open", key, 2*time.Hour, now)}
+	if got := findBlockingIssue(issues, key, strict, now); got != "" {
+		t.Errorf("expected strict 1h TTL to expire 2h-old open issue, got %q", got)
+	}
+
+	// But the default 24h policy should still block it.
+	if got := findBlockingIssue(issues, key, defaultDedupPolicy(), now); got == "" {
+		t.Error("expected default 24h TTL to still block 2h-old open issue")
+	}
+}
+
+func TestFindBlockingIssue_PrefersFirstBlockingMatch(t *testing.T) {
+	// When multiple matching issues exist, return the first blocking one.
+	// Non-blocking matches (done/closed) should be skipped so the scan does
+	// not stop at a non-blocking match and miss a real block.
+	now := time.Date(2026, 4, 5, 12, 0, 0, 0, time.UTC)
+	key := "dkey00000000000b"
+
+	issues := []trackerIssue{
+		makeTrackerIssueWithLabel("trk-done", "done", key, time.Hour, now),
+		makeTrackerIssueWithLabel("trk-inprog", "in-progress", key, time.Hour, now),
+	}
+
+	got := findBlockingIssue(issues, key, defaultDedupPolicy(), now)
+	if got != "trk-inprog" {
+		t.Errorf("expected to skip done and return in-progress, got %q", got)
 	}
 }
 
@@ -376,7 +515,10 @@ func openTestProposalsDB(t *testing.T) *sql.DB {
 	}
 	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS proposals (
 		dedup_key        TEXT PRIMARY KEY,
-		last_proposed_at DATETIME NOT NULL
+		last_proposed_at DATETIME NOT NULL,
+		ability          TEXT NOT NULL DEFAULT '',
+		category         TEXT NOT NULL DEFAULT '',
+		tracker_issue    TEXT NOT NULL DEFAULT ''
 	)`); err != nil {
 		t.Fatalf("create proposals table: %v", err)
 	}
@@ -398,7 +540,7 @@ func TestWasRecentlyProposed_FalseWhenNoRecord(t *testing.T) {
 func TestWasRecentlyProposed_TrueAfterRecord(t *testing.T) {
 	db := openTestProposalsDB(t)
 	key := "aabbccdd11223344"
-	if err := recordProposed(db, key); err != nil {
+	if err := recordProposed(db, key, "", "", ""); err != nil {
 		t.Fatalf("recordProposed: %v", err)
 	}
 	recent, err := wasRecentlyProposed(db, key)
@@ -436,7 +578,7 @@ func TestRecordProposed_UpdatesExistingRecord(t *testing.T) {
 		t.Fatalf("insert old record: %v", err)
 	}
 	// Re-record — should update to now
-	if err := recordProposed(db, key); err != nil {
+	if err := recordProposed(db, key, "", "", ""); err != nil {
 		t.Fatalf("recordProposed: %v", err)
 	}
 	recent, err := wasRecentlyProposed(db, key)
@@ -995,12 +1137,16 @@ func TestProposeReviewBlockerGroup_DedupSkipsWhenIssueExists(t *testing.T) {
 		},
 	}
 
-	// Create a pre-existing tracker issue with the dedup label
+	// Create a pre-existing tracker issue with the dedup label. Under the
+	// findBlockingIssue policy, an `open` issue only blocks while its
+	// updated_at is within the stale-open TTL (24h), so set a recent
+	// timestamp to guarantee the block.
 	key := computeDedupKey(findings[0])
 	labelStr := fmt.Sprintf("auto,nen,dedup:%s", key)
 	seqID := int64(7)
+	recentUpdatedAt := time.Now().UTC().Add(-1 * time.Hour).Format(time.RFC3339)
 	existing := []trackerIssue{
-		{ID: "trk-existing", SeqID: &seqID, Title: "existing review-blocker fix", Status: "open", Labels: &labelStr},
+		{ID: "trk-existing", SeqID: &seqID, Title: "existing review-blocker fix", Status: "open", Labels: &labelStr, UpdatedAt: recentUpdatedAt},
 	}
 
 	p, skipped, err := proposeReviewBlockerGroup(workspaceID, findings, existing, true, false)
@@ -1015,5 +1161,47 @@ func TestProposeReviewBlockerGroup_DedupSkipsWhenIssueExists(t *testing.T) {
 	}
 	if skipped[0].FindingID != "rb-dup-001" {
 		t.Errorf("expected skipped finding rb-dup-001, got %q", skipped[0].FindingID)
+	}
+}
+
+// Regression guard: a stale open review-blocker tracker issue (older than
+// staleOpenTTL) must no longer suppress a new proposal. Mirrors the
+// 2026-03-31 stuck-issue incident but on the review-blocker path.
+func TestProposeReviewBlockerGroup_StaleOpenIssueDoesNotBlock(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+
+	workspaceID := "20260101-staletest"
+
+	findings := []proposableFinding{
+		{
+			ID:         "rb-stale-001",
+			Ability:    "shu",
+			Category:   "review-blocker",
+			ScopeKind:  "workspace",
+			ScopeValue: workspaceID,
+			Evidence:   []evidenceItem{{Raw: "still broken", Source: "cmd/shu/bar.go"}},
+		},
+	}
+
+	key := computeDedupKey(findings[0])
+	labelStr := fmt.Sprintf("auto,nen,dedup:%s", key)
+	seqID := int64(9)
+	staleUpdatedAt := time.Now().UTC().Add(-48 * time.Hour).Format(time.RFC3339)
+	existing := []trackerIssue{
+		{ID: "trk-stale", SeqID: &seqID, Title: "stuck review-blocker issue", Status: "open", Labels: &labelStr, UpdatedAt: staleUpdatedAt},
+	}
+
+	p, skipped, err := proposeReviewBlockerGroup(workspaceID, findings, existing, true, false)
+	if err != nil {
+		t.Fatalf("proposeReviewBlockerGroup: %v", err)
+	}
+	if p == nil {
+		t.Fatal("expected a fresh proposal for stale open issue, got nil")
+	}
+	for _, s := range skipped {
+		if strings.Contains(s.Reason, "blocking tracker issue") {
+			t.Errorf("stale open issue should not be reported as blocking: %+v", s)
+		}
 	}
 }
