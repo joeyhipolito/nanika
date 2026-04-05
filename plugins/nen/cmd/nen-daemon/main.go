@@ -241,30 +241,10 @@ func openStore() (*store, error) {
 
 func (s *store) close() error { return s.db.Close() }
 
+// insert routes through scan.UpsertFinding so daemon ingestion shares the same
+// semantic-key dedup logic as PersistFindings. See TRK-382.
 func (s *store) insert(ctx context.Context, f scan.Finding) error {
-	ev, _ := json.Marshal(f.Evidence)
-	now := time.Now().UTC().Format(time.RFC3339)
-	foundAt := f.FoundAt.UTC().Format(time.RFC3339)
-	if f.FoundAt.IsZero() {
-		foundAt = now
-	}
-	var expiresAt interface{}
-	if f.ExpiresAt != nil {
-		expiresAt = f.ExpiresAt.UTC().Format(time.RFC3339)
-	}
-	_, err := s.db.ExecContext(ctx, `
-		INSERT OR IGNORE INTO findings
-			(id, ability, category, severity, title, description,
-			 scope_kind, scope_value, evidence, source,
-			 found_at, expires_at, superseded_by, created_at)
-		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-		f.ID, f.Ability, f.Category, string(f.Severity),
-		f.Title, f.Description,
-		f.Scope.Kind, f.Scope.Value,
-		string(ev), f.Source,
-		foundAt, expiresAt, f.SupersededBy, now,
-	)
-	return err
+	return scan.UpsertFinding(ctx, s.db, f)
 }
 
 func (s *store) countActive(ctx context.Context) (int, error) {
@@ -304,6 +284,8 @@ func migrateStore(db *sql.DB) error {
 		`CREATE INDEX IF NOT EXISTS idx_findings_severity ON findings(severity)`,
 		`CREATE INDEX IF NOT EXISTS idx_findings_found_at ON findings(found_at)`,
 		`CREATE INDEX IF NOT EXISTS idx_findings_active   ON findings(superseded_by, expires_at)`,
+		// Covers the semantic-key dedup lookup in scan.UpsertFinding.
+		`CREATE INDEX IF NOT EXISTS idx_findings_identity ON findings(ability, category, scope_kind, scope_value, superseded_by)`,
 	}
 	for _, stmt := range stmts {
 		if _, err := db.Exec(stmt); err != nil {

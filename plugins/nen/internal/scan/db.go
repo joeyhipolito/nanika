@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -66,8 +67,91 @@ func FindingsDBPath() (string, error) {
 	return filepath.Join(base, "nen", "findings.db"), nil
 }
 
-// PersistFindings opens (or creates) findings.db and writes findings using
-// INSERT OR IGNORE so duplicate IDs are silently skipped.
+// dbExecer is the subset of *sql.DB / *sql.Tx shared by both writers.
+type dbExecer interface {
+	ExecContext(ctx context.Context, query string, args ...interface{}) (sql.Result, error)
+	QueryRowContext(ctx context.Context, query string, args ...interface{}) *sql.Row
+}
+
+// UpsertFinding writes a single finding with semantic-key deduplication: if an
+// active (not superseded, not expired) row already exists with the same
+// (ability, category, scope_kind, scope_value), its severity / title /
+// description / evidence / found_at are refreshed in place instead of inserting
+// a new row. Otherwise a new row is inserted.
+//
+// This is the single source of truth for finding writes. Both the direct
+// scanner path (PersistFindings) and the daemon ingestion path (nen-daemon's
+// event-routed inserts) route through here so dedup behaviour stays consistent.
+// Scanners can call this on every scan cycle without growing the table
+// unbounded.
+func UpsertFinding(ctx context.Context, q dbExecer, f Finding) error {
+	ev, _ := json.Marshal(f.Evidence)
+	now := time.Now().UTC().Format(time.RFC3339)
+	foundAt := f.FoundAt.UTC().Format(time.RFC3339)
+	if f.FoundAt.IsZero() {
+		foundAt = now
+	}
+	var expiresAt interface{}
+	if f.ExpiresAt != nil {
+		expiresAt = f.ExpiresAt.UTC().Format(time.RFC3339)
+	}
+
+	// Look for an active finding with the same logical identity.
+	var existingID string
+	err := q.QueryRowContext(ctx, `
+		SELECT id FROM findings
+		WHERE ability = ?
+		  AND category = ?
+		  AND scope_kind = ?
+		  AND scope_value = ?
+		  AND superseded_by = ''
+		  AND (expires_at IS NULL OR datetime(expires_at) > datetime('now'))
+		LIMIT 1`,
+		f.Ability, f.Category, f.Scope.Kind, f.Scope.Value,
+	).Scan(&existingID)
+
+	switch {
+	case err == nil:
+		// Refresh existing row in place.
+		if _, err := q.ExecContext(ctx, `
+			UPDATE findings
+			SET severity = ?, title = ?, description = ?,
+			    evidence = ?, source = ?, found_at = ?, expires_at = ?
+			WHERE id = ?`,
+			string(f.Severity), f.Title, f.Description,
+			string(ev), f.Source, foundAt, expiresAt,
+			existingID,
+		); err != nil {
+			return fmt.Errorf("refresh finding %q: %w", existingID, err)
+		}
+		return nil
+	case errors.Is(err, sql.ErrNoRows):
+		// Insert new. INSERT OR IGNORE still guards against same-ID races.
+		if _, err := q.ExecContext(ctx, `
+			INSERT OR IGNORE INTO findings
+				(id, ability, category, severity, title, description,
+				 scope_kind, scope_value, evidence, source,
+				 found_at, expires_at, superseded_by, created_at)
+			VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+			f.ID, f.Ability, f.Category, string(f.Severity),
+			f.Title, f.Description,
+			f.Scope.Kind, f.Scope.Value,
+			string(ev), f.Source,
+			foundAt, expiresAt, f.SupersededBy, now,
+		); err != nil {
+			return fmt.Errorf("insert finding %q: %w", f.ID, err)
+		}
+		return nil
+	default:
+		return fmt.Errorf("lookup active finding (%s/%s/%s/%s): %w",
+			f.Ability, f.Category, f.Scope.Kind, f.Scope.Value, err)
+	}
+}
+
+// PersistFindings opens (or creates) findings.db and writes findings with
+// semantic-key deduplication via UpsertFinding. Intended for one-shot callers
+// (scanners that run and exit). Long-running writers that already hold an open
+// DB handle should call UpsertFinding directly.
 func PersistFindings(ctx context.Context, findings []Finding) error {
 	if len(findings) == 0 {
 		return nil
@@ -89,32 +173,20 @@ func PersistFindings(ctx context.Context, findings []Finding) error {
 		return fmt.Errorf("migrate findings.db: %w", err)
 	}
 
-	now := time.Now().UTC().Format(time.RFC3339)
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin findings tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
 	for _, f := range findings {
-		ev, _ := json.Marshal(f.Evidence)
-		foundAt := f.FoundAt.UTC().Format(time.RFC3339)
-		if f.FoundAt.IsZero() {
-			foundAt = now
+		if err := UpsertFinding(ctx, tx, f); err != nil {
+			return err
 		}
-		var expiresAt interface{}
-		if f.ExpiresAt != nil {
-			expiresAt = f.ExpiresAt.UTC().Format(time.RFC3339)
-		}
-		_, err := db.ExecContext(ctx, `
-			INSERT OR IGNORE INTO findings
-				(id, ability, category, severity, title, description,
-				 scope_kind, scope_value, evidence, source,
-				 found_at, expires_at, superseded_by, created_at)
-			VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-			f.ID, f.Ability, f.Category, string(f.Severity),
-			f.Title, f.Description,
-			f.Scope.Kind, f.Scope.Value,
-			string(ev), f.Source,
-			foundAt, expiresAt, f.SupersededBy, now,
-		)
-		if err != nil {
-			return fmt.Errorf("insert finding %q: %w", f.ID, err)
-		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit findings tx: %w", err)
 	}
 	return nil
 }
@@ -141,6 +213,8 @@ func migrateFindings(db *sql.DB) error {
 		`CREATE INDEX IF NOT EXISTS idx_findings_severity ON findings(severity)`,
 		`CREATE INDEX IF NOT EXISTS idx_findings_found_at ON findings(found_at)`,
 		`CREATE INDEX IF NOT EXISTS idx_findings_active   ON findings(superseded_by, expires_at)`,
+		// Covers the semantic-key dedup lookup in PersistFindings.
+		`CREATE INDEX IF NOT EXISTS idx_findings_identity ON findings(ability, category, scope_kind, scope_value, superseded_by)`,
 	}
 	for _, stmt := range stmts {
 		if _, err := db.Exec(stmt); err != nil {

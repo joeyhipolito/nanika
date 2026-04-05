@@ -402,10 +402,143 @@ func TestPersistFindings_EmptySliceIsNoOp(t *testing.T) {
 	}
 }
 
+// TestPersistFindings_DeduplicatesBySemanticKey is the regression guard for
+// TRK-382. Before the fix, scanners generated random IDs per scan, so the
+// same logical finding (same ability/category/scope) was inserted as a new
+// row every cycle — we saw 150x amplification in production. PersistFindings
+// must now dedupe on the logical identity and refresh the row in place.
+func TestPersistFindings_DeduplicatesBySemanticKey(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("ORCHESTRATOR_CONFIG_DIR", dir)
+
+	// Two findings with different random IDs but identical logical identity,
+	// simulating two scan cycles for the same underlying problem. The second
+	// scan updates the severity — the refresh should propagate.
+	first := scan.Finding{
+		ID:          "en-scan1-aaaa",
+		Ability:     abilitySystemHealth,
+		Category:    categoryRoutingQuality,
+		Severity:    scan.SeverityLow,
+		Title:       "stale binary",
+		Description: "first scan — mild",
+		Scope:       scan.Scope{Kind: "file", Value: "/bin/orchestrator"},
+		Source:      "en",
+		FoundAt:     time.Now().Add(-5 * time.Minute).UTC(),
+	}
+	second := first
+	second.ID = "en-scan2-bbbb" // different random ID
+	second.Severity = scan.SeverityHigh
+	second.Description = "second scan — worsened"
+	second.FoundAt = time.Now().UTC()
+
+	if err := scan.PersistFindings(context.Background(), []scan.Finding{first}); err != nil {
+		t.Fatalf("persist first: %v", err)
+	}
+	if err := scan.PersistFindings(context.Background(), []scan.Finding{second}); err != nil {
+		t.Fatalf("persist second: %v", err)
+	}
+
+	dbPath := filepath.Join(dir, "nen", "findings.db")
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer db.Close()
+
+	var count int
+	if err := db.QueryRow(`
+		SELECT COUNT(*) FROM findings
+		WHERE ability = ? AND category = ? AND scope_value = ?`,
+		abilitySystemHealth, categoryRoutingQuality, "/bin/orchestrator",
+	).Scan(&count); err != nil {
+		t.Fatalf("count: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("semantic dedup failed: want 1 row for same (ability,category,scope), got %d", count)
+	}
+
+	// Refresh propagates: the row should reflect the second scan's severity
+	// and description, not the first.
+	var gotSeverity, gotDescription string
+	if err := db.QueryRow(`
+		SELECT severity, description FROM findings
+		WHERE ability = ? AND category = ? AND scope_value = ?`,
+		abilitySystemHealth, categoryRoutingQuality, "/bin/orchestrator",
+	).Scan(&gotSeverity, &gotDescription); err != nil {
+		t.Fatalf("fetch refreshed row: %v", err)
+	}
+	if gotSeverity != string(scan.SeverityHigh) {
+		t.Errorf("severity not refreshed: want %q, got %q", scan.SeverityHigh, gotSeverity)
+	}
+	if gotDescription != "second scan — worsened" {
+		t.Errorf("description not refreshed: got %q", gotDescription)
+	}
+}
+
+// TestPersistFindings_SupersededRowsDoNotBlockDedup verifies that once a
+// finding is marked superseded, the next scan inserts a fresh row rather
+// than refreshing the old (closed) record.
+func TestPersistFindings_SupersededRowsDoNotBlockDedup(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("ORCHESTRATOR_CONFIG_DIR", dir)
+
+	f := scan.Finding{
+		ID:          "en-superseded-1",
+		Ability:     abilitySystemHealth,
+		Category:    categoryMissionActivity,
+		Severity:    scan.SeverityMedium,
+		Title:       "mission stuck",
+		Description: "original",
+		Scope:       scan.Scope{Kind: "mission", Value: "msn_abc"},
+		Source:      "en",
+		FoundAt:     time.Now().UTC(),
+	}
+	if err := scan.PersistFindings(context.Background(), []scan.Finding{f}); err != nil {
+		t.Fatalf("persist original: %v", err)
+	}
+
+	dbPath := filepath.Join(dir, "nen", "findings.db")
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer db.Close()
+
+	// Mark the original row superseded, then persist a new finding with the
+	// same identity. Both rows should coexist (one closed, one active).
+	if _, err := db.Exec(`UPDATE findings SET superseded_by = 'manual-close' WHERE id = ?`, f.ID); err != nil {
+		t.Fatalf("supersede: %v", err)
+	}
+
+	fresh := f
+	fresh.ID = "en-superseded-2"
+	fresh.Description = "reopened"
+	if err := scan.PersistFindings(context.Background(), []scan.Finding{fresh}); err != nil {
+		t.Fatalf("persist fresh: %v", err)
+	}
+
+	var total, active int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM findings WHERE scope_value = 'msn_abc'`).Scan(&total); err != nil {
+		t.Fatalf("total count: %v", err)
+	}
+	if err := db.QueryRow(`SELECT COUNT(*) FROM findings WHERE scope_value = 'msn_abc' AND superseded_by = ''`).Scan(&active); err != nil {
+		t.Fatalf("active count: %v", err)
+	}
+	if total != 2 {
+		t.Errorf("want 2 rows (1 superseded + 1 active), got %d", total)
+	}
+	if active != 1 {
+		t.Errorf("want 1 active row, got %d", active)
+	}
+}
+
 func TestPersistFindings_MultipleDistinctIDs(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("ORCHESTRATOR_CONFIG_DIR", dir)
 
+	// Distinct scope values → distinct logical identities → distinct rows.
+	// (Prior version used a single scope, which under semantic-key dedup
+	// correctly collapses to one row.)
 	findings := make([]scan.Finding, 5)
 	for i := range findings {
 		findings[i] = scan.Finding{
@@ -415,7 +548,7 @@ func TestPersistFindings_MultipleDistinctIDs(t *testing.T) {
 			Severity:    scan.SeverityInfo,
 			Title:       fmt.Sprintf("finding %d", i),
 			Description: "batch test",
-			Scope:       scan.Scope{Kind: "file", Value: "/test.db"},
+			Scope:       scan.Scope{Kind: "file", Value: fmt.Sprintf("/test-%d.db", i)},
 			Source:      "en",
 			FoundAt:     time.Now().UTC(),
 		}
