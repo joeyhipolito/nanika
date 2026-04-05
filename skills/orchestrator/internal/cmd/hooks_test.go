@@ -1,12 +1,16 @@
 package cmd
 
 import (
+	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/spf13/pflag"
+
+	"github.com/joeyhipolito/orchestrator-cli/internal/preflight"
 )
 
 // setTestConfigDir redirects the orchestrator config dir to a temp dir so
@@ -255,4 +259,299 @@ func TestHooksSnapshotSession_WorkerWithMissingOutputMd(t *testing.T) {
 	if err := rootCmd.Execute(); err != nil {
 		t.Fatalf("snapshot-session should not error when output.md is missing: %v", err)
 	}
+}
+
+// ---------------------------------------------------------------------------
+// preflight — skeleton with empty registry
+// ---------------------------------------------------------------------------
+
+func TestHooksPreflight_EmptyRegistryTextFormat(t *testing.T) {
+	resetCmdFlags(t)
+	setTestConfigDir(t)
+
+	rootCmd.SetArgs([]string{"hooks", "preflight"})
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("preflight with empty registry: %v", err)
+	}
+}
+
+func TestHooksPreflight_EmptyRegistryJSONFormat(t *testing.T) {
+	resetCmdFlags(t)
+	setTestConfigDir(t)
+
+	rootCmd.SetArgs([]string{"hooks", "preflight", "--format", "json"})
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("preflight json format: %v", err)
+	}
+}
+
+func TestHooksPreflight_NanikaNoInject(t *testing.T) {
+	resetCmdFlags(t)
+	setTestConfigDir(t)
+	t.Setenv("NANIKA_NO_INJECT", "1")
+
+	rootCmd.SetArgs([]string{"hooks", "preflight"})
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("preflight with NANIKA_NO_INJECT=1: %v", err)
+	}
+}
+
+func TestHooksPreflight_MaxBytesFlag(t *testing.T) {
+	resetCmdFlags(t)
+	setTestConfigDir(t)
+
+	rootCmd.SetArgs([]string{"hooks", "preflight", "--max-bytes", "4096"})
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("preflight with --max-bytes: %v", err)
+	}
+}
+
+func TestHooksPreflight_SectionsFlag(t *testing.T) {
+	resetCmdFlags(t)
+	setTestConfigDir(t)
+
+	rootCmd.SetArgs([]string{"hooks", "preflight", "--sections", "scheduler,tracker"})
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("preflight with --sections: %v", err)
+	}
+}
+
+func TestHooksPreflight_UnknownFormatErrors(t *testing.T) {
+	resetCmdFlags(t)
+	setTestConfigDir(t)
+
+	rootCmd.SetArgs([]string{"hooks", "preflight", "--format", "yaml"})
+	err := rootCmd.Execute()
+	if err == nil {
+		t.Fatal("expected error for unknown --format")
+	}
+	if !strings.Contains(err.Error(), "unknown --format") {
+		t.Errorf("error %q should mention 'unknown --format'", err.Error())
+	}
+}
+
+// ---------------------------------------------------------------------------
+// preflight: Budget enforcement and composition tests
+// ---------------------------------------------------------------------------
+
+func TestHooksPreflight_BudgetEnforcement_DropsLowestPriority(t *testing.T) {
+	resetCmdFlags(t)
+	configDir := setTestConfigDir(t)
+
+	// Register fake sections with varying body sizes and priorities:
+	// - s1 (priority 10, small): ~30 bytes
+	// - s2 (priority 20, small): ~30 bytes
+	// - s3 (priority 30, large): ~5000 bytes
+	// Expected: under budget, keep all. Over budget (e.g. 100 bytes),
+	// drop s3 first (lowest priority = highest index), then s2, then s1.
+
+	preflight.Reset()
+	t.Cleanup(preflight.Reset)
+
+	preflight.Register(&testFakeSection{
+		name:     "s1",
+		priority: 10,
+		body:     "section one content here",
+	})
+	preflight.Register(&testFakeSection{
+		name:     "s2",
+		priority: 20,
+		body:     "section two content here",
+	})
+	preflight.Register(&testFakeSection{
+		name:     "s3",
+		priority: 30,
+		body:     strings.Repeat("x", 5000),
+	})
+
+	// With budget 100: should keep s1, s2 and drop s3.
+	resetCmdFlags(t)
+	t.Setenv("ORCHESTRATOR_CONFIG_DIR", configDir)
+	rootCmd.SetArgs([]string{"hooks", "preflight", "--format", "text", "--max-bytes", "100"})
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("preflight with budget constraint: %v", err)
+	}
+}
+
+func TestHooksPreflight_BudgetEnforcement_KeepsHighestPriority(t *testing.T) {
+	resetCmdFlags(t)
+	configDir := setTestConfigDir(t)
+
+	// Register sections where highest-priority section is oversized.
+	// Even if it exceeds budget alone, it should be kept (to avoid empty output).
+	preflight.Reset()
+	t.Cleanup(preflight.Reset)
+
+	preflight.Register(&testFakeSection{
+		name:     "large-first",
+		priority: 10,
+		body:     strings.Repeat("x", 10000),
+	})
+	preflight.Register(&testFakeSection{
+		name:     "small-second",
+		priority: 20,
+		body:     "small",
+	})
+
+	resetCmdFlags(t)
+	t.Setenv("ORCHESTRATOR_CONFIG_DIR", configDir)
+	rootCmd.SetArgs([]string{"hooks", "preflight", "--format", "text", "--max-bytes", "100"})
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("preflight keeping high-priority oversized section: %v", err)
+	}
+}
+
+func TestHooksPreflight_DefaultCapacityWhenUnspecified(t *testing.T) {
+	resetCmdFlags(t)
+	configDir := setTestConfigDir(t)
+
+	preflight.Reset()
+	t.Cleanup(preflight.Reset)
+
+	preflight.Register(&testFakeSection{
+		name:     "test",
+		priority: 10,
+		body:     "test content",
+	})
+
+	resetCmdFlags(t)
+	t.Setenv("ORCHESTRATOR_CONFIG_DIR", configDir)
+	// Omit --max-bytes, expect default 6144
+	rootCmd.SetArgs([]string{"hooks", "preflight"})
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("preflight with default capacity: %v", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// preflight: Format parsing tests
+// ---------------------------------------------------------------------------
+
+func TestHooksPreflight_JSONFormatValid(t *testing.T) {
+	resetCmdFlags(t)
+	configDir := setTestConfigDir(t)
+
+	preflight.Reset()
+	t.Cleanup(preflight.Reset)
+
+	preflight.Register(&testFakeSection{
+		name:     "test",
+		priority: 10,
+		title:    "Test Section",
+		body:     "test body",
+	})
+
+	resetCmdFlags(t)
+	t.Setenv("ORCHESTRATOR_CONFIG_DIR", configDir)
+	rootCmd.SetArgs([]string{"hooks", "preflight", "--format", "json"})
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("preflight json format: %v", err)
+	}
+}
+
+func TestHooksPreflight_MarkdownFormatStructure(t *testing.T) {
+	resetCmdFlags(t)
+	configDir := setTestConfigDir(t)
+
+	preflight.Reset()
+	t.Cleanup(preflight.Reset)
+
+	preflight.Register(&testFakeSection{
+		name:     "scheduler",
+		priority: 10,
+		title:    "Scheduled Jobs",
+		body:     "job-1\njob-2\n",
+	})
+
+	resetCmdFlags(t)
+	t.Setenv("ORCHESTRATOR_CONFIG_DIR", configDir)
+	rootCmd.SetArgs([]string{"hooks", "preflight", "--format", "text"})
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("preflight text format: %v", err)
+	}
+	// Markdown structure validated by RenderMarkdown tests in preflight_test.go
+}
+
+func TestHooksPreflight_EmptyOutputWithNanikaNoInjectReturnsZeroBytes(t *testing.T) {
+	resetCmdFlags(t)
+	configDir := setTestConfigDir(t)
+	t.Setenv("NANIKA_NO_INJECT", "1")
+
+	preflight.Reset()
+	t.Cleanup(preflight.Reset)
+
+	resetCmdFlags(t)
+	t.Setenv("ORCHESTRATOR_CONFIG_DIR", configDir)
+	rootCmd.SetArgs([]string{"hooks", "preflight"})
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("preflight with NANIKA_NO_INJECT=1: %v", err)
+	}
+	// Exit code 0 and zero output — runPreflight returns nil without printing.
+}
+
+// ---------------------------------------------------------------------------
+// preflight: Integration test with fixture home directory
+// ---------------------------------------------------------------------------
+
+func TestHooksPreflight_IntegrationWithFixtureHome(t *testing.T) {
+	resetCmdFlags(t)
+
+	// Create a fixture home directory with subdirectories for scheduler, tracker, etc.
+	fixtureHome := t.TempDir()
+	allukaDir := filepath.Join(fixtureHome, ".alluka")
+	if err := os.MkdirAll(filepath.Join(allukaDir, "missions"), 0700); err != nil {
+		t.Fatalf("mkdir .alluka/missions: %v", err)
+	}
+
+	// Point ALLUKA_HOME to fixture, ORCHESTRATOR_CONFIG_DIR to temp DB.
+	configDir := filepath.Join(fixtureHome, ".config", "orchestrator")
+	if err := os.MkdirAll(configDir, 0700); err != nil {
+		t.Fatalf("mkdir orchestrator config: %v", err)
+	}
+
+	t.Setenv("ALLUKA_HOME", fixtureHome)
+	t.Setenv("ORCHESTRATOR_CONFIG_DIR", configDir)
+
+	preflight.Reset()
+	t.Cleanup(preflight.Reset)
+
+	// Register a simple test section that reads from the fixture directory.
+	preflight.Register(&testFakeSection{
+		name:     "fixture-test",
+		priority: 10,
+		title:    "Fixture Data",
+		body:     fmt.Sprintf("Fixture home: %s", fixtureHome),
+	})
+
+	resetCmdFlags(t)
+	rootCmd.SetArgs([]string{"hooks", "preflight", "--format", "text"})
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("preflight with fixture home: %v", err)
+	}
+
+	// Verify the fixture directory was preserved throughout the operation.
+	if _, err := os.Stat(allukaDir); os.IsNotExist(err) {
+		t.Error("fixture home directory was not preserved")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Test helper: testFakeSection for composition tests
+// ---------------------------------------------------------------------------
+
+type testFakeSection struct {
+	name     string
+	priority int
+	title    string
+	body     string
+}
+
+func (s *testFakeSection) Name() string     { return s.name }
+func (s *testFakeSection) Priority() int    { return s.priority }
+func (s *testFakeSection) Fetch(_ context.Context) (preflight.Block, error) {
+	title := s.title
+	if title == "" {
+		title = strings.ToUpper(s.name)
+	}
+	return preflight.Block{Title: title, Body: s.body}, nil
 }

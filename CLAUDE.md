@@ -73,6 +73,57 @@ PHASE: implement | OBJECTIVE: ... | PERSONA: senior-backend-engineer
 PHASE: review | OBJECTIVE: Review the implementation for correctness and test coverage | PERSONA: staff-code-reviewer | DEPENDS: implement
 ```
 
+## Hooks
+
+### orchestrator hooks preflight
+
+Assembles a full operational brief from all registered sections and prints it to stdout. This is the **SessionStart hook** — it runs automatically at the start of every Claude session.
+
+```bash
+# Manual invocation (same as SessionStart hook)
+orchestrator hooks preflight
+
+# Specific sections only
+orchestrator hooks preflight --sections learnings,tracker
+
+# Adjust byte budget
+orchestrator hooks preflight --max-bytes 12288
+
+# Machine-readable (no truncation)
+orchestrator hooks preflight --format json
+
+# Suppress (CI / automated sessions)
+NANIKA_NO_INJECT=1 orchestrator hooks preflight
+```
+
+Sections in priority order (highest first): `scheduler` → `tracker` → `learnings` → `nen` → `mission`. When the 6 KB default budget is exceeded, lowest-priority sections are dropped first.
+
+**Manual smoke test:**
+```bash
+# 1. Verify output is non-empty and under 6 KB
+orchestrator hooks preflight | wc -c
+
+# 2. Confirm section headers are present
+orchestrator hooks preflight | grep "^### "
+
+# 3. Confirm opt-out works (must print 0)
+NANIKA_NO_INJECT=1 orchestrator hooks preflight | wc -c
+
+# 4. Confirm JSON round-trips
+orchestrator hooks preflight --format json | jq '.blocks | length'
+```
+
+### orchestrator hooks inject-context
+
+Prints learnings only — use inside agent worker prompts that need targeted context without the full operational brief.
+
+```bash
+orchestrator hooks inject-context --limit 15 --max-bytes 4096
+```
+
+`preflight` is the right choice for SessionStart. `inject-context` is for targeted learnings-only injection inside worker sessions.
+
+
 <!-- NANIKA-AGENTS-MD-START -->
 [Nanika Skills Index][root: .claude/skills]IMPORTANT: Prefer retrieval-led reasoning over pre-training-led reasoning. Read skill files before making assumptions.
 
