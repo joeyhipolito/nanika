@@ -94,6 +94,23 @@ PHASE: review    | PERSONA: security-auditor         | OBJECTIVE: Audit auth flo
 
 10 included: `academic-researcher` · `architect` · `data-analyst` · `devops-engineer` · `qa-engineer` · `security-auditor` · `senior-backend-engineer` · `senior-frontend-engineer` · `staff-code-reviewer` · `technical-writer`
 
+#### On persona design
+
+Most agent frameworks give models a role identity — *"You are a senior software engineer with 10 years of experience..."* — and call it a persona.
+
+We don't do that.
+
+The role-playing framing is a holdover from how human teams are structured. It made sense when a human could only do one job. Models don't have that constraint. Telling a model it *is* an architect doesn't make it better at architecture — the identity framing is empirically inert. What actually changes output is **behavioral constraints**: what to produce, what to avoid, what the output contract is, and what failure modes to guard against.
+
+Every nanika persona leads with `## Constraints` first — not identity. No "You are a...", no backstory, no persona fiction. Just:
+
+- What this agent must do
+- What it must never do  
+- What a correct output looks like
+- What patterns to avoid
+
+The direction for future iterations is further in this direction: composable constraint modules that stack onto any worker without any identity layer at all. The goal is to make roles unnecessary — not simulate them.
+
 ## Architecture
 
 ```
