@@ -1,12 +1,17 @@
 package worker
 
 import (
+	"sort"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/joeyhipolito/orchestrator-cli/internal/core"
 )
+
+// maxScratchInjectionBytes is the maximum total size of prior-phase scratch notes
+// injected into a worker's CLAUDE.md. Prevents context bloat across long chains.
+const maxScratchInjectionBytes = 4096
 
 // ArtifactMeta holds the metadata injected as YAML frontmatter into markdown artifacts.
 type ArtifactMeta struct {
@@ -96,6 +101,36 @@ func BuildCLAUDEmd(bundle core.ContextBundle) string {
 		b.WriteString("IMPORTANT: The following work has already been completed. Build on it, don't repeat it.\n\n")
 		b.WriteString(bundle.PriorContext)
 		b.WriteString("\n\n")
+	}
+
+	// 3b. Scratch notes from dependency phases
+	if len(bundle.PriorScratch) > 0 {
+		b.WriteString("## Prior Phase Notes\n\n")
+		b.WriteString("Scratch notes left by completed dependency phases:\n\n")
+		// Sort keys for deterministic output — map iteration order is random in Go.
+		names := make([]string, 0, len(bundle.PriorScratch))
+		for name := range bundle.PriorScratch {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		var total int
+		for _, name := range names {
+			notes := bundle.PriorScratch[name]
+			header := "### " + name + "\n\n"
+			if total+len(header)+len(notes) > maxScratchInjectionBytes {
+				remaining := maxScratchInjectionBytes - total
+				if remaining > len(header)+20 {
+					b.WriteString(header)
+					b.WriteString(notes[:remaining-len(header)])
+					b.WriteString("\n\n[truncated — exceeded 4KB scratchpad limit]\n\n")
+				}
+				break
+			}
+			b.WriteString(header)
+			b.WriteString(notes)
+			b.WriteString("\n\n")
+			total += len(header) + len(notes)
+		}
 	}
 
 	// 4. Role handoff context (grouped with prior context — same type of info)
@@ -233,6 +268,13 @@ func BuildCLAUDEmd(bundle core.ContextBundle) string {
 	}))
 	b.WriteString("```\n\n")
 	b.WriteString("The `produced_by`, `phase`, and `workspace` values are pre-filled. Update `created_at` to when you create each file, `confidence` to high/medium/low, `depends_on` to relevant phase IDs, and `token_estimate` to an approximate token count.\n\n")
+
+	// 13b. Scratchpad instructions
+	b.WriteString("## Scratchpad\n\n")
+	b.WriteString("To pass notes to downstream phases, wrap them in scratch markers in your output:\n\n")
+	b.WriteString("```\n<!-- scratch -->\nYour notes for the next phase here.\n<!-- /scratch -->\n```\n\n")
+	b.WriteString("The orchestrator extracts these blocks and injects them as **Prior Phase Notes** into dependent phases. ")
+	b.WriteString("Keep notes concise (under 4KB total). Use this for design decisions, gotchas, or context that downstream phases need.\n\n")
 
 	// 14. Completion signal instructions
 	b.WriteString("## Completion Signal\n\n")

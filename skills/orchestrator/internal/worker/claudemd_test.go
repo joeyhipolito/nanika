@@ -184,6 +184,7 @@ func TestBuildCLAUDEmd_SectionOrder(t *testing.T) {
 		"## Constraints",                  // 10. constraints
 		"## Workspace",                    // 12. workspace
 		"## Output",                       // 13. output instructions
+		"## Scratchpad",                   // 13b. scratchpad instructions
 		"## Completion Signal",            // 14. signal instructions
 		"## Learning Capture",             // 15. capture instructions
 	}
@@ -795,6 +796,139 @@ func TestBuildCLAUDEmd_GitConstraint_AlwaysPresent(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// BuildCLAUDEmd: Prior Phase Notes (scratchpad injection)
+// ---------------------------------------------------------------------------
+
+func TestBuildCLAUDEmd_PriorScratch_Populated(t *testing.T) {
+	bundle := core.ContextBundle{
+		Persona:     "# Test Persona",
+		PersonaName: "test",
+		Objective:   "Implement the feature",
+		Domain:      "dev",
+		WorkspaceID: "ws-scratch",
+		PhaseID:     "phase-2",
+		PriorScratch: map[string]string{
+			"design": "Use optimistic locking for concurrent updates.",
+		},
+	}
+
+	md := BuildCLAUDEmd(bundle)
+
+	if !strings.Contains(md, "## Prior Phase Notes") {
+		t.Error("CLAUDE.md missing Prior Phase Notes section")
+	}
+	if !strings.Contains(md, "### design") {
+		t.Error("CLAUDE.md missing design phase header in scratch notes")
+	}
+	if !strings.Contains(md, "optimistic locking") {
+		t.Error("CLAUDE.md missing scratch note content")
+	}
+}
+
+func TestBuildCLAUDEmd_PriorScratch_Empty(t *testing.T) {
+	bundle := core.ContextBundle{
+		Persona:     "# Test Persona",
+		PersonaName: "test",
+		Objective:   "Do something",
+		Domain:      "dev",
+		WorkspaceID: "ws-noscratch",
+		PhaseID:     "phase-1",
+	}
+
+	md := BuildCLAUDEmd(bundle)
+
+	if strings.Contains(md, "## Prior Phase Notes") {
+		t.Error("CLAUDE.md should not have Prior Phase Notes when PriorScratch is nil")
+	}
+}
+
+func TestBuildCLAUDEmd_PriorScratch_4KBCap(t *testing.T) {
+	// Create a scratch note that exceeds 4KB
+	bigNote := strings.Repeat("x", 5000)
+	bundle := core.ContextBundle{
+		Persona:     "# Test Persona",
+		PersonaName: "test",
+		Objective:   "Do something",
+		Domain:      "dev",
+		WorkspaceID: "ws-bigscratch",
+		PhaseID:     "phase-2",
+		PriorScratch: map[string]string{
+			"design": bigNote,
+		},
+	}
+
+	md := BuildCLAUDEmd(bundle)
+
+	if !strings.Contains(md, "## Prior Phase Notes") {
+		t.Fatal("CLAUDE.md missing Prior Phase Notes section")
+	}
+	if !strings.Contains(md, "[truncated") {
+		t.Error("CLAUDE.md should contain truncation marker for oversized scratch notes")
+	}
+	// The full 5000-byte note should NOT appear
+	if strings.Contains(md, bigNote) {
+		t.Error("CLAUDE.md should not contain the full oversized note")
+	}
+}
+
+func TestBuildCLAUDEmd_PriorScratch_Ordering(t *testing.T) {
+	bundle := core.ContextBundle{
+		Persona:      "# Test Persona",
+		PersonaName:  "test",
+		Objective:    "Do something",
+		PriorContext: "Prior work output",
+		Domain:       "dev",
+		WorkspaceID:  "ws-order",
+		PhaseID:      "phase-2",
+		PriorScratch: map[string]string{
+			"design": "Some design notes",
+		},
+	}
+
+	md := BuildCLAUDEmd(bundle)
+
+	priorCtxIdx := strings.Index(md, "## Context from Prior Work")
+	scratchIdx := strings.Index(md, "## Prior Phase Notes")
+	constraintsIdx := strings.Index(md, "## Constraints")
+
+	if priorCtxIdx < 0 || scratchIdx < 0 || constraintsIdx < 0 {
+		t.Fatalf("missing sections: priorCtx=%d scratch=%d constraints=%d",
+			priorCtxIdx, scratchIdx, constraintsIdx)
+	}
+	if scratchIdx <= priorCtxIdx {
+		t.Error("Prior Phase Notes should appear after Context from Prior Work")
+	}
+	if constraintsIdx <= scratchIdx {
+		t.Error("Constraints should appear after Prior Phase Notes")
+	}
+}
+
+// TestBuildCLAUDEmd_ScratchpadInstructions verifies the scratchpad usage
+// instructions appear in the Output section area.
+func TestBuildCLAUDEmd_ScratchpadInstructions(t *testing.T) {
+	bundle := core.ContextBundle{
+		Persona:     "# Test Persona",
+		PersonaName: "test",
+		Objective:   "Do something",
+		Domain:      "dev",
+		WorkspaceID: "ws-instructions",
+		PhaseID:     "phase-1",
+	}
+
+	md := BuildCLAUDEmd(bundle)
+
+	if !strings.Contains(md, "## Scratchpad") {
+		t.Error("CLAUDE.md missing Scratchpad instructions section")
+	}
+	if !strings.Contains(md, "<!-- scratch -->") {
+		t.Error("CLAUDE.md missing scratch marker example")
+	}
+	if !strings.Contains(md, "<!-- /scratch -->") {
+		t.Error("CLAUDE.md missing closing scratch marker example")
 	}
 }
 

@@ -153,6 +153,12 @@ func LearningsDir(wsPath string) string {
 	return filepath.Join(wsPath, "learnings")
 }
 
+// ScratchDir returns the path to the scratch directory for a given phase.
+// The path is derived (not stored) so callers must MkdirAll before writing.
+func ScratchDir(wsPath, phaseID string) string {
+	return filepath.Join(wsPath, "scratch", phaseID)
+}
+
 // ListWorkspaces returns all workspace directories, newest first.
 func ListWorkspaces() ([]string, error) {
 	base, err := config.Dir()

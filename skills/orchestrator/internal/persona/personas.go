@@ -520,7 +520,22 @@ func MatchWithMethod(task string) (string, SelectionMethod) {
 	return keywordMatchWithMethod(task)
 }
 
-// llmMatch asks Haiku to pick the best persona for a task.
+// llmMatchModel is the model used for LLM-based persona matching.
+// Override with PERSONA_MATCH_MODEL env var (e.g. "sonnet", "opus").
+// Default is "haiku" for speed and cost efficiency.
+var llmMatchModel = func() string {
+	if m := os.Getenv("PERSONA_MATCH_MODEL"); m != "" {
+		return m
+	}
+	return "haiku"
+}()
+
+// llmMatchTimeout is the maximum time allowed for an LLM persona match call.
+// Silent failures from rate limits or stalls fall back to keyword matching.
+const llmMatchTimeout = 15 * time.Second
+
+// llmMatch asks an LLM to pick the best persona for a task.
+// Model defaults to haiku; override with PERSONA_MATCH_MODEL env var.
 func llmMatch(ctx context.Context, task string) (string, error) {
 	summary := FormatForDecomposer()
 
@@ -534,11 +549,15 @@ func llmMatch(ctx context.Context, task string) (string, error) {
 
 Reply with just the persona name (e.g., "senior-backend-engineer"):`, summary, task)
 
-	output, err := sdk.QueryText(ctx, prompt, &sdk.AgentOptions{
-		Model:    "haiku",
+	matchCtx, cancel := context.WithTimeout(ctx, llmMatchTimeout)
+	defer cancel()
+
+	output, err := sdk.QueryText(matchCtx, prompt, &sdk.AgentOptions{
+		Model:    llmMatchModel,
 		MaxTurns: 1,
 	})
 	if err != nil {
+		fmt.Fprintf(os.Stderr, "[persona] llmMatch failed (model=%s): %v — falling back to keyword\n", llmMatchModel, err)
 		return "", err
 	}
 

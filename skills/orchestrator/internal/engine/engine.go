@@ -626,6 +626,9 @@ func (e *Engine) executePhase(ctx context.Context, phase *core.Phase, priorConte
 		})
 	}
 
+	// Collect scratch notes from completed dependency phases.
+	priorScratch := e.collectPriorScratch(phase)
+
 	// Build context bundle
 	bundle := core.ContextBundle{
 		Objective:      phase.Objective,
@@ -641,7 +644,8 @@ func (e *Engine) executePhase(ctx context.Context, phase *core.Phase, priorConte
 		Handoffs:       handoffs,
 		Role:           phase.Role,
 		Runtime:        phase.Runtime,
-		// WorkerDir is populated by worker.Spawn after the directory is created.
+		PriorScratch:   priorScratch,
+		// WorkerDir and ScratchDir are populated by worker.Spawn after the directory is created.
 	}
 
 	// Spawn worker
@@ -856,6 +860,9 @@ func (e *Engine) executePhase(ctx context.Context, phase *core.Phase, priorConte
 		completedData["role"] = string(phase.Role)
 	}
 	e.emit(ctx, event.PhaseCompleted, phaseID, config.Name, completedData)
+
+	// Extract scratch blocks from phase output and persist them.
+	e.extractScratch(phase, output)
 
 	// Prefer the worker's output.md artifact for the prior context payload.
 	// worker.Execute writes the SDK text there; agents may also write their own

@@ -181,6 +181,10 @@ type ContextBundle struct {
 	// Runtime is the execution backend for this phase. Propagated into CLAUDE.md
 	// for worker awareness.
 	Runtime Runtime
+	// PriorScratch holds scratch notes from completed dependency phases.
+	// Keys are phase names; values are the notes content (already capped).
+	// Injected into CLAUDE.md as "Prior Phase Notes".
+	PriorScratch map[string]string
 }
 
 // Skill represents an inlined skill reference.

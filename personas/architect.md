@@ -14,6 +14,8 @@ triggers:
   - component boundaries
   - trade-off
   - storage selection
+  - research
+  - technology evaluation
 handoffs:
   - senior-backend-engineer
   - senior-frontend-engineer

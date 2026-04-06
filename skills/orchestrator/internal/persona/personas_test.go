@@ -1431,3 +1431,71 @@ func min(a, b int) int {
 	}
 	return b
 }
+
+// TestLLMRoutingAccuracyBenchmark runs the same 23-case benchmark through the LLM
+// persona selector. Skipped by default — requires a live claude CLI session.
+//
+// Run with:
+//
+//	go test ./internal/persona/... -run TestLLMRoutingAccuracyBenchmark -v
+//	PERSONA_MATCH_MODEL=sonnet go test ./internal/persona/... -run TestLLMRoutingAccuracyBenchmark -v
+func TestLLMRoutingAccuracyBenchmark(t *testing.T) {
+	if os.Getenv("RUN_LLM_BENCHMARK") == "" {
+		t.Skip("set RUN_LLM_BENCHMARK=1 to run (requires live claude CLI, slow)")
+	}
+
+	Load()
+
+	benchmark := []struct {
+		task    string
+		correct string
+		desc    string
+	}{
+		{"fix the goroutine leak in the worker pool", "senior-backend-engineer", "goroutine bug"},
+		{"implement a REST endpoint for user authentication in Go", "senior-backend-engineer", "Go REST endpoint"},
+		{"add SQLite migration for the new learnings table", "senior-backend-engineer", "DB migration"},
+		{"build the dashboard component with React and Tailwind", "senior-frontend-engineer", "React component"},
+		{"fix the CSS layout bug in the navigation bar", "senior-frontend-engineer", "CSS fix"},
+		{"design the plugin architecture for the orchestrator", "architect", "system design"},
+		{"choose between PostgreSQL and SQLite for the new service", "architect", "tech decision"},
+		{"review the pull request for the authentication module", "staff-code-reviewer", "PR review"},
+		{"assess the integration readiness of the new auth subsystem", "architect", "systems review"},
+		{"validate contract stability between auth and payment services", "architect", "cross-service contract"},
+		{"review the deployment rollback path for the new migration", "devops-engineer", "deployment rollback"},
+		{"operational readiness check before launching the new queue", "devops-engineer", "operational readiness"},
+		{"review this Go handler for nil pointer issues", "staff-code-reviewer", "code-level negative case"},
+		{"write integration tests for the API endpoints", "qa-engineer", "integration tests"},
+		{"set up end-to-end test automation for the CLI", "qa-engineer", "e2e tests"},
+		{"audit the authentication system for security vulnerabilities", "security-auditor", "security audit"},
+		{"research the latest Go frameworks for building REST APIs", "architect", "tech research"},
+		{"conduct a literature review on pair programming productivity", "academic-researcher", "literature review"},
+		{"set up the CI/CD pipeline with GitHub Actions", "devops-engineer", "CI/CD setup"},
+		{"configure Docker containers for the service", "devops-engineer", "Docker config"},
+		{"analyze the performance metrics from the last 30 days", "data-analyst", "metrics analysis"},
+		{"write API documentation for the orchestrator endpoints", "technical-writer", "API docs"},
+		{"write a technical article about our orchestrator architecture", "technical-writer", "technical article"},
+	}
+
+	model := llmMatchModel
+	t.Logf("Model: %s", model)
+
+	correct := 0
+	total := len(benchmark)
+	for _, tt := range benchmark {
+		name, err := llmMatch(context.Background(), tt.task)
+		if err != nil {
+			t.Logf("ERROR [%s]: %v", tt.desc, err)
+			continue
+		}
+		if name == tt.correct {
+			correct++
+		} else {
+			t.Logf("MISS  [%s]: want %s, got %s", tt.desc, tt.correct, name)
+		}
+	}
+
+	accuracy := float64(correct) * 100 / float64(total)
+	t.Logf("\n=== LLM Routing Accuracy (model=%s) ===", model)
+	t.Logf("Score: %d/%d (%.1f%%)", correct, total, accuracy)
+	t.Logf("=========================================")
+}

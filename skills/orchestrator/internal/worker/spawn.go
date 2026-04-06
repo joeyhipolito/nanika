@@ -50,6 +50,27 @@ func Spawn(wsPath string, phase *core.Phase, bundle core.ContextBundle) (*core.W
 		return nil, fmt.Errorf("write CLAUDE.md: %w", err)
 	}
 
+	// Write settings.local.json with role-specific deny rules.
+	// Always written to workerDir (CWD when no TargetDir).
+	// When TargetDir is set the worker CWD is targetDir, so deny rules must
+	// also be placed there — Claude Code reads settings.local.json from
+	// {cwd}/.claude/, not from --add-dir paths.
+	denyRules := DenyRulesForRole(bundle.Role)
+	if len(denyRules) > 0 {
+		settingsJSON, err := buildSettingsLocal(denyRules)
+		if err != nil {
+			return nil, fmt.Errorf("build settings.local.json: %w", err)
+		}
+		if err := writeSettingsFile(filepath.Join(workerDir, ".claude"), settingsJSON); err != nil {
+			return nil, fmt.Errorf("write settings.local.json: %w", err)
+		}
+		if bundle.TargetDir != "" {
+			if err := writeTargetSettings(bundle.TargetDir, settingsJSON); err != nil {
+				return nil, fmt.Errorf("write target settings.local.json: %w", err)
+			}
+		}
+	}
+
 	// Generate stop hook for learning capture
 	learningsPath := filepath.Join(core.LearningsDir(wsPath), workerName+".json")
 	hookScript := learning.GenerateHookScript(workerName, bundle.Domain, wsPath, learningsPath)

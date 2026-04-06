@@ -142,6 +142,12 @@ func Execute(ctx context.Context, config *core.WorkerConfig, emitter event.Emitt
 		addDirs = []string{config.WorkerDir}
 	}
 
+	// Clean up deny-rule settings.local.json from target repo after execution
+	// to avoid polluting git status. Restores any pre-existing file.
+	if config.TargetDir != "" {
+		defer cleanupTargetSettings(config.TargetDir)
+	}
+
 	prompt := buildWorkerPrompt(config.Bundle)
 
 	output, err := sdk.QueryText(ctx, prompt, &sdk.AgentOptions{
