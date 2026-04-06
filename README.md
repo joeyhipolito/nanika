@@ -80,7 +80,7 @@ Every plugin exposes a uniform query interface so other plugins and tools can di
 <plugin> query actions --json  →  { "actions": [{ "name", "command", "description" }] }
 ```
 
-Declared in `plugin.json`. Subscribers poll these to render plugin cards or surface actions, and plugins with `"ui": true` can ship custom components.
+Declared in `plugin.json`. Subscribers poll these to render plugin cards or surface actions. The `"ui": true` field is reserved for future UI rendering support.
 
 ### Personas
 
