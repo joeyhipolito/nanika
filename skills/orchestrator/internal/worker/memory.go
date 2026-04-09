@@ -1106,10 +1106,18 @@ func BridgeSessionMemory(sourceDir string) (int, error) {
 		if entryType != "project" && entryType != "reference" {
 			continue
 		}
-		// Use the first non-empty line of body as content, or the name
+		// Use the name as content. If no name, use the first non-empty
+		// line of body. Multi-line bodies don't round-trip through the
+		// line-based global MEMORY.md format, so we only keep the summary.
 		entryContent := name
-		if body != "" {
-			entryContent = body
+		if entryContent == "" && body != "" {
+			for _, line := range strings.Split(body, "\n") {
+				line = strings.TrimSpace(line)
+				if line != "" && !strings.HasPrefix(line, "#") {
+					entryContent = line
+					break
+				}
+			}
 		}
 		if entryContent == "" {
 			continue

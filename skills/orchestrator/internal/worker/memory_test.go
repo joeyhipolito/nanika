@@ -2535,7 +2535,7 @@ func TestBridgeSessionMemory_SkipsNonProjectTypes(t *testing.T) {
 	if len(lines) != 1 {
 		t.Fatalf("want 1 line, got %d: %v", len(lines), lines)
 	}
-	if !strings.Contains(lines[0], "New active project note") {
+	if !strings.Contains(lines[0], "Active project") {
 		t.Errorf("expected project entry, got %q", lines[0])
 	}
 }
