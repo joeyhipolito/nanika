@@ -14,6 +14,7 @@ import (
 	"github.com/joeyhipolito/orchestrator-cli/internal/core"
 	"github.com/joeyhipolito/orchestrator-cli/internal/learning"
 	"github.com/joeyhipolito/orchestrator-cli/internal/preflight"
+	"github.com/joeyhipolito/orchestrator-cli/internal/worker"
 )
 
 func init() {
@@ -62,7 +63,15 @@ func init() {
 	preflightCmd.Flags().StringSlice("sections", nil, "only include these sections (comma-separated; empty = all)")
 	preflightCmd.Flags().String("format", "text", "output format: text or json")
 
-	hooksCmd.AddCommand(flushCtxCmd, injectCtxCmd, snapshotCmd, preflightCmd)
+	bridgeSessionCmd := &cobra.Command{
+		Use:   "bridge-session",
+		Short: "Bridge project/reference entries from session MEMORY.md into global memory",
+		Long:  "Reads the Claude Code auto-memory MEMORY.md for the given project directory, extracts entries with type 'project' or 'reference', and merges them into ~/nanika/global/MEMORY.md with a bridged: stamp. Idempotent: re-running never duplicates entries.",
+		RunE:  runBridgeSession,
+	}
+	bridgeSessionCmd.Flags().String("source-dir", "", "project directory whose Claude auto-memory to read (default: ~/nanika)")
+
+	hooksCmd.AddCommand(flushCtxCmd, injectCtxCmd, snapshotCmd, preflightCmd, bridgeSessionCmd)
 	rootCmd.AddCommand(hooksCmd)
 }
 
@@ -172,6 +181,22 @@ func runSnapshotSession(cmd *cobra.Command, args []string) error {
 	}
 
 	fmt.Printf("snapshot: captured %d learnings from %s\n", n, filepath.Base(wsPath))
+	return nil
+}
+
+func runBridgeSession(cmd *cobra.Command, args []string) error {
+	sourceDir, _ := cmd.Flags().GetString("source-dir")
+
+	n, err := worker.BridgeSessionMemory(sourceDir)
+	if err != nil {
+		return err
+	}
+
+	if n > 0 {
+		fmt.Printf("bridge-session: merged %d entries into global memory\n", n)
+	} else {
+		fmt.Println("bridge-session: no new entries to merge")
+	}
 	return nil
 }
 

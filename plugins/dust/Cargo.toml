@@ -1,0 +1,3 @@
+[workspace]
+members = ["dust-core", "dust-sdk", "dust-registry", "dust-dashboard", "plugins/hello-plugin", "plugins/dummy-plugin", "plugins/system-plugin", "plugins/dust-scheduler", "plugins/dust-health", "plugins/dust-tracker", "src-tauri"]
+resolver = "2"

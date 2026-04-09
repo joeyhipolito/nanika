@@ -1,0 +1,88 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  /* Surface */
+  --bg: #0d0d0d;
+  --bg-elevated: #131313;
+
+  /* Borders */
+  --border: rgba(255, 255, 255, 0.07);
+
+  /* Text */
+  --text-primary: rgba(255, 255, 255, 0.90);
+  --text-secondary: rgba(255, 255, 255, 0.42);
+
+  /* Accent / status */
+  --color-accent: #4f8cf4;
+  --color-error: #e5534b;
+  --status-green: #3fb950;
+  --status-red: #f85149;
+  --status-yellow: #d29922;
+
+  /* Component variables (used by ComponentRenderer) */
+  --mic-bg: rgba(255, 255, 255, 0.04);
+  --pill-border: rgba(255, 255, 255, 0.09);
+
+  /* Interaction */
+  --selected-bg: rgba(255, 255, 255, 0.09);
+  --hover-bg: rgba(255, 255, 255, 0.05);
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html,
+body,
+#root {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: transparent;
+}
+
+body {
+  font-family:
+    'JetBrains Mono',
+    'Fira Code',
+    'Cascadia Code',
+    ui-monospace,
+    SFMono-Regular,
+    Menlo,
+    monospace;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Remove default search input browser styles */
+input[type='search']::-webkit-search-decoration,
+input[type='search']::-webkit-search-cancel-button,
+input[type='search']::-webkit-search-results-button,
+input[type='search']::-webkit-search-results-decoration {
+  display: none;
+}
+
+/* Scrollbar styling — subtle, matches dark theme */
+::-webkit-scrollbar {
+  width: 4px;
+  height: 4px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.12);
+  border-radius: 2px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.22);
+}

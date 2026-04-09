@@ -1,0 +1,20 @@
+[package]
+name = "dust-tauri"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "dust_tauri_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[dependencies]
+dust-registry = { path = "../dust-registry" }
+dust-core = { path = "../dust-core" }
+tauri = { version = "2", features = ["macos-private-api"] }
+tauri-plugin-global-shortcut = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }

@@ -1,0 +1,10 @@
+{
+  "name": "dust",
+  "version": "0.1.0",
+  "api_version": 1,
+  "description": "Nanika intelligence dashboard — Tauri desktop app with a plugin host for sidebar widgets and command palette extensions. Plugins communicate via length-prefixed JSON over Unix sockets.",
+  "icon": "Plain",
+  "build": "cargo tauri build",
+  "tags": ["dashboard", "desktop", "tauri", "widgets"],
+  "ui": true
+}

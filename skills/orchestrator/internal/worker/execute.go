@@ -126,7 +126,7 @@ func Execute(ctx context.Context, config *core.WorkerConfig, emitter event.Emitt
 	}
 
 	// Seed persona memory into worker's Claude auto-memory directory.
-	if err := seedMemory(config.Bundle.PersonaName, config.WorkerDir); err != nil {
+	if err := seedMemory(config.Bundle.PersonaName, config.WorkerDir, config.Bundle.Objective); err != nil {
 		if verbose {
 			fmt.Printf("[%s] warning: memory seed failed: %v\n", config.Name, err)
 		}
@@ -221,6 +221,15 @@ func Execute(ctx context.Context, config *core.WorkerConfig, emitter event.Emitt
 			return output, capturedSessionID, capturedCost, fmt.Errorf("writing output to %s: %w", outputPath, err)
 		}
 	}
+
+	// Fire-and-forget: scan worker dir (including output.md just written above) for
+	// LEARNING/FINDING/PATTERN/DECISION/GOTCHA markers and persist to the learning DB.
+	// Capture config fields by value so the goroutine holds no reference to config.
+	workerDirSnap := config.WorkerDir
+	workerNameSnap := config.Name
+	domainSnap := config.Bundle.Domain
+	wsIDSnap := config.Bundle.WorkspaceID
+	go capturePhaseOutput(workerDirSnap, workerNameSnap, domainSnap, wsIDSnap)
 
 	return output, capturedSessionID, capturedCost, nil
 }

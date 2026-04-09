@@ -1,0 +1,11 @@
+[package]
+name = "dust-registry"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+dust-core = { path = "../dust-core" }
+tokio = { version = "1", features = ["net", "io-util", "rt-multi-thread", "macros", "fs", "process", "time", "sync"] }
+serde_json = "1"
+notify = "6"
+thiserror = "1"

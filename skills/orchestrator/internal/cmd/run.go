@@ -180,6 +180,15 @@ func runTask(cmd *cobra.Command, args []string) error {
 		capturePriorLearnings(ctx, db, embedder, domain)
 	}
 
+	// Bridge project/reference entries from the user's session MEMORY.md into
+	// global memory so workers pick up the latest project context on every run.
+	// Best-effort: a missing or unreadable session MEMORY.md is not a fatal error.
+	if !dryRun {
+		if _, berr := worker.BridgeSessionMemory(""); berr != nil && verbose {
+			fmt.Printf("warning: bridge-session: %v\n", berr)
+		}
+	}
+
 	// Fetch learnings for decomposer
 	var learningsText string
 	if db != nil && !noLearnings {

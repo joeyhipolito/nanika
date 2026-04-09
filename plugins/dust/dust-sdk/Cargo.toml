@@ -1,0 +1,10 @@
+[package]
+name = "dust-sdk"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+dust-core = { path = "../dust-core" }
+tokio = { version = "1", features = ["net", "io-util", "rt-multi-thread", "macros", "fs", "time"] }
+async-trait = "0.1"
+serde_json = "1"

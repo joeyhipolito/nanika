@@ -156,6 +156,7 @@ func (d *DB) initSchema() error {
 		"ALTER TABLE learnings ADD COLUMN compliance_count INTEGER DEFAULT 0",
 		"ALTER TABLE learnings ADD COLUMN compliance_rate REAL DEFAULT 0.0",
 		"ALTER TABLE learnings ADD COLUMN archived INTEGER DEFAULT 0",
+		"ALTER TABLE learnings ADD COLUMN promoted_at DATETIME",
 	}
 	for _, m := range migrations {
 		d.db.Exec(m) // ignore errors (column already exists)
@@ -956,4 +957,41 @@ func (d *DB) ComplianceStats() (total, injected int, avgRate float64, err error)
 		d.db.QueryRow("SELECT AVG(compliance_rate) FROM learnings WHERE injection_count > 0").Scan(&avgRate)
 	}
 	return
+}
+
+// FindPromotable returns learnings with quality_score > 0.7 that have not yet been promoted.
+// Sorted by quality_score descending for prioritization.
+func (d *DB) FindPromotable(ctx context.Context) ([]Learning, error) {
+	rows, err := d.db.QueryContext(ctx, `
+		SELECT id, type, content, context, domain, worker_name, workspace_id,
+		       tags, seen_count, used_count, quality_score, created_at, last_used_at, embedding,
+		       injection_count, compliance_rate
+		FROM learnings
+		WHERE quality_score > 0.7 AND promoted_at IS NULL AND archived = 0
+		ORDER BY quality_score DESC
+	`)
+	if err != nil {
+		return nil, fmt.Errorf("querying promotable learnings: %w", err)
+	}
+	defer rows.Close()
+
+	var result []Learning
+	for rows.Next() {
+		l, err := scanLearning(rows)
+		if err != nil {
+			continue
+		}
+		result = append(result, l)
+	}
+	return result, rows.Err()
+}
+
+// MarkPromoted marks a learning as promoted by setting promoted_at to now.
+func (d *DB) MarkPromoted(ctx context.Context, id string) error {
+	_, err := d.db.ExecContext(ctx,
+		"UPDATE learnings SET promoted_at = datetime('now') WHERE id = ?", id)
+	if err != nil {
+		return fmt.Errorf("marking learning %s as promoted: %w", id, err)
+	}
+	return nil
 }

@@ -1,0 +1,17 @@
+[package]
+name = "dust-dashboard"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "dust-dashboard"
+path = "src/main.rs"
+
+[dependencies]
+dust-core = { path = "../dust-core" }
+dust-registry = { path = "../dust-registry" }
+ratatui = "0.29"
+crossterm = "0.28"
+tokio = { version = "1", features = ["full"] }
+serde_json = "1"
+anyhow = "1"

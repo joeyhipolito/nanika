@@ -1,0 +1,15 @@
+[package]
+name = "dust-health"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "dust-health"
+path = "src/main.rs"
+
+[dependencies]
+dust-sdk = { path = "../../dust-sdk" }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "process"] }
+async-trait = "0.1"
+serde_json = "1"
+rusqlite = { version = "0.31", features = ["bundled"] }
