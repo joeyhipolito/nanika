@@ -40,7 +40,7 @@ func init() {
 	rootCmd.PersistentFlags().BoolVar(&sequential, "sequential", false, "force sequential execution")
 	rootCmd.PersistentFlags().StringVar(&personaDir, "personas-dir", "", "path to personas directory (default: ~/nanika/personas/)")
 	rootCmd.PersistentFlags().StringVar(&nanikaDir, "nanika-dir", "", "path to nanika directory (default: ~/nanika)")
-	rootCmd.PersistentFlags().IntVar(&maxTurns, "max-turns", 50, "max agentic turns per worker")
+	rootCmd.PersistentFlags().IntVar(&maxTurns, "max-turns", 0, "max agentic turns per worker (0 = use persona-aware default)")
 
 	// Apply config overrides before any command runs
 	rootCmd.PersistentPreRun = func(cmd *cobra.Command, args []string) {

@@ -979,7 +979,7 @@ func TestHandleMetrics_Shape(t *testing.T) {
 	if body.ByDomain == nil {
 		t.Error("metrics shape: by_domain must not be nil")
 	}
-	if body.ByPersona == nil {
+	if body.PhasesByPersona == nil {
 		t.Error("metrics shape: phases_by_persona must not be nil")
 	}
 	if body.Recent == nil {
@@ -1053,7 +1053,7 @@ func TestAggregateMetrics_Basic(t *testing.T) {
 	}
 
 	// by_persona
-	archStats, ok := resp.ByPersona["architect"]
+	archStats, ok := resp.PhasesByPersona["architect"]
 	if !ok {
 		t.Fatal("by_persona: missing 'architect'")
 	}
@@ -1064,7 +1064,7 @@ func TestAggregateMetrics_Basic(t *testing.T) {
 		t.Errorf("by_persona[architect].completed: want 1, got %d", archStats.Completed)
 	}
 
-	qaStats, ok := resp.ByPersona["qa-engineer"]
+	qaStats, ok := resp.PhasesByPersona["qa-engineer"]
 	if !ok {
 		t.Fatal("by_persona: missing 'qa-engineer'")
 	}

@@ -1674,14 +1674,15 @@ func personaColor(name string) string {
 
 // MetricsResponse is the response body for GET /api/metrics.
 type MetricsResponse struct {
-	Total        int                      `json:"total"`
-	Completed    int                      `json:"completed"`
-	Failed       int                      `json:"failed"`
-	Cancelled    int                      `json:"cancelled"`
-	AvgDurationS int                      `json:"avg_duration_s"`
-	ByDomain     map[string]*DomainStats  `json:"by_domain"`
-	ByPersona    map[string]*PersonaStats `json:"by_persona"`
-	Recent       []RecentMission          `json:"recent"`
+	Total          int                      `json:"total"`
+	Completed      int                      `json:"completed"`
+	Failed         int                      `json:"failed"`
+	Partial        int                      `json:"partial"`
+	Cancelled      int                      `json:"cancelled"`
+	AvgDurationS   int                      `json:"avg_duration_s"`
+	ByDomain       map[string]*DomainStats  `json:"by_domain"`
+	PhasesByPersona map[string]*PersonaStats `json:"phases_by_persona"`
+	Recent         []RecentMission          `json:"recent"`
 }
 
 // DomainStats holds per-domain mission counts.
@@ -1689,6 +1690,7 @@ type DomainStats struct {
 	Total     int `json:"total"`
 	Completed int `json:"completed"`
 	Failed    int `json:"failed"`
+	Partial   int `json:"partial"`
 	Cancelled int `json:"cancelled"`
 }
 
@@ -1789,9 +1791,9 @@ func aggregateMetrics(metricsPath, wsBase, eventsBase string, recentLimit int) (
 	cancelled := scanCancelledWorkspaces(wsBase, eventsBase, seenIDs)
 
 	resp := &MetricsResponse{
-		ByDomain:  make(map[string]*DomainStats),
-		ByPersona: make(map[string]*PersonaStats),
-		Recent:    []RecentMission{},
+		ByDomain:        make(map[string]*DomainStats),
+		PhasesByPersona: make(map[string]*PersonaStats),
+		Recent:          []RecentMission{},
 	}
 
 	var totalDurSec, durationCount int
@@ -1800,9 +1802,12 @@ func aggregateMetrics(metricsPath, wsBase, eventsBase string, recentLimit int) (
 		resp.Total++
 
 		apiStatus := engineToAPIStatus(rec.Status)
-		if apiStatus == "completed" {
+		switch apiStatus {
+		case "completed":
 			resp.Completed++
-		} else {
+		case "partial":
+			resp.Partial++
+		default:
 			resp.Failed++
 		}
 
@@ -1814,9 +1819,12 @@ func aggregateMetrics(metricsPath, wsBase, eventsBase string, recentLimit int) (
 		if rec.Domain != "" {
 			ds := ensureDomainStats(resp.ByDomain, rec.Domain)
 			ds.Total++
-			if apiStatus == "completed" {
+			switch apiStatus {
+			case "completed":
 				ds.Completed++
-			} else {
+			case "partial":
+				ds.Partial++
+			default:
 				ds.Failed++
 			}
 		}
@@ -1825,7 +1833,7 @@ func aggregateMetrics(metricsPath, wsBase, eventsBase string, recentLimit int) (
 			if p.Persona == "" {
 				continue
 			}
-			ps := ensurePersonaStats(resp.ByPersona, p.Persona)
+			ps := ensurePersonaStats(resp.PhasesByPersona, p.Persona)
 			ps.Phases++
 			switch p.Status {
 			case "completed":
@@ -1856,12 +1864,16 @@ func aggregateMetrics(metricsPath, wsBase, eventsBase string, recentLimit int) (
 }
 
 // engineToAPIStatus maps engine status strings to API status strings.
-// "success" → "completed"; everything else ("failure", "partial") → "failed".
+// "success" → "completed", "partial" → "partial", everything else → "failed".
 func engineToAPIStatus(s string) string {
-	if s == "success" {
+	switch s {
+	case "success":
 		return "completed"
+	case "partial":
+		return "partial"
+	default:
+		return "failed"
 	}
-	return "failed"
 }
 
 // readMetricsRecords parses a metrics JSONL file and returns all records plus
@@ -2143,6 +2155,118 @@ func (s *APIServer) handleDecompositionFindings(w http.ResponseWriter, r *http.R
 	}
 
 	writeJSON(w, resp)
+}
+
+// ---- nen findings endpoint -----------------------------------------------
+
+// nenFindingScope is the nested scope object the frontend Finding type expects.
+type nenFindingScope struct {
+	Kind  string `json:"kind"`
+	Value string `json:"value"`
+}
+
+// NenFinding matches the Finding type in the frontend: scope is nested,
+// evidence is a JSON array parsed from the DB column.
+type NenFinding struct {
+	ID           string              `json:"id"`
+	Ability      string              `json:"ability"`
+	Category     string              `json:"category"`
+	Severity     string              `json:"severity"`
+	Title        string              `json:"title"`
+	Description  string              `json:"description"`
+	Scope        nenFindingScope     `json:"scope"`
+	Evidence     json.RawMessage     `json:"evidence"`
+	Source       string              `json:"source"`
+	FoundAt      string              `json:"found_at"`
+	ExpiresAt    string              `json:"expires_at,omitempty"`
+	SupersededBy string              `json:"superseded_by,omitempty"`
+	CreatedAt    string              `json:"created_at"`
+}
+
+// handleFindings queries ~/.alluka/nen/findings.db and returns active findings.
+// Supports optional query params: ability, severity, limit.
+func (s *APIServer) handleFindings(w http.ResponseWriter, r *http.Request) {
+	applyCORS(w, r)
+
+	base, err := config.Dir()
+	if err != nil {
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+
+	dbPath := filepath.Join(base, "nen", "findings.db")
+	if _, err := os.Stat(dbPath); os.IsNotExist(err) {
+		writeJSON(w, []NenFinding{})
+		return
+	}
+	db, err := sql.Open("sqlite", "file:"+dbPath+"?mode=ro&_busy_timeout=5000")
+	if err != nil {
+		http.Error(w, fmt.Sprintf("opening findings.db: %v", err), http.StatusInternalServerError)
+		return
+	}
+	defer db.Close()
+
+	q := r.URL.Query()
+	ability := q.Get("ability")
+	severity := q.Get("severity")
+	limit := 500
+	if l := q.Get("limit"); l != "" {
+		if n, err := strconv.Atoi(l); err == nil && n > 0 {
+			limit = n
+		}
+	}
+
+	query := `
+		SELECT id, ability, category, severity, title, description,
+		       scope_kind, scope_value, evidence, source, found_at,
+		       COALESCE(expires_at, ''), superseded_by, created_at
+		FROM findings
+		WHERE superseded_by = ''
+		  AND (expires_at IS NULL OR expires_at > datetime('now'))`
+	var args []any
+	if ability != "" {
+		query += " AND ability = ?"
+		args = append(args, ability)
+	}
+	if severity != "" {
+		query += " AND severity = ?"
+		args = append(args, severity)
+	}
+	query += " ORDER BY found_at DESC LIMIT ?"
+	args = append(args, limit)
+
+	rows, err := db.QueryContext(r.Context(), query, args...)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("querying findings: %v", err), http.StatusInternalServerError)
+		return
+	}
+	defer rows.Close()
+
+	findings := []NenFinding{}
+	for rows.Next() {
+		var f NenFinding
+		var scopeKind, scopeValue, evidenceRaw string
+		if err := rows.Scan(
+			&f.ID, &f.Ability, &f.Category, &f.Severity, &f.Title, &f.Description,
+			&scopeKind, &scopeValue, &evidenceRaw, &f.Source, &f.FoundAt,
+			&f.ExpiresAt, &f.SupersededBy, &f.CreatedAt,
+		); err != nil {
+			continue
+		}
+		f.Scope = nenFindingScope{Kind: scopeKind, Value: scopeValue}
+		if json.Valid([]byte(evidenceRaw)) {
+			f.Evidence = json.RawMessage(evidenceRaw)
+		} else {
+			f.Evidence = json.RawMessage("[]")
+		}
+		findings = append(findings, f)
+	}
+	if err := rows.Err(); err != nil {
+		http.Error(w, fmt.Sprintf("scanning findings: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	writeJSON(w, findings)
 }
 
 // ---- missions run endpoint -----------------------------------------------
@@ -2468,116 +2592,4 @@ func ensurePersonaStats(m map[string]*PersonaStats, p string) *PersonaStats {
 	ps := &PersonaStats{}
 	m[p] = ps
 	return ps
-}
-
-// ---- nen findings endpoint -----------------------------------------------
-
-// nenFindingScope is the nested scope object the frontend Finding type expects.
-type nenFindingScope struct {
-	Kind  string `json:"kind"`
-	Value string `json:"value"`
-}
-
-// NenFinding matches the Finding type in the frontend: scope is nested,
-// evidence is a JSON array parsed from the DB column.
-type NenFinding struct {
-	ID           string          `json:"id"`
-	Ability      string          `json:"ability"`
-	Category     string          `json:"category"`
-	Severity     string          `json:"severity"`
-	Title        string          `json:"title"`
-	Description  string          `json:"description"`
-	Scope        nenFindingScope `json:"scope"`
-	Evidence     json.RawMessage `json:"evidence"`
-	Source       string          `json:"source"`
-	FoundAt      string          `json:"found_at"`
-	ExpiresAt    string          `json:"expires_at,omitempty"`
-	SupersededBy string          `json:"superseded_by,omitempty"`
-	CreatedAt    string          `json:"created_at"`
-}
-
-// handleFindings queries ~/.alluka/nen/findings.db and returns active findings.
-// Supports optional query params: ability, severity, limit.
-func (s *APIServer) handleFindings(w http.ResponseWriter, r *http.Request) {
-	applyCORS(w, r)
-
-	base, err := config.Dir()
-	if err != nil {
-		http.Error(w, "internal error", http.StatusInternalServerError)
-		return
-	}
-
-	dbPath := filepath.Join(base, "nen", "findings.db")
-	if _, err := os.Stat(dbPath); os.IsNotExist(err) {
-		writeJSON(w, []NenFinding{})
-		return
-	}
-	db, err := sql.Open("sqlite", "file:"+dbPath+"?mode=ro&_busy_timeout=5000")
-	if err != nil {
-		http.Error(w, fmt.Sprintf("opening findings.db: %v", err), http.StatusInternalServerError)
-		return
-	}
-	defer db.Close()
-
-	q := r.URL.Query()
-	ability := q.Get("ability")
-	severity := q.Get("severity")
-	limit := 500
-	if l := q.Get("limit"); l != "" {
-		if n, err := strconv.Atoi(l); err == nil && n > 0 {
-			limit = n
-		}
-	}
-
-	query := `
-		SELECT id, ability, category, severity, title, description,
-		       scope_kind, scope_value, evidence, source, found_at,
-		       COALESCE(expires_at, ''), superseded_by, created_at
-		FROM findings
-		WHERE superseded_by = ''
-		  AND (expires_at IS NULL OR expires_at > datetime('now'))`
-	var args []any
-	if ability != "" {
-		query += " AND ability = ?"
-		args = append(args, ability)
-	}
-	if severity != "" {
-		query += " AND severity = ?"
-		args = append(args, severity)
-	}
-	query += " ORDER BY found_at DESC LIMIT ?"
-	args = append(args, limit)
-
-	rows, err := db.QueryContext(r.Context(), query, args...)
-	if err != nil {
-		http.Error(w, fmt.Sprintf("querying findings: %v", err), http.StatusInternalServerError)
-		return
-	}
-	defer rows.Close()
-
-	findings := []NenFinding{}
-	for rows.Next() {
-		var f NenFinding
-		var scopeKind, scopeValue, evidenceRaw string
-		if err := rows.Scan(
-			&f.ID, &f.Ability, &f.Category, &f.Severity, &f.Title, &f.Description,
-			&scopeKind, &scopeValue, &evidenceRaw, &f.Source, &f.FoundAt,
-			&f.ExpiresAt, &f.SupersededBy, &f.CreatedAt,
-		); err != nil {
-			continue
-		}
-		f.Scope = nenFindingScope{Kind: scopeKind, Value: scopeValue}
-		if json.Valid([]byte(evidenceRaw)) {
-			f.Evidence = json.RawMessage(evidenceRaw)
-		} else {
-			f.Evidence = json.RawMessage("[]")
-		}
-		findings = append(findings, f)
-	}
-	if err := rows.Err(); err != nil {
-		http.Error(w, fmt.Sprintf("scanning findings: %v", err), http.StatusInternalServerError)
-		return
-	}
-
-	writeJSON(w, findings)
 }

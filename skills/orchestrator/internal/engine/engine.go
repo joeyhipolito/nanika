@@ -21,6 +21,10 @@ import (
 	"github.com/joeyhipolito/nen/zetsu"
 )
 
+// maxObjectiveBytes is the maximum allowed byte length for a phase OBJECTIVE.
+// Oversized objectives produce prompts that exceed model context limits.
+const maxObjectiveBytes = 8192
+
 // Engine executes a plan's phases with dependency resolution.
 type Engine struct {
 	workspace   *core.Workspace
@@ -37,6 +41,12 @@ type Engine struct {
 	plan              *core.Plan             // retained for checkpoint saves
 	startTime         time.Time              // when Execute was called; passed to every checkpoint
 	injectedLearnings []learning.Learning    // accumulated across all phases, for compliance scan
+
+	// Background learning extraction: at most one extraction runs at a time per
+	// mission (extractMu) and extractWG tracks outstanding goroutines for
+	// graceful shutdown before terminal events are emitted.
+	extractMu sync.Mutex
+	extractWG sync.WaitGroup
 }
 
 // New creates a new execution engine with a NoOpEmitter and the default
@@ -142,6 +152,10 @@ func (e *Engine) Execute(ctx context.Context, plan *core.Plan) (*core.ExecutionR
 	} else {
 		result, err = e.executeParallel(ctx, plan, start, tm)
 	}
+
+	// Drain background extraction goroutines before emitting terminal events.
+	// This ensures learning.stored events arrive before mission.completed/failed.
+	e.extractWG.Wait()
 
 	// Record metrics
 	if result != nil {
@@ -648,6 +662,14 @@ func (e *Engine) executePhase(ctx context.Context, phase *core.Phase, priorConte
 		// WorkerDir and ScratchDir are populated by worker.Spawn after the directory is created.
 	}
 
+	// Guard: OBJECTIVE must not exceed 8192 bytes to prevent oversized prompts.
+	if len(phase.Objective) > maxObjectiveBytes {
+		e.emit(ctx, event.PhaseFailed, phaseID, "", map[string]any{
+			"error": fmt.Sprintf("objective too large: %d bytes (limit %d)", len(phase.Objective), maxObjectiveBytes),
+		})
+		return "", fmt.Errorf("phase %q objective is %d bytes, exceeds %d-byte limit", phase.Name, len(phase.Objective), maxObjectiveBytes)
+	}
+
 	// Spawn worker
 	config, err := worker.Spawn(e.workspace.Path, phase, bundle)
 	if err != nil {
@@ -668,11 +690,7 @@ func (e *Engine) executePhase(ctx context.Context, phase *core.Phase, priorConte
 	// Apply max-turns guardrail so workers can't run indefinitely.
 	// The plumbing in transport.go passes --max-turns N when MaxTurns > 0.
 	if config.MaxTurns <= 0 {
-		if e.config.MaxTurns > 0 {
-			config.MaxTurns = e.config.MaxTurns
-		} else {
-			config.MaxTurns = 50
-		}
+		config.MaxTurns = resolveMaxTurns(e.config.MaxTurns, phase.Persona)
 	}
 
 	// Apply stall timeout: per-phase TIMEOUT: takes precedence over global --stall-timeout.
@@ -803,22 +821,59 @@ func (e *Engine) executePhase(ctx context.Context, phase *core.Phase, priorConte
 	// informed, but the phase is still considered complete.
 	e.handleArtifactMerge(ctx, phase, config)
 
-	// Capture learnings from this phase's output so subsequent phases
-	// can retrieve them via FindRelevant. This is the same extraction
-	// that `orchestrator learn` does post-hoc, but applied inline so
-	// same-mission learnings are available immediately.
+	// Capture learnings from this phase's output in a background goroutine.
+	// extractMu ensures at most one extraction runs per mission (rate limiter),
+	// and extractWG tracks outstanding goroutines for graceful shutdown.
+	// Errors are non-fatal: logged but never propagate to the caller.
 	if e.learningDB != nil {
-		captured := learning.CaptureFromText(output, config.Name, e.workspace.Domain, e.workspace.ID)
-		for _, l := range captured {
-			if err := e.learningDB.Insert(ctx, l, e.embedder); err != nil {
-				if e.config.Verbose {
-					fmt.Printf("[engine] learning insert failed: %v\n", err)
-				}
+		outputSnap := output
+		workerName := config.Name
+		domain := e.workspace.Domain
+		wsID := e.workspace.ID
+		personaName := phase.Persona
+		phaseName := phase.Name
+
+		e.extractWG.Add(1)
+		go func() {
+			defer e.extractWG.Done()
+
+			// Max-1-per-mission: acquire mutex before any extraction work.
+			e.extractMu.Lock()
+			defer e.extractMu.Unlock()
+
+			extractCtx := context.Background()
+
+			// Marker-based extraction (same as `orchestrator learn`).
+			captured := learning.CaptureFromText(outputSnap, workerName, domain, wsID)
+
+			// LLM-based extraction guided by persona focus areas.
+			if focusAreas := persona.GetLearningFocus(personaName); len(focusAreas) > 0 {
+				focused := learning.CaptureWithFocus(extractCtx, outputSnap, focusAreas, workerName, domain, wsID)
+				captured = append(captured, focused...)
 			}
-		}
-		if e.config.Verbose && len(captured) > 0 {
-			fmt.Printf("[engine] captured %d learnings from phase %s\n", len(captured), phase.Name)
-		}
+
+			stored := 0
+			for _, l := range captured {
+				if insErr := e.learningDB.Insert(extractCtx, l, e.embedder); insErr != nil {
+					if e.config.Verbose {
+						fmt.Printf("[engine] background learning insert failed (phase %s): %v\n", phaseName, insErr)
+					}
+					continue // non-fatal
+				}
+				stored++
+				e.emit(extractCtx, event.LearningStored, "", workerName, map[string]any{
+					"learning_id":   l.ID,
+					"learning_type": string(l.Type),
+					"content":       l.Content,
+					"phase":         phaseName,
+					"domain":        domain,
+				})
+			}
+
+			if e.config.Verbose && stored > 0 {
+				fmt.Printf("[engine] background: stored %d learnings from phase %s\n", stored, phaseName)
+			}
+		}()
 	}
 
 	phase.Status = core.StatusCompleted
@@ -1299,6 +1354,11 @@ func (e *Engine) runSecondaryExecutor(ctx context.Context, phase *core.Phase, pr
 		Runtime:        core.RuntimeCodex,
 	}
 
+	// Guard: OBJECTIVE must not exceed 8192 bytes to prevent oversized prompts.
+	if len(phase.Objective) > maxObjectiveBytes {
+		return "", fmt.Errorf("phase %q objective is %d bytes, exceeds %d-byte limit", phase.Name, len(phase.Objective), maxObjectiveBytes)
+	}
+
 	config, err := worker.Spawn(e.workspace.Path, &clone, bundle)
 	if err != nil {
 		return "", fmt.Errorf("spawn secondary worker: %w", err)
@@ -1308,11 +1368,7 @@ func (e *Engine) runSecondaryExecutor(ctx context.Context, phase *core.Phase, pr
 		config.Model = e.config.ForcedModel
 	}
 	if config.MaxTurns <= 0 {
-		if e.config.MaxTurns > 0 {
-			config.MaxTurns = e.config.MaxTurns
-		} else {
-			config.MaxTurns = 50
-		}
+		config.MaxTurns = resolveMaxTurns(e.config.MaxTurns, clone.Persona)
 	}
 	config.StallTimeout = phase.StallTimeout
 	if config.StallTimeout == 0 && e.config.StallTimeout > 0 {
@@ -1442,6 +1498,29 @@ func extractMissionContext(taskHeader string) string {
 		}
 	}
 	return strings.Join(bullets, "\n")
+}
+
+// personaMaxTurns maps persona keys to their default max-turns cap.
+// Personas not listed here fall back to defaultMaxTurns (50).
+// Architect phases are planning-oriented and need fewer turns than implementation phases.
+var personaMaxTurns = map[string]int{
+	"architect": 30,
+}
+
+const defaultMaxTurns = 50
+
+// resolveMaxTurns returns the max-turns value for a worker. Priority order:
+//  1. Global --max-turns flag (engineMaxTurns > 0)
+//  2. Per-persona tier (personaMaxTurns lookup)
+//  3. Default (50)
+func resolveMaxTurns(engineMaxTurns int, persona string) int {
+	if engineMaxTurns > 0 {
+		return engineMaxTurns
+	}
+	if limit, ok := personaMaxTurns[strings.ToLower(persona)]; ok {
+		return limit
+	}
+	return defaultMaxTurns
 }
 
 // learningsLimitForPhase returns the number of relevant learnings to inject

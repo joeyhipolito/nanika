@@ -73,7 +73,27 @@ PHASE: implement | OBJECTIVE: ... | PERSONA: senior-backend-engineer
 PHASE: review | OBJECTIVE: Review the implementation for correctness and test coverage | PERSONA: staff-code-reviewer | DEPENDS: implement
 ```
 
-## Hooks
+## Utility Scripts
+
+### nanika-context
+
+`~/bin/nanika-context`
+
+Prints a system-state snapshot to stdout for manual paste into a Claude session. Runs without spawning any missions or changing state.
+
+```bash
+nanika-context              # all sections: learnings, scheduler, tracker, nen
+nanika-context learnings    # recent learnings only (cold-start quality ranking)
+nanika-context scheduler    # scheduler jobs + recent failures
+nanika-context tracker      # open P0/P1 tracker issues
+nanika-context nen          # nen-daemon stats + shu health score
+```
+
+Sections:
+- **learnings** — top 15 learnings by quality score via `orchestrator hooks inject-context`
+- **scheduler** — full jobs table + any FAILED entries from the last 50 history events
+- **tracker** — `tracker list --status open --priority P0/P1`
+- **nen** — `nen-daemon status` + `shu query status`
 
 ### orchestrator hooks preflight
 
@@ -123,22 +143,27 @@ orchestrator hooks inject-context --limit 15 --max-bytes 4096
 
 `preflight` is the right choice for SessionStart. `inject-context` is for targeted learnings-only injection inside worker sessions.
 
-
 <!-- NANIKA-AGENTS-MD-START -->
 [Nanika Skills Index][root: .claude/skills]IMPORTANT: Prefer retrieval-led reasoning over pre-training-led reasoning. Read skill files before making assumptions.
 
 |agent-browser — Browser automation CLI for AI agents:{.claude/skills/agent-browser/SKILL.md}|`agent-browser open https://example.com/form`|`agent-browser snapshot -i`|`agent-browser fill @e1 "user@example.com"`|`agent-browser fill @e2 "password123"`|`agent-browser click @e3`|`agent-browser wait --load networkidle`|`agent-browser snapshot -i`|`agent-browser open https://example.com && agent-browser wait --load networkidle && agent-browser snapshot -i`|`agent-browser fill @e1 "user@example.com" && agent-browser fill @e2 "password123" && agent-browser click @e3`|`agent-browser open https://example.com && agent-browser wait --load networkidle && agent-browser screenshot page.png`|`agent-browser --auto-connect state save ./auth.json`|`agent-browser --state ./auth.json open https://app.example.com/dashboard`|`agent-browser --profile ~/.myapp open https://app.example.com/login`|`agent-browser --profile ~/.myapp open https://app.example.com/dashboard`|
+|ai-seo — When the user wants to optimize content for AI search engines, get cited by LLMs, or appear in AI-generated answers:{.claude/skills/ai-seo/SKILL.md}|
+|article — Full article pipeline — from topic research to Substack draft:{.claude/skills/article/SKILL.md}|
 |better-auth-best-practices — Configure Better Auth server and client, set up database adapters, manage sessions, add plugins, and handle environment variables:{.claude/skills/better-auth-best-practices/SKILL.md}|
 |building-native-ui — Complete guide for building beautiful apps with Expo Router:{.claude/skills/building-native-ui/SKILL.md}|
 |channels — Telegram and Discord channel integration for the orchestrator:{.claude/skills/channels/SKILL.md}|
+|copy-editing — When the user wants to edit, review, or improve existing marketing copy:{.claude/skills/copy-editing/SKILL.md}|
+|copywriting — When the user wants to write, rewrite, or improve marketing copy for any page — including homepage, landing pages, pricing pages, feature pages, about pages, or product pages:{.claude/skills/copywriting/SKILL.md}|
 |decomposer — Mission decomposition skill — breaks complex tasks into dependency-aware PHASE lines that the orchestrator executes directly, bypassing its internal LLM decomposer:{.claude/skills/decomposer/SKILL.md}|
-|orchestrator — Executes tasks and missions via orchestrator CLI:{.claude/skills/orchestrator/SKILL.md}|`orchestrator run "research golang error handling best practices"`|`orchestrator run --domain personal "plan my Japan trip"`|`orchestrator run ~/.alluka/missions/FEATURE.md`|`orchestrator run --dry-run "build authentication system"`|`orchestrator status`|`orchestrator learn`|`orchestrator cleanup`|`orchestrator cleanup --older 7d`|`orchestrator metrics`|`orchestrator metrics --last 10`|`orchestrator metrics --domain dev`|`orchestrator metrics --status failed`|`orchestrator metrics --mission <id>`|`orchestrator metrics --days 30`|
+|golang-cli — Golang CLI application development:{.claude/skills/golang-cli/SKILL.md}|
+|golang-design-patterns — Idiomatic Golang design patterns — functional options, constructors, error flow and cascading, resource management and lifecycle, graceful shutdown, resilience, architecture, dependency injection, data handling, and streaming:{.claude/skills/golang-design-patterns/SKILL.md}|
+|golang-error-handling — Idiomatic Golang error handling — creation, wrapping with %w, errors.Is/As, errors.Join, custom error types, sentinel errors, panic/recover, the single handling rule, structured logging with slog, HTTP request logging middleware, and samber/oops for production errors:{.claude/skills/golang-error-handling/SKILL.md}|
+|golang-testing — Provides a comprehensive guide for writing production-ready Golang tests:{.claude/skills/golang-testing/SKILL.md}|
+|orchestrator — Executes tasks and missions via orchestrator CLI:{.claude/skills/orchestrator/SKILL.md}|`orchestrator run "research golang error handling best practices"`|`orchestrator run --domain personal "plan my Japan trip"`|`orchestrator run ~/.alluka/missions/FEATURE.md`|`orchestrator run --dry-run "build authentication system"`|`orchestrator status`|`orchestrator cleanup`|`orchestrator cleanup --older 7d`|`orchestrator metrics`|`orchestrator metrics --last 10`|`orchestrator metrics --domain dev`|`orchestrator metrics --status failed`|`orchestrator metrics --mission <id>`|`orchestrator metrics --days 30`|
+|product-marketing-context — When the user wants to create or update their product marketing context document:{.claude/skills/product-marketing-context/SKILL.md}|
+|rust-best-practices — Guide for writing idiomatic Rust code based on Apollo GraphQL's best practices handbook:{.claude/skills/rust-best-practices/SKILL.md}|
+|social-content — When the user wants help creating, scheduling, or optimizing social media content for LinkedIn, Twitter/X, Instagram, TikTok, Facebook, or other platforms:{.claude/skills/social-content/SKILL.md}|
 |supabase-postgres-best-practices — Postgres performance optimization and best practices from Supabase:{.claude/skills/supabase-postgres-best-practices/SKILL.md}|
 |vercel-react-best-practices — React and Next.js performance optimization guidelines from Vercel Engineering:{.claude/skills/vercel-react-best-practices/SKILL.md}|
 |youtube-transcript — Extract transcripts from YouTube videos:{.claude/skills/youtube-transcript/SKILL.md}|
-|discord — Send native voice messages and text to Discord channels via the discord CLI:{plugins/discord/skills/SKILL.md}|`discord send-voice-message --channel <channel-id> --audio /path/to/audio.mp3`|`discord send-voice-message --channel <channel-id> --audio /path/to/audio.ogg --json`|`discord reply --channel <channel-id> --message "Hello from nanika"`|`discord reply --channel <channel-id> --message "Mission complete" --json`|`discord query status --json`|`discord query items --json`|`discord query actions --json`|`discord doctor`|`discord doctor --json`|
-|nen_mcp — MCP server for the nen ability system:{plugins/nen_mcp/skills/SKILL.md}|
-|scheduler — Schedules and runs cron jobs via scheduler CLI:{plugins/scheduler/skills/SKILL.md}|`scheduler doctor`|`scheduler doctor --json`|`scheduler daemon`|`scheduler daemon --notify`|`scheduler daemon --once`|`scheduler daemon --stop`|`scheduler daemon >> ~/.alluka/logs/scheduler.log 2>&1 &`|`scheduler init`|`scheduler init --force`|`scheduler init`|`scheduler daemon`|`scheduler jobs`|`scheduler jobs add --name "daily-backup" --cron "0 2 * * *" --command "tar czf /tmp/backup.tgz ~/docs"`|`scheduler jobs add --name "health-check" --cron "*/5 * * * *" --command "curl -s localhost:8080/health"`|
-|telegram — Send voice messages and text to Telegram chats via the telegram CLI:{plugins/telegram/skills/SKILL.md}|`telegram send-voice-message --chat <chat-id> --audio /path/to/audio.mp3`|`telegram send-voice-message --chat <chat-id> --audio /path/to/audio.ogg --json`|`telegram reply --chat <chat-id> --message "Hello from nanika"`|`telegram reply --chat <chat-id> --message "Mission complete" --json`|`telegram query status --json`|`telegram query items --json`|`telegram query actions --json`|`telegram doctor`|`telegram doctor --json`|
-|tracker — Local issue tracker with hierarchical relationships, blocking links, and priority-based ready detection:{plugins/tracker/skills/SKILL.md}|`tracker create "Task title"`|`tracker create "Task" --priority P0 --description "Details"`|`tracker create "Subtask" --parent trk-ABC1`|`tracker create "Task" --labels "backend,urgent" --assignee me`|`tracker show trk-ABC1`|`tracker list`|`tracker list --status open`|`tracker list --priority P0`|`tracker update trk-ABC1 --status in-progress`|`tracker update trk-ABC1 --priority P0 --assignee alice`|`tracker delete trk-ABC1`|`tracker link trk-ABC1 trk-XYZ2 --type blocks`|`tracker link trk-ABC1 trk-XYZ2 --type relates_to`|`tracker unlink trk-ABC1 trk-XYZ2 --type blocks`|
 <!-- NANIKA-AGENTS-MD-END -->

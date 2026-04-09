@@ -204,6 +204,7 @@ func BuildCLAUDEmd(bundle core.ContextBundle) string {
 	// 10. Constraints
 	b.WriteString("## Constraints\n\n")
 	b.WriteString("- Do NOT create git branches, push to remote, or open pull requests — the orchestrator manages all git operations\n")
+	b.WriteString("- Write new memories to `MEMORY_NEW.md` in your project memory directory — `MEMORY.md` is read-only\n")
 	for _, c := range bundle.Constraints {
 		b.WriteString("- ")
 		b.WriteString(c)

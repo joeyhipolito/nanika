@@ -57,7 +57,7 @@ func Spawn(wsPath string, phase *core.Phase, bundle core.ContextBundle) (*core.W
 	// {cwd}/.claude/, not from --add-dir paths.
 	denyRules := DenyRulesForRole(bundle.Role)
 	if len(denyRules) > 0 {
-		settingsJSON, err := buildSettingsLocal(denyRules)
+		settingsJSON, err := buildSettingsLocal(denyRules, LowRiskTools())
 		if err != nil {
 			return nil, fmt.Errorf("build settings.local.json: %w", err)
 		}

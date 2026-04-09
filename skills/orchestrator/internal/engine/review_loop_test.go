@@ -128,6 +128,42 @@ func TestParseReviewFindings_BlockerWithoutLocation(t *testing.T) {
 	}
 }
 
+// TestParseReviewFindings_FollowsObjectiveFormat verifies that review output
+// following the format specified in the objective (as injected by ensureCodeReviewPhase)
+// is correctly parsed. This test ensures the hardened prompt guidance works end-to-end.
+func TestParseReviewFindings_FollowsObjectiveFormat(t *testing.T) {
+	// Simulates output from a reviewer following the format guidance:
+	// "Produce structured output with ### Blockers and ### Warnings sections,
+	// listing each finding as a '- **[location]** description' item"
+	input := `
+## Summary
+Implementation looks mostly solid but has a few issues to address.
+
+### Blockers
+- **[file.go:42]** Missing error check on database connection.
+- **[service.go:18]** Potential nil pointer dereference.
+
+### Warnings
+- **[main.go:5]** Inefficient loop that could be optimized with a map.
+`
+	f := ParseReviewFindings(input)
+	if f.Passed() {
+		t.Fatal("expected Passed()==false due to blockers")
+	}
+	if len(f.Blockers) != 2 {
+		t.Fatalf("expected 2 blockers, got %d", len(f.Blockers))
+	}
+	if len(f.Warnings) != 1 {
+		t.Fatalf("expected 1 warning, got %d", len(f.Warnings))
+	}
+	if f.Blockers[0].Location != "file.go:42" {
+		t.Errorf("blocker[0] location = %q, want file.go:42", f.Blockers[0].Location)
+	}
+	if !strings.Contains(f.Blockers[0].Description, "Missing error check") {
+		t.Errorf("blocker[0] description missing expected text: %q", f.Blockers[0].Description)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // IsReviewGate
 // ---------------------------------------------------------------------------

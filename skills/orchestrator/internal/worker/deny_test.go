@@ -90,7 +90,7 @@ func TestDenyRulesForRole_NoCrossTalk(t *testing.T) {
 
 func TestBuildSettingsLocal_Structure(t *testing.T) {
 	rules := []string{"Bash(git push)", "Edit"}
-	data, err := buildSettingsLocal(rules)
+	data, err := buildSettingsLocal(rules, nil)
 	if err != nil {
 		t.Fatalf("buildSettingsLocal: %v", err)
 	}
@@ -119,7 +119,7 @@ func TestBuildSettingsLocal_ValidJSON(t *testing.T) {
 	for _, role := range []core.Role{core.RolePlanner, core.RoleImplementer, core.RoleReviewer, ""} {
 		t.Run(string(role), func(t *testing.T) {
 			rules := DenyRulesForRole(role)
-			data, err := buildSettingsLocal(rules)
+			data, err := buildSettingsLocal(rules, nil)
 			if err != nil {
 				t.Fatalf("buildSettingsLocal: %v", err)
 			}
@@ -127,6 +127,73 @@ func TestBuildSettingsLocal_ValidJSON(t *testing.T) {
 				t.Error("produced invalid JSON")
 			}
 		})
+	}
+}
+
+func TestBuildSettingsLocal_AllowListPresent(t *testing.T) {
+	deny := []string{"Bash(git push)"}
+	allow := []string{"Read", "Glob"}
+	data, err := buildSettingsLocal(deny, allow)
+	if err != nil {
+		t.Fatalf("buildSettingsLocal: %v", err)
+	}
+
+	var raw map[string]any
+	if err := json.Unmarshal(data, &raw); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	perms, ok := raw["permissions"].(map[string]any)
+	if !ok {
+		t.Fatalf("missing 'permissions' key")
+	}
+	allowList, ok := perms["allow"].([]any)
+	if !ok {
+		t.Fatalf("missing 'allow' key under permissions; got keys: %v", mapKeys(perms))
+	}
+	if len(allowList) != 2 {
+		t.Errorf("allow count = %d; want 2", len(allowList))
+	}
+}
+
+func TestBuildSettingsLocal_AllowListOmittedWhenNil(t *testing.T) {
+	data, err := buildSettingsLocal([]string{"Edit"}, nil)
+	if err != nil {
+		t.Fatalf("buildSettingsLocal: %v", err)
+	}
+
+	var raw map[string]any
+	if err := json.Unmarshal(data, &raw); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	perms := raw["permissions"].(map[string]any)
+	if _, exists := perms["allow"]; exists {
+		t.Error("'allow' key must be absent when allowRules is nil")
+	}
+}
+
+func TestBuildSettingsLocal_LowRiskToolsIncluded(t *testing.T) {
+	// Verify that the integration path (deny + LowRiskTools) produces valid JSON
+	// with all expected allow entries.
+	deny := DenyRulesForRole(core.RoleImplementer)
+	data, err := buildSettingsLocal(deny, LowRiskTools())
+	if err != nil {
+		t.Fatalf("buildSettingsLocal: %v", err)
+	}
+	if !json.Valid(data) {
+		t.Fatal("produced invalid JSON")
+	}
+
+	var raw map[string]any
+	if err := json.Unmarshal(data, &raw); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	perms := raw["permissions"].(map[string]any)
+	allowList, ok := perms["allow"].([]any)
+	if !ok {
+		t.Fatal("'allow' key missing when LowRiskTools passed")
+	}
+	if len(allowList) != len(LowRiskTools()) {
+		t.Errorf("allow count = %d; want %d", len(allowList), len(LowRiskTools()))
 	}
 }
 

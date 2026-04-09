@@ -82,7 +82,6 @@ orchestrator run --no-git --no-review ~/.alluka/missions/RESEARCH.md
 
 ```bash
 orchestrator status                     # Show active workspaces
-orchestrator learn                      # Capture learnings from completed workspaces
 orchestrator cleanup                    # Remove completed workspaces
 orchestrator cleanup --older 7d         # Remove workspaces older than 7 days
 ```
@@ -176,7 +175,7 @@ internal/
 ## Objective
 Goal description.
 
-PHASE: discover | OBJECTIVE: Research prior art for X | PERSONA: academic-researcher
+PHASE: discover | OBJECTIVE: Research X | PERSONA: researcher | SKILLS: scout
 PHASE: implement | OBJECTIVE: Build Y | PERSONA: senior-backend-engineer | DEPENDS: discover
 PHASE: review | OBJECTIVE: Review implementation | PERSONA: staff-code-reviewer | DEPENDS: implement
 ```

@@ -54,15 +54,19 @@ type settingsLocal struct {
 	Permissions settingsPermissions `json:"permissions"`
 }
 
-// settingsPermissions holds the deny rules array.
+// settingsPermissions holds the allow and deny rule arrays.
+// Allow is omitted from the JSON when empty so existing callers that pass nil
+// get the same output as before this field was added.
 type settingsPermissions struct {
-	Deny []string `json:"deny"`
+	Allow []string `json:"allow,omitempty"`
+	Deny  []string `json:"deny"`
 }
 
-// buildSettingsLocal serializes deny rules into a settings.local.json payload.
-func buildSettingsLocal(denyRules []string) ([]byte, error) {
+// buildSettingsLocal serializes deny and allow rules into a settings.local.json payload.
+// Pass nil for allowRules to omit the allow list from the output.
+func buildSettingsLocal(denyRules, allowRules []string) ([]byte, error) {
 	s := settingsLocal{
-		Permissions: settingsPermissions{Deny: denyRules},
+		Permissions: settingsPermissions{Allow: allowRules, Deny: denyRules},
 	}
 	data, err := json.MarshalIndent(s, "", "  ")
 	if err != nil {

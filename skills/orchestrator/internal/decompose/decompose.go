@@ -1150,7 +1150,7 @@ func ensureCodeReviewPhase(plan *core.Plan, tc *TargetContext) {
 	review := &core.Phase{
 		ID:                     fmt.Sprintf("phase-%d", len(plan.Phases)+1),
 		Name:                   "review",
-		Objective:              "Review implementation for correctness, test coverage, and adherence to project conventions",
+		Objective:              "Review implementation for correctness, test coverage, and adherence to project conventions. Produce structured output with ### Blockers and ### Warnings sections, listing each finding as a '- **[location]** description' item (e.g., '- **[file.go:42]** Missing error check').",
 		Persona:                reviewerName,
 		PersonaSelectionMethod: core.SelectionRequiredReview,
 		ModelTier:              string(router.TierThink),

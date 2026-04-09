@@ -30,11 +30,10 @@ import (
 
 // applyMaxTurnsDefault replicates the guardrail logic in executePhase.
 // It is defined here so the table test documents and verifies the exact
-// contract: MaxTurns <= 0 → set to defaultMaxTurns; MaxTurns > 0 → unchanged.
-func applyMaxTurnsDefault(config *core.WorkerConfig) {
-	const defaultMaxTurns = 50
+// contract: MaxTurns <= 0 → resolveMaxTurns (persona-aware); MaxTurns > 0 → unchanged.
+func applyMaxTurnsDefault(config *core.WorkerConfig, persona string) {
 	if config.MaxTurns <= 0 {
-		config.MaxTurns = defaultMaxTurns
+		config.MaxTurns = resolveMaxTurns(0, persona)
 	}
 }
 
@@ -79,9 +78,65 @@ func TestDefaultMaxTurnsTable(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			config := &core.WorkerConfig{MaxTurns: tt.initialTurns}
-			applyMaxTurnsDefault(config)
+			applyMaxTurnsDefault(config, "")
 			if config.MaxTurns != tt.wantTurns {
 				t.Errorf("MaxTurns = %d; want %d", config.MaxTurns, tt.wantTurns)
+			}
+		})
+	}
+}
+
+func TestResolveMaxTurns(t *testing.T) {
+	tests := []struct {
+		name           string
+		engineMaxTurns int
+		persona        string
+		want           int
+	}{
+		{
+			name:           "global flag overrides persona tier",
+			engineMaxTurns: 25,
+			persona:        "architect",
+			want:           25,
+		},
+		{
+			name:           "architect gets 30 when no global override",
+			engineMaxTurns: 0,
+			persona:        "architect",
+			want:           30,
+		},
+		{
+			name:           "architect case-insensitive",
+			engineMaxTurns: 0,
+			persona:        "Architect",
+			want:           30,
+		},
+		{
+			name:           "unknown persona gets default 50",
+			engineMaxTurns: 0,
+			persona:        "senior-backend-engineer",
+			want:           50,
+		},
+		{
+			name:           "empty persona gets default 50",
+			engineMaxTurns: 0,
+			persona:        "",
+			want:           50,
+		},
+		{
+			name:           "global flag overrides unknown persona",
+			engineMaxTurns: 75,
+			persona:        "researcher",
+			want:           75,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := resolveMaxTurns(tt.engineMaxTurns, tt.persona)
+			if got != tt.want {
+				t.Errorf("resolveMaxTurns(%d, %q) = %d; want %d",
+					tt.engineMaxTurns, tt.persona, got, tt.want)
 			}
 		})
 	}
@@ -1738,5 +1793,73 @@ func TestExecuteSequential_PriorContextFlowsBetweenDependentPhases(t *testing.T)
 	}
 	if cfg3.Bundle.PriorContext != "" {
 		t.Errorf("phase-3 PriorContext = %q; want empty (no dependencies)", cfg3.Bundle.PriorContext)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// OBJECTIVE length guard: phase fails when Objective exceeds 8192 bytes
+// ---------------------------------------------------------------------------
+
+// TestObjectiveLengthGuard verifies that executePhase rejects phases whose
+// Objective field exceeds maxObjectiveBytes (8192). The phase should fail
+// without invoking the executor, and Execute should report failure.
+func TestObjectiveLengthGuard(t *testing.T) {
+	tests := []struct {
+		name      string
+		objective string
+		wantFail  bool
+	}{
+		{
+			name:      "exactly at limit passes",
+			objective: strings.Repeat("x", maxObjectiveBytes),
+			wantFail:  false,
+		},
+		{
+			name:      "one byte over limit fails",
+			objective: strings.Repeat("x", maxObjectiveBytes+1),
+			wantFail:  true,
+		},
+		{
+			name:      "far over limit fails",
+			objective: strings.Repeat("x", maxObjectiveBytes*2),
+			wantFail:  true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ws := &core.Workspace{ID: "ws-obj-guard", Path: t.TempDir(), Domain: "dev"}
+			exec := instantExecutor{fail: false}
+			e := New(ws, &core.OrchestratorConfig{ForceSequential: true}, nil, nil, "").
+				WithEmitter(event.NoOpEmitter{})
+			e.RegisterExecutor(core.RuntimeClaude, exec)
+
+			plan := &core.Plan{
+				ID:            "plan-obj-guard",
+				Task:          "test objective guard",
+				ExecutionMode: "sequential",
+				Phases: []*core.Phase{
+					{
+						ID:        "phase-1",
+						Name:      "guarded-phase",
+						Objective: tt.objective,
+						Persona:   "senior-backend-engineer",
+						ModelTier: "work",
+						Status:    core.StatusPending,
+					},
+				},
+			}
+
+			result, err := e.Execute(context.Background(), plan)
+			if err != nil {
+				t.Fatalf("Execute() returned unexpected error: %v", err)
+			}
+			if tt.wantFail && result.Success {
+				t.Error("Execute() succeeded; want failure for oversized objective")
+			}
+			if !tt.wantFail && !result.Success {
+				t.Errorf("Execute() failed; want success for objective at or below limit: %s", result.Error)
+			}
+		})
 	}
 }

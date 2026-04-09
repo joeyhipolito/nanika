@@ -2165,9 +2165,9 @@ func TestEnsureCodeReviewPhase_TriggersByCodeProducingPersona(t *testing.T) {
 	if !containsSkill(review.Skills, "requesting-code-review") {
 		t.Errorf("injected phase skills = %v, want to contain 'requesting-code-review'", review.Skills)
 	}
-	want := "Review implementation for correctness, test coverage, and adherence to project conventions"
-	if review.Objective != want {
-		t.Errorf("injected phase objective = %q, want %q", review.Objective, want)
+	// Verify the objective contains format guidance for structured output.
+	if !strings.Contains(review.Objective, "### Blockers") || !strings.Contains(review.Objective, "### Warnings") {
+		t.Errorf("injected phase objective missing format guidance: %q", review.Objective)
 	}
 }
 
@@ -2468,6 +2468,41 @@ func TestEnsureCodeReviewPhase_ReviewRuntimeEmpty(t *testing.T) {
 	}
 	if review.Runtime != "" {
 		t.Errorf("injected review Runtime = %q, want empty (policy will fill)", review.Runtime)
+	}
+}
+
+// TestEnsureCodeReviewPhase_ObjectiveIncludesFormatGuidance verifies that the
+// injected review phase's objective includes explicit format guidance to ensure
+// reviewers output structured ### Blockers / ### Warnings sections on the first attempt.
+func TestEnsureCodeReviewPhase_ObjectiveIncludesFormatGuidance(t *testing.T) {
+	plan := &core.Plan{
+		Task: "implement routing fixes",
+		Phases: []*core.Phase{
+			{ID: "phase-1", Name: "plan", Persona: "architect", Role: core.RolePlanner},
+			{ID: "phase-2", Name: "implement", Persona: "senior-backend-engineer", Role: core.RoleImplementer},
+		},
+		ExecutionMode: "sequential",
+	}
+
+	ensureCodeReviewPhase(plan, nil)
+
+	if len(plan.Phases) != 3 {
+		t.Fatalf("len(plan.Phases) = %d, want 3", len(plan.Phases))
+	}
+
+	review := plan.Phases[2]
+	// Verify the review objective contains structured format guidance.
+	if !strings.Contains(review.Objective, "### Blockers") {
+		t.Errorf("review objective missing '### Blockers': %q", review.Objective)
+	}
+	if !strings.Contains(review.Objective, "### Warnings") {
+		t.Errorf("review objective missing '### Warnings': %q", review.Objective)
+	}
+	if !strings.Contains(review.Objective, "**[") {
+		t.Errorf("review objective missing item format '**[location]**': %q", review.Objective)
+	}
+	if !strings.Contains(review.Objective, "description") {
+		t.Errorf("review objective missing 'description': %q", review.Objective)
 	}
 }
 
