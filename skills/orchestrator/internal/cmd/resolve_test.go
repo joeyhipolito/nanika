@@ -99,31 +99,13 @@ func TestResolveFromTaskText(t *testing.T) {
 		want string
 	}{
 		{"fix orchestrator routing bug", "repo:~/nanika/skills/orchestrator"},
-		{"update scout feed parser", "repo:~/nanika/skills/scout"},
-		{"obsidian note sync is broken", "repo:~/nanika/skills/obsidian"},
-		{"gmail label sync", "repo:~/nanika/skills/gmail"},
-		{"todoist priority mapping", "repo:~/nanika/skills/todoist"},
-		{"ynab budget categories", "repo:~/nanika/skills/ynab"},
-		{"linkedin job scraper", "repo:~/nanika/skills/linkedin"},
-		{"reddit comment fetcher", "repo:~/nanika/skills/reddit"},
 		// Case-insensitive.
 		{"Fix ORCHESTRATOR routing", "repo:~/nanika/skills/orchestrator"},
 		// Unknown system — no match.
 		{"deploy the new service", ""},
+		{"update scout feed parser", ""},
+		{"gmail label sync", ""},
 		{"", ""},
-		// Word-boundary false-positive prevention (Finding 3 regression).
-		// Substrings of known names must not trigger a match.
-		{"published my research report", ""},    // "published" contains "publish"
-		{"publishers need API access", ""},      // "publishers" contains "publish"
-		{"engagement metrics are high", ""},     // "engagement" contains "engage"
-		{"engaging with our audience", ""},      // "engaging" contains "engage"
-		{"reschedulers are available", ""},      // "reschedulers" contains "scheduler"
-		// True-positive: standalone keyword still matches after the fix.
-		{"fix the publish skill", "repo:~/nanika/skills/publish"},
-		{"scheduler is not running", "repo:~/nanika/skills/scheduler"},
-		{"engage with my posts", "repo:~/nanika/skills/engage"},
-			// Bare "engage" routes to skill.
-		{"fix engage CLI doctor command", "repo:~/nanika/skills/engage"},
 	}
 
 	for _, tt := range tests {
@@ -168,8 +150,8 @@ func TestResolveFromTaskText_NonRepoTargets(t *testing.T) {
 		// Existing repo targets must NOT be displaced.
 		// "orchestrator" is a word-boundary match that beats "orchestration".
 		{"fix the orchestrator routing bug", "repo:~/nanika/skills/orchestrator"},
-		// "substack" is a word-boundary match that beats "newsletter".
-		{"fix the substack CLI draft command", "repo:~/nanika/skills/substack"},
+		// "substack" is no longer a known system; newsletter still resolves to publication:substack.
+		{"fix the substack CLI draft command", ""},
 		// Unrelated tasks still return empty.
 		{"write a haiku about clouds", ""},
 		{"deploy the new service", ""},

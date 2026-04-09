@@ -1820,19 +1820,6 @@ func canonicalRepoID(root string) string {
 // multiple systems. All Nanika systems live under ~/nanika/skills/.
 var knownSystems = [][2]string{
 	{"orchestrator", "repo:~/nanika/skills/orchestrator"},
-	{"scout", "repo:~/nanika/skills/scout"},
-	{"obsidian", "repo:~/nanika/skills/obsidian"},
-	{"gmail", "repo:~/nanika/skills/gmail"},
-	{"todoist", "repo:~/nanika/skills/todoist"},
-	{"ynab", "repo:~/nanika/skills/ynab"},
-	{"linkedin", "repo:~/nanika/skills/linkedin"},
-	{"reddit", "repo:~/nanika/skills/reddit"},
-	{"substack", "repo:~/nanika/skills/substack"},
-	{"scheduler", "repo:~/nanika/skills/scheduler"},
-	{"publish", "repo:~/nanika/skills/publish"},
-	{"engage", "repo:~/nanika/skills/engage"},
-	{"elevenlabs", "repo:~/nanika/skills/elevenlabs"},
-	{"contentkit", "repo:~/nanika/skills/contentkit"},
 }
 
 type knownSystemPattern struct {

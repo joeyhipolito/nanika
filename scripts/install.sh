@@ -9,46 +9,27 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # Categories: core (always installed), optional (opt-in)
 
 CORE_SKILLS=(orchestrator)
-CORE_PLUGINS=(nen tracker scheduler)
-OPTIONAL_PLUGINS=(discord telegram)
-ALL_PLUGINS=(nen tracker scheduler discord telegram)
+CORE_PLUGINS=()
+OPTIONAL_PLUGINS=()
+ALL_PLUGINS=()
 
 plugin_desc() {
   case "$1" in
     orchestrator) echo "Multi-agent mission execution" ;;
     decomposer)   echo "Mission decomposition (knowledge-only)" ;;
-    nen)          echo "Self-improvement (Shu, Gyo, Ko, En, Ryu)" ;;
-    tracker)      echo "Local issue tracker (Rust)" ;;
-    scheduler)    echo "Cron jobs + dispatch loop" ;;
-    discord)      echo "Channel notifications + voice messages" ;;
-    telegram)     echo "Channel notifications + voice messages" ;;
     *) echo "" ;;
   esac
 }
 
 plugin_required_prereqs() {
-  case "$1" in
-    tracker)   echo "cargo" ;;
-    *) echo "" ;;
-  esac
+  echo ""
 }
 
 plugin_configure_cmd() {
-  case "$1" in
-    discord)    echo "discord configure|Discord bot token" ;;
-    telegram)   echo "telegram configure|Telegram bot token" ;;
-    scheduler)  echo "scheduler init|Initialize job database" ;;
-    *) echo "" ;;
-  esac
+  echo ""
 }
 
 plugin_category() {
-  local p="$1"
-  case "$p" in
-    nen|tracker|scheduler) echo "core"; return ;;
-  esac
-  local c
-  for c in "${OPTIONAL_PLUGINS[@]}"; do [[ "$c" == "$p" ]] && echo "optional" && return; done
   echo "unknown"
 }
 
@@ -169,6 +150,7 @@ format_item() { printf '%-16s %s' "$1" "$(plugin_desc "$1")"; }
 MODE=""
 SELECTED_LIST=""
 NO_INTERACTIVE=0
+SKIP_DASHBOARD=0
 DRY_RUN=0
 REPAIR=0
 JSON_OUTPUT=0
@@ -209,6 +191,7 @@ parse_flags() {
         [[ $# -gt 0 ]] || die "--plugins requires a comma-separated list"
         SELECTED_LIST="$1" ;;
       --no-interactive) NO_INTERACTIVE=1 ;;
+      --skip-dashboard) SKIP_DASHBOARD=1 ;;
       --dry-run)        DRY_RUN=1 ;;
       --repair)         REPAIR=1 ;;
       --json)           JSON_OUTPUT=1; NO_INTERACTIVE=1 ;;
@@ -228,12 +211,13 @@ usage() {
 Usage: scripts/install.sh [flags]
 
 Selection flags (mutually exclusive):
-  --all              Install core + optional channel plugins (discord, telegram)
-  --core             Install core plugins only (nen, tracker, scheduler)
-  --plugins LIST     Comma-separated plugin names (e.g. --plugins discord,telegram)
+  --all              Install everything (core + recommended + optional)
+  --core             Install core plugins only
+  --plugins LIST     Comma-separated plugin names (e.g. --plugins gmail,scout,ynab)
 
 Behavior flags:
   --no-interactive   Skip all prompts, install core plugins only
+  --skip-dashboard   Skip dashboard build (even with --all)
   --dry-run          Show what would be installed without doing it
   --repair           Re-run prerequisite checks and rebuild broken plugins
   --json             Machine-readable output (implies --no-interactive)
@@ -244,7 +228,7 @@ Examples:
   scripts/install.sh --all                     # Everything, still prompts for prereqs
   scripts/install.sh --core                    # Minimal install, no prompts
   scripts/install.sh --all --no-interactive    # CI: everything, no prompts
-  scripts/install.sh --plugins discord         # Only core + selected plugins
+  scripts/install.sh --plugins gmail,ynab      # Only core + selected plugins
   scripts/install.sh --repair                  # Fix broken install
 EOF
 }
@@ -254,7 +238,7 @@ EOF
 select_plugins() {
   case "$MODE" in
     all)
-      SELECTED_PLUGINS=("${CORE_PLUGINS[@]}" "${OPTIONAL_PLUGINS[@]}")
+      SELECTED_PLUGINS=("${CORE_PLUGINS[@]}" "${RECOMMENDED_PLUGINS[@]}" "${OPTIONAL_PLUGINS[@]}")
       ;;
     core)
       SELECTED_PLUGINS=("${CORE_PLUGINS[@]}")
@@ -277,6 +261,16 @@ select_plugins() {
       fi
       ;;
   esac
+
+  # Apply --skip-dashboard
+  if [[ "$SKIP_DASHBOARD" -eq 1 ]]; then
+    local filtered=()
+    local p
+    for p in "${SELECTED_PLUGINS[@]}"; do
+      [[ "$p" != "dashboard" ]] && filtered+=("$p")
+    done
+    SELECTED_PLUGINS=("${filtered[@]}")
+  fi
 }
 
 interactive_select() {
@@ -285,22 +279,19 @@ interactive_select() {
   local choice
   if [[ "$USE_GUM" -eq 1 ]]; then
     choice=$(gum choose --cursor="● " \
-      "Core          orchestrator + nen + tracker + scheduler" \
-      "Everything    Core + discord, telegram" \
+      "Core          orchestrator" \
       "Custom        Choose individual plugins")
     choice=$(echo "$choice" | awk '{print $1}' | tr '[:upper:]' '[:lower:]')
   else
     echo "  What would you like to install?"
     echo ""
-    echo "  1) Core           orchestrator + nen + tracker + scheduler"
-    echo "  2) Everything     Core + discord, telegram"
-    echo "  3) Custom         Choose individual plugins"
+    echo "  1) Core           orchestrator"
+    echo "  2) Custom         Choose individual plugins"
     echo ""
     read -rp "  Choice [1]: " choice
     case "${choice:-1}" in
       1) choice="core" ;;
-      2) choice="everything" ;;
-      3) choice="custom" ;;
+      2) choice="custom" ;;
       *) die "Invalid choice: $choice" ;;
     esac
   fi
@@ -308,9 +299,6 @@ interactive_select() {
   case "$choice" in
     core*)
       SELECTED_PLUGINS=("${CORE_PLUGINS[@]}")
-      ;;
-    everything*)
-      SELECTED_PLUGINS=("${CORE_PLUGINS[@]}" "${OPTIONAL_PLUGINS[@]}")
       ;;
     custom*)
       interactive_custom_select
@@ -321,11 +309,11 @@ interactive_select() {
 interactive_custom_select() {
   SELECTED_PLUGINS=("${CORE_PLUGINS[@]}")
 
-  local selectable=("${OPTIONAL_PLUGINS[@]}")
+  local selectable=()
 
   if [[ "$USE_GUM" -eq 1 ]]; then
     echo ""
-    echo "  Core (always installed): orchestrator, nen, tracker, scheduler"
+    echo "  Core (always installed): orchestrator, decomposer"
     echo ""
 
     local items=() p
@@ -333,52 +321,23 @@ interactive_custom_select() {
       items+=("$(format_item "$p")")
     done
 
-    local chosen
-    chosen=$(printf '%s\n' "${items[@]}" | gum choose --no-limit \
-      --cursor-prefix="[ ] " --selected-prefix="[x] " --unselected-prefix="[ ] " \
-      --header="Select optional plugins (Space to toggle, Enter to confirm):") || true
+    if [[ ${#items[@]} -gt 0 ]]; then
+      local chosen
+      chosen=$(printf '%s\n' "${items[@]}" | gum choose --no-limit \
+        --cursor-prefix="[ ] " --selected-prefix="[x] " --unselected-prefix="[ ] " \
+        --header="Select plugins (Space to toggle, Enter to confirm):") || true
 
-    while IFS= read -r line; do
-      local name
-      name=$(echo "$line" | awk '{print $1}')
-      [[ -n "$name" ]] && SELECTED_PLUGINS+=("$name")
-    done <<< "$chosen"
+      while IFS= read -r line; do
+        local name
+        name=$(echo "$line" | awk '{print $1}')
+        [[ -n "$name" ]] && SELECTED_PLUGINS+=("$name")
+      done <<< "$chosen"
+    fi
   else
     echo ""
-    echo "  Core (always installed): orchestrator, nen, tracker, scheduler"
+    echo "  Core (always installed): orchestrator, decomposer"
     echo ""
-    echo "  Optional:"
-    local idx=1 p
-    for p in "${OPTIONAL_PLUGINS[@]}"; do
-      printf "    %2d) %-16s %s\n" "$idx" "$p" "$(plugin_desc "$p")"
-      idx=$((idx + 1))
-    done
-    echo ""
-    read -rp "  Enter names or numbers (comma-separated), 'a' for all, Enter for none: " input
-
-    if [[ -z "$input" ]]; then
-      :
-    elif [[ "$input" == "a" || "$input" == "all" ]]; then
-      SELECTED_PLUGINS+=("${selectable[@]}")
-    else
-      IFS=',' read -ra picks <<< "$input"
-      local pick
-      for pick in "${picks[@]}"; do
-        pick=$(echo "$pick" | tr -d ' ')
-        if [[ "$pick" =~ ^[0-9]+$ ]]; then
-          local pidx=$((pick - 1))
-          if [[ $pidx -ge 0 && $pidx -lt ${#selectable[@]} ]]; then
-            SELECTED_PLUGINS+=("${selectable[$pidx]}")
-          else
-            warn "Invalid number: $pick (skipping)"
-          fi
-        elif contains "$pick" "${selectable[@]}"; then
-          SELECTED_PLUGINS+=("$pick")
-        else
-          warn "Unknown plugin: $pick (skipping)"
-        fi
-      done
-    fi
+    info "No optional plugins available."
   fi
 }
 
@@ -444,31 +403,6 @@ check_prerequisites() {
     die "$errors required prerequisite(s) missing. Install them and re-run."
   fi
 
-  # ── Conditionally required ──
-  local need_cargo=0 p
-  for p in "${SELECTED_PLUGINS[@]}"; do
-    case "$p" in
-      tracker)   need_cargo=1 ;;
-    esac
-  done
-
-  local conditional_missing=()
-
-  if [[ "$need_cargo" -eq 1 ]]; then
-    [[ "$JSON_OUTPUT" -eq 0 ]] && echo "" && info "For selected plugins:"
-    if command -v cargo >/dev/null 2>&1; then
-      local cargo_ver
-      cargo_ver=$(cargo --version 2>/dev/null)
-      ok "cargo     $cargo_ver"
-      record_prereq "cargo" "ok" "$cargo_ver" "tracker"
-    else
-      fail "cargo     not found (needed for tracker)"
-      info "          Install: curl https://sh.rustup.rs -sSf | sh"
-      record_prereq "cargo" "missing" "" "tracker"
-      conditional_missing+=("cargo:tracker")
-    fi
-  fi
-
   # ── Optional ──
   [[ "$JSON_OUTPUT" -eq 0 ]] && echo "" && info "Optional:"
 
@@ -480,46 +414,6 @@ check_prerequisites() {
     record_prereq "gemini" "missing" "" ""
   fi
 
-  # ── Handle conditional missing ──
-  if [[ ${#conditional_missing[@]} -gt 0 ]]; then
-    echo ""
-    # Collect unique affected plugins
-    local plugins_to_skip=() entry tool plugin
-    for entry in "${conditional_missing[@]}"; do
-      plugin="${entry##*:}"
-      contains "$plugin" "${plugins_to_skip[@]}" || plugins_to_skip+=("$plugin")
-    done
-
-    if [[ "$NO_INTERACTIVE" -eq 1 ]]; then
-      for p in "${plugins_to_skip[@]}"; do
-        remove_from_selected "$p"
-        SKIPPED_PLUGINS+=("$p")
-        warn "Skipping $p (missing prerequisite)"
-      done
-    else
-      for entry in "${conditional_missing[@]}"; do
-        tool="${entry%%:*}"
-        plugin="${entry##*:}"
-        # Skip if already handled
-        if [[ ${#SKIPPED_PLUGINS[@]} -gt 0 ]] && contains "$plugin" "${SKIPPED_PLUGINS[@]}"; then
-          continue
-        fi
-
-        echo -e "  ${BOLD}$tool${RESET} is needed for ${BOLD}$plugin${RESET} but is not installed."
-        echo ""
-        local action
-        if [[ "$USE_GUM" -eq 1 ]]; then
-          action=$(gum choose "Skip $plugin and continue" "Abort and install $tool first")
-          [[ "$action" == *"Abort"* ]] && die "Aborting. Install $tool, then re-run."
-        else
-          read -rp "  Skip $plugin and continue? [Y/n] " action
-          [[ "${action:-y}" =~ ^[Nn] ]] && die "Aborting. Install $tool, then re-run."
-        fi
-        remove_from_selected "$plugin"
-        SKIPPED_PLUGINS+=("$plugin")
-      done
-    fi
-  fi
 }
 
 # ── Dry Run ──────────────────────────────────────────────────────────────────
@@ -530,15 +424,9 @@ print_dry_run() {
   echo "  Would install (core):"
   local s
   for s in "${CORE_SKILLS[@]}"; do
-    printf "    %-18s skills/%-14s → ~/bin/%s\n" "$s" "$s" "$s"
+    printf "    %-18s skills/%-14s → ~/.alluka/bin/%s\n" "$s" "$s" "$s"
   done
   echo "    decomposer         skills/decomposer     → (knowledge-only)"
-  local p
-  for p in "${CORE_PLUGINS[@]}"; do
-    if [[ "$p" == "nen" ]]; then
-      printf "    %-18s plugins/%-14s → ~/bin/{shu,gyo,en,ryu}\n" "$p" "$p"
-    fi
-  done
   echo ""
 
   # Non-core selected
@@ -551,7 +439,7 @@ print_dry_run() {
       fi
       local binary
       binary=$(read_plugin_json "$REPO_ROOT/plugins/$p" "binary" 2>/dev/null || echo "$p")
-      printf "    %-18s plugins/%-14s → ~/bin/%s\n" "$p" "$p" "$binary"
+      printf "    %-18s plugins/%-14s → ~/.alluka/bin/%s\n" "$p" "$p" "$binary"
     fi
   done
   [[ "$has_selected" -eq 1 ]] && echo ""
@@ -587,18 +475,8 @@ print_dry_run() {
   echo ""
   echo "  Would run:"
   echo "    make build-skills"
-  echo "    Build plugins: ${SELECTED_PLUGINS[*]}"
-  echo "    Install binaries to ~/bin/"
-  if contains "tracker" "${SELECTED_PLUGINS[@]}"; then
-    echo "    tracker init"
-  fi
+  echo "    Install binaries to ~/.alluka/bin/"
   echo "    orchestrator doctor"
-  if contains "nen" "${SELECTED_PLUGINS[@]}"; then
-    echo "    Create scheduler config at ~/.alluka/scheduler/config.json"
-    echo "    Symlink nen binaries (shu, gyo, ko, en, ryu) into ~/bin/"
-    echo "    Register nanika scheduler launchd service (com.nanika.scheduler)"
-    echo "    shu propose --init (register daily shu evaluation cron jobs)"
-  fi
 }
 
 # ── Create Directories ───────────────────────────────────────────────────────
@@ -610,8 +488,7 @@ create_directories() {
     ~/.alluka/missions \
     ~/.alluka/logs \
     ~/.alluka/workspaces \
-    ~/.alluka/worktrees \
-    ~/.alluka/nen/scanners
+    ~/.alluka/worktrees
   mkdir -p ~/bin
   ok "~/.alluka/ layout ready"
   ok "~/bin ready"
@@ -701,12 +578,12 @@ install_all() {
   mkdir -p ~/bin ~/.alluka/bin
   cd "$REPO_ROOT"
 
-  # Install skills — link from repo bin/ to ~/bin/
+  # Install skills — link from repo bin/ to ~/.alluka/bin/
   local skill
   for skill in "${CORE_SKILLS[@]}"; do
     if [[ -f "$REPO_ROOT/bin/$skill" ]]; then
-      ln -sf "$REPO_ROOT/bin/$skill" ~/bin/"$skill"
-      ok "$skill → ~/bin/$skill"
+      ln -sf "$REPO_ROOT/bin/$skill" ~/.alluka/bin/"$skill"
+      ok "$skill → ~/.alluka/bin/$skill"
     fi
   done
 
@@ -729,16 +606,6 @@ install_all() {
       : # spin already printed ✓
     else
       : # spin already printed ✗
-    fi
-  done
-
-  # Create ~/bin backwards-compat symlinks → ~/.alluka/bin/ for all nanika plugins
-  local nanika_plugins=(discord elevenlabs engage gmail linkedin obsidian reddit scheduler scout substack telegram tracker ynab youtube)
-  local p
-  for p in "${nanika_plugins[@]}"; do
-    if [[ -f "$HOME/.alluka/bin/$p" ]] || [[ -L "$HOME/.alluka/bin/$p" ]]; then
-      ln -sf "$HOME/.alluka/bin/$p" "$HOME/bin/$p"
-      ok "$p → ~/bin/$p (→ ~/.alluka/bin/$p)"
     fi
   done
 
@@ -769,7 +636,7 @@ setup_launchd() {
   mkdir -p "$launch_agents"
 
   local template_dir="$REPO_ROOT/scripts/launchd"
-  local daemons=(orchestrator-daemon nen-daemon scheduler-daemon)
+  local daemons=(orchestrator-daemon)
   local labels=()
   local plists=()
 
@@ -781,7 +648,7 @@ setup_launchd() {
     [[ -f "$src" ]] || { warn "Template not found: $src (skipping $d)"; continue; }
 
     # Substitute __HOME__ with the real home path (no ~, no env vars — launchd needs absolute paths)
-    sed "s|__HOME__|$HOME|g" "$src" > "$dst"
+    sed "s|__HOME__|$HOME|g" "$src" >| "$dst"
 
     labels+=("$label")
     plists+=("$dst")
@@ -854,94 +721,6 @@ setup_launchd() {
 # ── Post-Install ─────────────────────────────────────────────────────────────
 
 post_install() {
-  # Tracker init (idempotent)
-  if contains "tracker" "${SELECTED_PLUGINS[@]}" && \
-     [[ ${#FAILED_PLUGINS[@]} -eq 0 || ! $(contains "tracker" "${FAILED_PLUGINS[@]}" && echo yes) ]]; then
-    step "Initializing tracker"
-    if command -v tracker >/dev/null 2>&1; then
-      if tracker init 2>/dev/null; then
-        ok "tracker init OK"
-      else
-        warn "tracker init returned non-zero (may already be initialized)"
-      fi
-    else
-      warn "tracker not in PATH — run manually: tracker init"
-    fi
-  fi
-
-  # Scheduler config auto-create with defaults (idempotent)
-  if contains "scheduler" "${SELECTED_PLUGINS[@]}"; then
-    local scheduler_cfg_dir="$HOME/.alluka/scheduler"
-    local scheduler_cfg_file="$scheduler_cfg_dir/config"
-    if [[ ! -f "$scheduler_cfg_file" ]]; then
-      step "Creating scheduler config with defaults"
-      mkdir -p "$scheduler_cfg_dir"
-      chmod 700 "$scheduler_cfg_dir"
-      cat > "$scheduler_cfg_file" <<EOF
-# scheduler configuration
-# Generated by install.sh
-
-db_path = $scheduler_cfg_dir/scheduler.db
-log_level = info
-shell = /bin/sh
-max_concurrent = 4
-dashboard_token =
-EOF
-      chmod 600 "$scheduler_cfg_file"
-      ok "created $scheduler_cfg_file"
-    fi
-  fi
-
-  # Scheduler init (idempotent)
-  if contains "scheduler" "${SELECTED_PLUGINS[@]}" && \
-     command -v scheduler >/dev/null 2>&1; then
-    step "Initializing scheduler"
-    if scheduler init 2>/dev/null; then
-      ok "scheduler init OK"
-    else
-      warn "scheduler init returned non-zero (may already be initialized)"
-    fi
-  fi
-
-  # Self-improvement loop setup (idempotent)
-  if command -v shu >/dev/null 2>&1 && command -v scheduler >/dev/null 2>&1; then
-    step "Setting up self-improvement loop"
-    if shu propose --init 2>/dev/null; then
-      ok "shu propose --init OK (scheduler jobs registered)"
-    else
-      warn "shu propose --init returned non-zero (jobs may already exist)"
-    fi
-  fi
-
-  # Symlink nen binaries from ~/.alluka/bin and ~/.alluka/nen/scanners to ~/bin (idempotent)
-  if contains "nen" "${SELECTED_PLUGINS[@]}"; then
-    step "Symlinking nen binaries to ~/bin"
-    mkdir -p "$HOME/bin"
-    local alluka_bin="$HOME/.alluka/bin"
-    local scanners_dir="$HOME/.alluka/nen/scanners"
-    local b src dst
-    for b in shu ko nen-daemon; do
-      src="$alluka_bin/$b"
-      dst="$HOME/bin/$b"
-      if [[ -f "$src" ]]; then
-        ln -sf "$src" "$dst"
-        ok "symlinked ~/bin/$b → $src"
-      else
-        warn "$src not found — nen may not be fully installed"
-      fi
-    done
-    for b in gyo en ryu; do
-      src="$scanners_dir/$b"
-      dst="$HOME/bin/$b"
-      if [[ -f "$src" ]]; then
-        ln -sf "$src" "$dst"
-        ok "symlinked ~/bin/$b → $src"
-      else
-        warn "$src not found — nen scanners may not be fully installed"
-      fi
-    done
-  fi
-
   # Run doctor on each installed plugin
   step "Running health checks"
   local plugin binary
@@ -981,8 +760,6 @@ EOF
   if [[ "$(uname)" == "Darwin" ]]; then
     info "  Auto-start daemons (registered with launchd):"
     info "    ${GREEN}✓${RESET} orchestrator-daemon  ${DIM}# mission executor${RESET}"
-    info "    ${GREEN}✓${RESET} nen-daemon           ${DIM}# self-improvement loop${RESET}"
-    info "    ${GREEN}✓${RESET} scheduler-daemon     ${DIM}# cron job runner${RESET}"
     echo ""
   fi
 
@@ -1006,8 +783,6 @@ EOF
 
   # Verify section
   info "  Verify:"
-  info "    ${CYAN}scheduler jobs${RESET}       ${DIM}# confirm shu/ko jobs are scheduled${RESET}"
-  info "    ${CYAN}shu evaluate${RESET}         ${DIM}# run a health check${RESET}"
   info "    ${CYAN}orchestrator status${RESET}  ${DIM}# confirm daemon is running${RESET}"
   echo ""
 
@@ -1051,14 +826,14 @@ run_repair() {
   # Check skills
   local skill
   for skill in "${CORE_SKILLS[@]}"; do
-    if [[ -f ~/bin/"$skill" ]]; then
+    if [[ -f ~/.alluka/bin/"$skill" ]]; then
       # Check if source is newer
       local skill_dir="$REPO_ROOT/skills/$skill"
-      if [[ -d "$skill_dir" ]] && find "$skill_dir" -name "*.go" -newer ~/bin/"$skill" 2>/dev/null | grep -q .; then
-        warn "$skill    ~/bin/$skill (outdated — source newer than binary)"
+      if [[ -d "$skill_dir" ]] && find "$skill_dir" -name "*.go" -newer ~/.alluka/bin/"$skill" 2>/dev/null | grep -q .; then
+        warn "$skill    ~/.alluka/bin/$skill (outdated — source newer than binary)"
         broken+=("skill:$skill")
       else
-        ok "$skill    ~/bin/$skill"
+        ok "$skill    ~/.alluka/bin/$skill"
         healthy+=("$skill")
       fi
     else
@@ -1076,27 +851,27 @@ run_repair() {
     binary=$(read_plugin_json "$plugin_dir" "binary" 2>/dev/null || echo "")
     [[ -z "$binary" ]] && continue
 
-    if [[ -f ~/bin/"$binary" ]]; then
+    if [[ -f ~/.alluka/bin/"$binary" ]]; then
       local outdated=0
       local build_cmd
       build_cmd=$(read_plugin_json "$plugin_dir" "build" 2>/dev/null || echo "")
       if echo "$build_cmd" | grep -q "^cargo"; then
         [[ -d "$plugin_dir/src" ]] && \
-          find "$plugin_dir/src" -name "*.rs" -newer ~/bin/"$binary" 2>/dev/null | grep -q . && outdated=1
+          find "$plugin_dir/src" -name "*.rs" -newer ~/.alluka/bin/"$binary" 2>/dev/null | grep -q . && outdated=1
       else
-        find "$plugin_dir" -name "*.go" -newer ~/bin/"$binary" 2>/dev/null | grep -q . && outdated=1
+        find "$plugin_dir" -name "*.go" -newer ~/.alluka/bin/"$binary" 2>/dev/null | grep -q . && outdated=1
       fi
 
       if [[ "$outdated" -eq 1 ]]; then
-        warn "$name    ~/bin/$binary (outdated — source newer than binary)"
+        warn "$name    ~/.alluka/bin/$binary (outdated — source newer than binary)"
         broken+=("plugin:$name")
       else
-        ok "$name    ~/bin/$binary"
+        ok "$name    ~/.alluka/bin/$binary"
         healthy+=("$name")
       fi
     elif [[ -d "$plugin_dir/bin" ]] || [[ -d "$plugin_dir/target" ]]; then
-      # Had build artifacts but binary missing from ~/bin/
-      fail "$name    ~/bin/$binary (binary missing)"
+      # Had build artifacts but binary missing from ~/.alluka/bin/
+      fail "$name    ~/.alluka/bin/$binary (binary missing)"
       broken+=("plugin:$name")
     fi
   done
@@ -1118,7 +893,7 @@ run_repair() {
 
     if [[ "$type" == "skill" ]]; then
       build_item "$bname" "cd '$REPO_ROOT' && make build-$bname"
-      [[ -f "$REPO_ROOT/bin/$bname" ]] && ln -sf "$REPO_ROOT/bin/$bname" ~/bin/"$bname"
+      [[ -f "$REPO_ROOT/bin/$bname" ]] && ln -sf "$REPO_ROOT/bin/$bname" ~/.alluka/bin/"$bname"
     else
       local pdir="$REPO_ROOT/plugins/$bname"
       local build_cmd

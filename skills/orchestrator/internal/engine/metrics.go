@@ -394,10 +394,7 @@ func toMissionRecord(m MissionMetrics) metricsdb.MissionRecord {
 
 // knownCLISkills is the set of CLI skill names the orchestrator recognises in worker output.
 var knownCLISkills = map[string]struct{}{
-	"scout": {}, "engage": {}, "gmail": {}, "linkedin": {}, "reddit": {},
-	"substack": {}, "contentkit": {}, "elevenlabs": {}, "obsidian": {},
-	"todoist": {}, "ynab": {}, "scheduler": {}, "publish": {}, "orchestrator": {},
-	"watermark": {}, "tracker": {}, "discord": {}, "telegram": {}, "youtube": {},
+	"orchestrator": {},
 }
 
 // ParseSkillInvocations scans a worker output transcript for Bash tool calls that

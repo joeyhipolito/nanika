@@ -243,7 +243,7 @@ func TestBuildMetrics_PopulatesParsedSkillsFromPhaseOutput(t *testing.T) {
 				Name:      "implement",
 				Persona:   "backend-engineer",
 				Status:    core.StatusCompleted,
-				Output:    "⏺ Bash(scout gather \"golang\")\n⏺ Bash(obsidian capture \"note\")\n⏺ Bash(go test ./...)\n",
+				Output:    "⏺ Bash(orchestrator status)\n⏺ Bash(orchestrator metrics)\n⏺ Bash(go test ./...)\n",
 				StartTime: &t0,
 				EndTime:   &t1,
 			},
@@ -259,7 +259,7 @@ func TestBuildMetrics_PopulatesParsedSkillsFromPhaseOutput(t *testing.T) {
 		t.Fatalf("want 1 phase, got %d", len(m.Phases))
 	}
 	got := m.Phases[0].ParsedSkills
-	want := []string{"scout", "obsidian"}
+	want := []string{"orchestrator", "orchestrator"}
 	if len(got) != len(want) {
 		t.Fatalf("ParsedSkills = %v, want %v", got, want)
 	}
@@ -314,7 +314,7 @@ type toolEventExecutor struct{}
 
 func (toolEventExecutor) Execute(ctx context.Context, config *core.WorkerConfig, emitter event.Emitter, verbose bool) (string, string, *sdk.CostInfo, error) {
 	emitter.Emit(ctx, event.New(event.WorkerOutput, config.Bundle.WorkspaceID, config.Bundle.PhaseID, config.Name, map[string]any{
-		"chunk":      `[tool: Bash scout gather "golang"]` + "\n",
+		"chunk":      `[tool: Bash orchestrator status]` + "\n",
 		"event_kind": "tool_use",
 		"tool_name":  "Bash",
 		"streaming":  true,
@@ -381,10 +381,10 @@ func TestExecutePhase_PersistsSkillInvocationsBeforeMissionCompletion(t *testing
 	} else if row.Source != metricsdb.SkillSourceDeclared {
 		t.Fatalf("golang-pro source = %q, want %q", row.Source, metricsdb.SkillSourceDeclared)
 	}
-	if row, ok := got["scout"]; !ok {
-		t.Fatal("missing parsed skill row for scout")
+	if row, ok := got["orchestrator"]; !ok {
+		t.Fatal("missing parsed skill row for orchestrator")
 	} else if row.Source != metricsdb.SkillSourceOutputParse {
-		t.Fatalf("scout source = %q, want %q", row.Source, metricsdb.SkillSourceOutputParse)
+		t.Fatalf("orchestrator source = %q, want %q", row.Source, metricsdb.SkillSourceOutputParse)
 	}
 }
 
@@ -396,7 +396,7 @@ func (e *retrySkillExecutor) Execute(ctx context.Context, config *core.WorkerCon
 	e.attempts++
 	if e.attempts == 1 {
 		emitter.Emit(ctx, event.New(event.WorkerOutput, config.Bundle.WorkspaceID, config.Bundle.PhaseID, config.Name, map[string]any{
-			"chunk":      `[tool: Bash scout gather "golang"]` + "\n",
+			"chunk":      `[tool: Bash orchestrator status]` + "\n",
 			"event_kind": "tool_use",
 			"tool_name":  "Bash",
 			"streaming":  true,
@@ -445,8 +445,8 @@ func TestExecutePhase_RetryPreservesParsedSkillsFromEarlierAttempts(t *testing.T
 	if retryExec.attempts != 2 {
 		t.Fatalf("attempts = %d, want 2", retryExec.attempts)
 	}
-	if len(phase.ParsedSkills) != 1 || phase.ParsedSkills[0] != "scout" {
-		t.Fatalf("phase.ParsedSkills = %v, want [scout]", phase.ParsedSkills)
+	if len(phase.ParsedSkills) != 1 || phase.ParsedSkills[0] != "orchestrator" {
+		t.Fatalf("phase.ParsedSkills = %v, want [orchestrator]", phase.ParsedSkills)
 	}
 
 	db, err := metricsdb.InitDB(filepath.Join(cfgDir, "metrics.db"))
@@ -462,8 +462,8 @@ func TestExecutePhase_RetryPreservesParsedSkillsFromEarlierAttempts(t *testing.T
 	if len(usage) != 1 {
 		t.Fatalf("want 1 skill row, got %d: %+v", len(usage), usage)
 	}
-	if usage[0].SkillName != "scout" || usage[0].Source != metricsdb.SkillSourceOutputParse {
-		t.Fatalf("usage[0] = %+v, want scout/output_parse", usage[0])
+	if usage[0].SkillName != "orchestrator" || usage[0].Source != metricsdb.SkillSourceOutputParse {
+		t.Fatalf("usage[0] = %+v, want orchestrator/output_parse", usage[0])
 	}
 }
 
@@ -474,7 +474,7 @@ type retryDuplicateSkillExecutor struct {
 func (e *retryDuplicateSkillExecutor) Execute(ctx context.Context, config *core.WorkerConfig, emitter event.Emitter, verbose bool) (string, string, *sdk.CostInfo, error) {
 	e.attempts++
 	emitter.Emit(ctx, event.New(event.WorkerOutput, config.Bundle.WorkspaceID, config.Bundle.PhaseID, config.Name, map[string]any{
-		"chunk":      `[tool: Bash scout gather "golang"]` + "\n",
+		"chunk":      `[tool: Bash orchestrator status]` + "\n",
 		"event_kind": "tool_use",
 		"tool_name":  "Bash",
 		"streaming":  true,
@@ -524,8 +524,8 @@ func TestExecutePhase_RetryDoesNotDoubleCountRepeatedSkillsAcrossAttempts(t *tes
 	if retryExec.attempts != 2 {
 		t.Fatalf("attempts = %d, want 2", retryExec.attempts)
 	}
-	if len(phase.ParsedSkills) != 1 || phase.ParsedSkills[0] != "scout" {
-		t.Fatalf("phase.ParsedSkills = %v, want [scout]", phase.ParsedSkills)
+	if len(phase.ParsedSkills) != 1 || phase.ParsedSkills[0] != "orchestrator" {
+		t.Fatalf("phase.ParsedSkills = %v, want [orchestrator]", phase.ParsedSkills)
 	}
 
 	db, err := metricsdb.InitDB(filepath.Join(cfgDir, "metrics.db"))
@@ -541,8 +541,8 @@ func TestExecutePhase_RetryDoesNotDoubleCountRepeatedSkillsAcrossAttempts(t *tes
 	if len(usage) != 1 {
 		t.Fatalf("want 1 skill row, got %d: %+v", len(usage), usage)
 	}
-	if usage[0].SkillName != "scout" || usage[0].Invocations != 1 {
-		t.Fatalf("usage[0] = %+v, want scout with 1 invocation", usage[0])
+	if usage[0].SkillName != "orchestrator" || usage[0].Invocations != 1 {
+		t.Fatalf("usage[0] = %+v, want orchestrator with 1 invocation", usage[0])
 	}
 }
 
@@ -550,13 +550,13 @@ type legacyPhaseIDExecutor struct{}
 
 func (legacyPhaseIDExecutor) Execute(ctx context.Context, config *core.WorkerConfig, emitter event.Emitter, verbose bool) (string, string, *sdk.CostInfo, error) {
 	emitter.Emit(ctx, event.New(event.WorkerOutput, config.Bundle.WorkspaceID, "", config.Name, map[string]any{
-		"chunk":      `[tool: Bash scout gather "golang"]` + "\n",
+		"chunk":      `[tool: Bash orchestrator status]` + "\n",
 		"event_kind": "tool_use",
 		"tool_name":  "Bash",
 		"streaming":  true,
 	}))
 	emitter.Emit(ctx, event.New(event.WorkerOutput, config.Bundle.WorkspaceID, config.Bundle.PhaseID, config.Name, map[string]any{
-		"chunk":      `[tool: Bash scheduler post list]` + "\n",
+		"chunk":      `[tool: Bash orchestrator metrics]` + "\n",
 		"event_kind": "tool_use",
 		"tool_name":  "Bash",
 		"streaming":  true,
@@ -599,8 +599,8 @@ func TestExecutePhase_EmptyLegacyPhaseIDUsesStableFallbackForToolCapture(t *test
 		t.Fatalf("executePhase: %v", err)
 	}
 
-	if len(phase.ParsedSkills) != 1 || phase.ParsedSkills[0] != "scheduler" {
-		t.Fatalf("phase.ParsedSkills = %v, want [scheduler]", phase.ParsedSkills)
+	if len(phase.ParsedSkills) != 1 || phase.ParsedSkills[0] != "orchestrator" {
+		t.Fatalf("phase.ParsedSkills = %v, want [orchestrator]", phase.ParsedSkills)
 	}
 
 	db, err := metricsdb.InitDB(filepath.Join(cfgDir, "metrics.db"))
@@ -616,8 +616,8 @@ func TestExecutePhase_EmptyLegacyPhaseIDUsesStableFallbackForToolCapture(t *test
 	if len(usage) != 1 {
 		t.Fatalf("want 1 skill row, got %d: %+v", len(usage), usage)
 	}
-	if usage[0].SkillName != "scheduler" {
-		t.Fatalf("usage[0] = %+v, want scheduler only", usage[0])
+	if usage[0].SkillName != "orchestrator" {
+		t.Fatalf("usage[0] = %+v, want orchestrator only", usage[0])
 	}
 }
 

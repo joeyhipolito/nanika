@@ -1770,24 +1770,15 @@ func TestGetTaskTypeSuccessfulShapes_IsolatedByTaskType(t *testing.T) {
 func TestSeed_AllProfilesHaveRequiredFields(t *testing.T) {
 	seeds := DefaultSeeds()
 
-	// 10 Go CLI repo profiles + 2 non-repo Nanika targets (system:via, publication:substack).
-	if len(seeds) != 12 {
-		t.Fatalf("DefaultSeeds() has %d profiles, want 12", len(seeds))
+	// 1 Go CLI repo profile + 2 non-repo Nanika targets (system:via, publication:substack).
+	if len(seeds) != 3 {
+		t.Fatalf("DefaultSeeds() has %d profiles, want 3", len(seeds))
 	}
 
 	// Go repo targets: must have Language, Runtime, and senior-backend-engineer
 	// in PreferredPersonas.
 	expectedGoRepoTargets := map[string]bool{
 		"repo:~/nanika/skills/orchestrator": false,
-		"repo:~/nanika/skills/scout":        false,
-		"repo:~/nanika/skills/obsidian":     false,
-		"repo:~/nanika/skills/gmail":        false,
-		"repo:~/nanika/skills/todoist":      false,
-		"repo:~/nanika/skills/ynab":         false,
-		"repo:~/nanika/skills/linkedin":     false,
-		"repo:~/nanika/skills/reddit":       false,
-		"repo:~/nanika/skills/substack":     false,
-		"repo:~/nanika/skills/scheduler":    false,
 	}
 	// Non-repo targets: have no Language/Runtime; preferred personas differ.
 	expectedNonRepoTargets := map[string]bool{

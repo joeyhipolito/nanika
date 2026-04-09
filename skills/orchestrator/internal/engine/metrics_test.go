@@ -24,43 +24,43 @@ func TestParseSkillInvocations(t *testing.T) {
 		},
 		{
 			name: "Claude Code Bash indicator format",
-			output: `⏺ Bash(scout gather "golang error handling")
-  ⎿  Found 12 articles.
-⏺ Bash(obsidian capture "key insight" --source mission)
-  ⎿  Captured.
+			output: `⏺ Bash(orchestrator status)
+  ⎿  Running.
+⏺ Bash(orchestrator metrics --last 5)
+  ⎿  Done.
 `,
-			want: []string{"scout", "obsidian"},
+			want: []string{"orchestrator", "orchestrator"},
 		},
 		{
 			name: "Bash() format without indicator",
-			output: `Running Bash(gmail inbox --unread --limit 5)
-Then Bash(todoist list --filter "today")
+			output: `Running Bash(orchestrator run "do something")
+Then Bash(orchestrator status)
 `,
-			want: []string{"gmail", "todoist"},
+			want: []string{"orchestrator", "orchestrator"},
 		},
 		{
 			name: "shell prompt format",
-			output: `$ scout topics add "my-topic"
+			output: `$ orchestrator status
 output: ok
-$ publish text "Update" --platforms linkedin
+$ orchestrator metrics
 output: ok
 `,
-			want: []string{"scout", "publish"},
+			want: []string{"orchestrator", "orchestrator"},
 		},
 		{
 			name: "worker tool summary format",
-			output: `[tool: Bash scout gather "golang"]
-[tool: Bash obsidian capture "note"]
+			output: `[tool: Bash orchestrator status]
+[tool: Bash orchestrator metrics]
 `,
-			want: []string{"scout", "obsidian"},
+			want: []string{"orchestrator", "orchestrator"},
 		},
 		{
 			name: "duplicate invocations preserved",
-			output: `⏺ Bash(obsidian capture "first")
-⏺ Bash(obsidian capture "second")
-⏺ Bash(scout gather "topic")
+			output: `⏺ Bash(orchestrator status)
+⏺ Bash(orchestrator status)
+⏺ Bash(orchestrator metrics)
 `,
-			want: []string{"obsidian", "obsidian", "scout"},
+			want: []string{"orchestrator", "orchestrator", "orchestrator"},
 		},
 		{
 			name: "unknown CLI tools ignored",
@@ -72,49 +72,31 @@ $ ls -la
 		},
 		{
 			name: "all known CLI skills recognised",
-			output: `⏺ Bash(scout gather)
-⏺ Bash(engage scan)
-⏺ Bash(gmail inbox)
-⏺ Bash(linkedin post "hello")
-⏺ Bash(reddit feed)
-⏺ Bash(substack draft file.mdx)
-⏺ Bash(contentkit ray main.go)
-⏺ Bash(elevenlabs voices)
-⏺ Bash(obsidian triage)
-⏺ Bash(todoist list)
-⏺ Bash(ynab status)
-⏺ Bash(scheduler post list)
-⏺ Bash(publish text "msg" --platforms linkedin)
-⏺ Bash(orchestrator status)
-⏺ Bash(watermark apply logo.png)
+			output: `⏺ Bash(orchestrator status)
+⏺ Bash(go test ./...)
+⏺ Bash(cat README.md)
 `,
-			want: []string{
-				"scout", "engage", "gmail", "linkedin", "reddit",
-				"substack", "contentkit", "elevenlabs", "obsidian",
-				"todoist", "ynab", "scheduler", "publish", "orchestrator",
-				"watermark",
-			},
+			want: []string{"orchestrator"},
 		},
 		{
 			name: "mixed known and unknown commands",
 			output: `⏺ Bash(go build -o bin/orchestrator .)
-⏺ Bash(scout gather "rust async")
+⏺ Bash(orchestrator run "task")
 ⏺ Bash(cat README.md)
-⏺ Bash(obsidian capture "learning" --source mission)
 `,
-			want: []string{"scout", "obsidian"},
+			want: []string{"orchestrator"},
 		},
 		{
 			name: "quoted command string in Bash()",
-			output: `⏺ Bash("scout gather \"topic\"")
+			output: `⏺ Bash("orchestrator run \"task\"")
 `,
-			want: []string{"scout"},
+			want: []string{"orchestrator"},
 		},
 		{
 			name: "nested parens in Bash are handled",
-			output: `⏺ Bash(scout gather "$(date)")
+			output: `⏺ Bash(orchestrator run "$(date)")
 `,
-			want: []string{"scout"},
+			want: []string{"orchestrator"},
 		},
 		{
 			name: "blockquote lines are ignored",
