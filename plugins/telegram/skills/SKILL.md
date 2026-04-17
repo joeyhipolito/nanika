@@ -15,7 +15,7 @@ Config: `~/.alluka/channels/telegram.json` — bot token and optional chat ID li
 
 - User wants to send an audio file to Telegram as a voice message
 - User wants to verify Telegram bot config is working
-- User wants to deliver a prerecorded audio file through Telegram
+- After `elevenlabs generate`, pass the output as a voice message
 
 ## Commands
 
@@ -43,7 +43,7 @@ telegram reply --chat <chat-id> --message "Mission complete" --json
 
 ### query
 
-JSON-native subcommands for agent and subscriber use.
+JSON-native subcommands for dashboard and agent use.
 
 ```bash
 telegram query status --json    # bot token status, chat count
@@ -77,5 +77,9 @@ Get your bot token from [@BotFather](https://t.me/BotFather). Chat IDs can be fo
 **User**: "send this audio to Telegram"
 **Action**: `telegram send-voice-message --chat <id> --audio /path/to/audio.mp3`
 
-**User**: "send the recorded voice note to my updates chat"
-**Action**: `telegram send-voice-message --chat <updates-chat-id> --audio /tmp/note.mp3`
+**User**: "generate a voice message and send to Telegram"
+**Action**:
+```bash
+elevenlabs generate narration.txt --output /tmp/
+telegram send-voice-message --chat <id> --audio /tmp/narration.mp3
+```

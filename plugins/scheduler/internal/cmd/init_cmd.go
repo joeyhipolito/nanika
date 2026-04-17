@@ -18,8 +18,19 @@ type defaultJob struct {
 	command  string
 }
 
-// defaultJobs is empty — users add their own jobs via `scheduler jobs add`.
-// The self-improvement loop jobs are registered by `shu propose --init`.
+// defaultJobs is intentionally empty: the scheduler plugin owns the cron
+// execution infrastructure but does NOT own jobs that belong to other
+// plugins. Each plugin registers its own jobs via its own init command —
+// for example, `shu propose --init` registers the nen self-improvement
+// loop jobs (propose-remediations, dispatch-approved, close-sweep,
+// evaluate-weekly).
+//
+// An earlier version of this slice included scout/engage publishing
+// pipeline jobs, but those reference commands from plugins that may not
+// ship with every nanika install (the core release bundle excludes them),
+// so the leaky dependency has been removed. If you want the publishing
+// pipeline, install scout + engage and add the jobs via `scheduler jobs add`
+// or a future `scout init` / `engage init` subcommand.
 var defaultJobs = []defaultJob{}
 
 func newInitCmd() *cobra.Command {

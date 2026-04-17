@@ -54,7 +54,7 @@
         "args": ["--notify", "--once", "--stop"]
       },
       "init": {
-        "description": "Create the default nanika publishing pipeline jobs (scout, engage, weekly-brief)",
+        "description": "Initialize the scheduler database. Each plugin registers its own cron jobs via its own init command (e.g. `shu propose --init`).",
         "args": ["--force"]
       },
       "jobs": {

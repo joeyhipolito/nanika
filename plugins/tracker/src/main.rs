@@ -1,5 +1,6 @@
 mod commands;
 mod db;
+mod dust_serve;
 mod id;
 mod import_linear;
 mod models;
@@ -124,6 +125,8 @@ enum Commands {
         /// Search query
         query: String,
     },
+    /// Serve the tracker as a Nanika dust dashboard plugin over a Unix socket
+    DustServe,
     /// Import issues from Linear
     ImportLinear {
         /// Linear team identifier (e.g. NAN)
@@ -313,6 +316,12 @@ fn main() {
             }
             Err(e) => Err(e.to_string()),
         },
+
+        Commands::DustServe => {
+            // The dust runtime owns the tokio runtime, so we exit after it
+            // returns (either clean shutdown or I/O error).
+            dust_serve::run(db_path).map_err(|e| e)
+        }
 
         Commands::ImportLinear { team } => {
             import_linear::run(&conn, team).map_err(|e| e)

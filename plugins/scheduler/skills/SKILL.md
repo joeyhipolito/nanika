@@ -1,21 +1,22 @@
 ---
 name: scheduler
-description: Schedules and runs cron jobs via scheduler CLI. Use when scheduling jobs, managing cron tasks, running the daemon, or checking job history.
+description: Schedules and runs cron jobs and the nanika publishing pipeline via scheduler CLI. Use when scheduling jobs, managing cron tasks, running the daemon, checking job history, or setting up the daily publishing pipeline.
 allowed-tools: Bash(scheduler:*)
 argument-hint: "[job-id]"
-keywords: scheduler, cron, jobs, daemon, automation, history
+keywords: scheduler, cron, jobs, daemon, pipeline, automation, history
 category: productivity
 version: "1.1.0"
 ---
 
-# Scheduler — Cron Job Runner
+# Scheduler — Cron Job Runner + Publishing Pipeline
 
-Manages recurring shell jobs with cron expressions. State is persisted in SQLite; the default DB path is `~/.alluka/scheduler/scheduler.db`. The active path is set by `db_path` in `~/.alluka/scheduler/config` — run `scheduler configure show` to verify.
+Manages recurring shell jobs with cron expressions. Powers the nanika publishing pipeline. All state is persisted in SQLite. The default DB path is `~/.alluka/scheduler/scheduler.db`; the active path is set by `db_path` in `~/.alluka/scheduler/config` (run `scheduler configure show` to check).
 
 ## When to Use
 
 - User wants to schedule a recurring shell command or script
 - User wants to run the daemon that executes scheduled jobs
+- User wants to set up or modify the nanika publishing pipeline
 - User asks about cron jobs, periodic tasks, or automation
 - User wants to view execution history or check job logs
 - User wants to verify their scheduler setup is working
@@ -56,22 +57,33 @@ scheduler daemon --stop
 scheduler daemon >> ~/.alluka/logs/scheduler.log 2>&1 &
 ```
 
-### Init
+### Init — Scheduler Database
 
-Creates the scheduler database and registers any default jobs. The release ships with an empty default-job list — you add your own jobs via `scheduler jobs add`. The nen self-improvement loop registers its own jobs on first run via `shu propose --init`.
+Initializes the scheduler database. Scheduler itself does NOT register any
+cross-plugin cron jobs — each plugin owns its own jobs via its own init
+command. For example, `shu propose --init` (from the nen plugin) registers
+the nen self-improvement loop jobs (propose-remediations, dispatch-approved,
+close-sweep, evaluate-weekly).
 
 ```bash
-# Initialize the database
+# Initialize the scheduler database
 scheduler init
 
-# Replace existing jobs with the same name (used after adding default jobs)
+# (--force is reserved for future use when scheduler-owned jobs exist)
 scheduler init --force
 ```
 
-After `scheduler init`, start the daemon to activate the schedule:
+If you want the nanika publishing pipeline (`scout gather`, `engage scan +
+draft`, weekly `scout intel`), install the `scout` and `engage` plugins and
+add the jobs manually via `scheduler jobs add`, or use whatever init
+command those plugins ship.
+
+After running `scheduler init`, start the daemon to activate any jobs
+registered by other plugins:
 
 ```bash
 scheduler init
+shu propose --init      # optional — registers nen loop jobs
 scheduler daemon
 ```
 
@@ -161,6 +173,48 @@ scheduler query action disable <job-id> --json
 scheduler query actions --json
 ```
 
+## Plugin Ownership of Cron Jobs
+
+Scheduler provides the execution infrastructure (daemon, cron parsing, DB,
+history). It does **not** ship default jobs for other plugins. Each plugin
+that wants recurring behavior registers its own jobs via its own init
+command. This keeps cross-plugin dependencies explicit and prevents
+install-set drift (if you don't have `engage` installed, nothing tries to
+run `engage scan`).
+
+**Example — the nen self-improvement loop** registers four jobs via its
+own init command:
+
+```bash
+shu propose --init
+```
+
+Registers:
+
+| Job | Schedule | Command |
+|---|---|---|
+| `propose-remediations` | every 4h | `shu propose --json` |
+| `dispatch-approved` | every 15m | `shu dispatch --max-concurrent 1 --max-per-hour 6` |
+| `close-sweep` | every 15m | `shu close --sweep --json` |
+| `evaluate-weekly` | Mondays 10am | `ko evaluate-proposals --json` |
+
+**Adding your own jobs — the manual path:**
+
+```bash
+scheduler jobs add --name "daily-backup" --cron "0 2 * * *" --command "tar czf /tmp/backup.tgz ~/docs"
+scheduler jobs add --name "health-check" --cron "*/5 * * * *" --command "curl -s localhost:8080/health"
+```
+
+**Starting the daemon:**
+
+```bash
+scheduler init           # one-time DB setup
+shu propose --init       # optional — registers nen loop jobs
+scheduler daemon         # activates the schedule
+scheduler jobs           # verify jobs are registered
+scheduler history        # after running for a while
+```
+
 ## Configuration
 
 Config file: `~/.alluka/scheduler/config` (key=value format)
@@ -198,8 +252,8 @@ Run `scheduler configure` to create or update it interactively. All keys are opt
 Every job run appends a JSON line to `~/.alluka/events/scheduler.jsonl`:
 
 ```json
-{"type":"schedule.completed","job_id":1,"job_name":"daily-backup","command":"tar czf /tmp/backup.tgz ~/docs","duration_ms":4201,"exit_code":0,"ts":"2026-03-25T08:00:04Z"}
-{"type":"schedule.failed","job_id":2,"job_name":"health-check","command":"curl -s localhost:8080/health","duration_ms":312,"exit_code":1,"stderr":"connection refused","ts":"2026-03-25T09:00:00Z"}
+{"type":"schedule.completed","job_id":1,"job_name":"daily-scout","command":"scout gather","duration_ms":4201,"exit_code":0,"ts":"2026-03-25T08:00:04Z"}
+{"type":"schedule.failed","job_id":2,"job_name":"daily-engage","command":"engage scan && engage draft --reschedule-post","duration_ms":312,"exit_code":1,"stderr":"connection refused","ts":"2026-03-25T09:00:00Z"}
 ```
 
 Use `scheduler history` to view this log in a readable tabular format, or tail it directly:
@@ -210,8 +264,8 @@ tail -f ~/.alluka/events/scheduler.jsonl | jq .
 
 ## Examples
 
-**User**: "schedule a nightly database dump at 2am"
-**Action**: `scheduler jobs add --name "nightly-dump" --cron "0 2 * * *" --command "pg_dump mydb > /backups/mydb-$(date +%F).sql"`
+**User**: "schedule a daily email digest at 8am"
+**Action**: `scheduler jobs add --name "daily-digest" --cron "0 8 * * *" --command "gmail inbox --unread --json"`
 
 **User**: "check what scheduled jobs are running"
 **Action**: `scheduler jobs`
@@ -227,5 +281,5 @@ tail -f ~/.alluka/events/scheduler.jsonl | jq .
 ```bash
 cd plugins/scheduler
 go build -ldflags "-s -w" -o bin/scheduler ./cmd/scheduler-cli
-ln -sf $(pwd)/bin/scheduler ~/bin/scheduler
+ln -sf $(pwd)/bin/scheduler ~/.alluka/bin/scheduler
 ```

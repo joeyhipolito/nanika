@@ -12,6 +12,13 @@
     "url": "https://github.com/joeyhipolito/nanika",
     "path": "plugins/tracker"
   },
+  "dust": {
+    "binary": "target/debug/tracker",
+    "args": ["dust-serve"],
+    "protocol_version": "1.0.0",
+    "capabilities": ["widget", "command", "events"],
+    "restart": "on_failure"
+  },
   "api_version": 1,
   "provides": ["status", "items", "actions"],
   "actions": {
