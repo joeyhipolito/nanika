@@ -224,6 +224,50 @@ func migrateFindings(db *sql.DB) error {
 	return nil
 }
 
+// SupersedeActiveFindingByScope marks any active finding matching
+// (ability, category, scopeKind, scopeValue) as superseded by setting
+// superseded_by = supersededBy. No-op if no matching active finding exists.
+func SupersedeActiveFindingByScope(ctx context.Context, q dbExecer, ability, category, scopeKind, scopeValue, supersededBy string) error {
+	_, err := q.ExecContext(ctx, `
+		UPDATE findings
+		SET superseded_by = ?
+		WHERE ability = ?
+		  AND category = ?
+		  AND scope_kind = ?
+		  AND scope_value = ?
+		  AND superseded_by = ''
+		  AND (expires_at IS NULL OR datetime(expires_at) > datetime('now'))`,
+		supersededBy, ability, category, scopeKind, scopeValue,
+	)
+	if err != nil {
+		return fmt.Errorf("supersede finding (%s/%s/%s/%s): %w", ability, category, scopeKind, scopeValue, err)
+	}
+	return nil
+}
+
+// SupersedeActiveFindingsForScope opens findings.db and supersedes any active
+// finding matching the given scope. Returns nil if findings.db does not exist
+// yet (nothing to supersede). Intended for one-shot callers.
+func SupersedeActiveFindingsForScope(ctx context.Context, ability, category, scopeKind, scopeValue, supersededBy string) error {
+	path, err := FindingsDBPath()
+	if err != nil {
+		return fmt.Errorf("findings db path: %w", err)
+	}
+	if _, statErr := os.Stat(path); os.IsNotExist(statErr) {
+		return nil // no DB yet — nothing to supersede
+	}
+	db, err := sql.Open("sqlite", path+"?_journal_mode=WAL&_busy_timeout=5000")
+	if err != nil {
+		return fmt.Errorf("open findings.db: %w", err)
+	}
+	defer db.Close()
+
+	if err := migrateFindings(db); err != nil {
+		return fmt.Errorf("migrate findings.db: %w", err)
+	}
+	return SupersedeActiveFindingByScope(ctx, db, ability, category, scopeKind, scopeValue, supersededBy)
+}
+
 // OpenReadOnly opens a SQLite database file in read-only mode.
 // Returns (nil, nil) if the file does not exist.
 func OpenReadOnly(path string) (*sql.DB, error) {

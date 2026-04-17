@@ -325,16 +325,15 @@ func TestFindBlockingIssue_OpenWithinTTL(t *testing.T) {
 	}
 }
 
-func TestFindBlockingIssue_OpenExpiredTTL(t *testing.T) {
-	// Core stale-dedup regression guard: open issues past staleOpenTTL
-	// must release the suppression so the next cycle can re-propose.
+func TestFindBlockingIssue_OpenAlwaysBlocks(t *testing.T) {
+	// Open issues always block regardless of age — the issue is unresolved.
 	now := time.Date(2026, 4, 5, 12, 0, 0, 0, time.UTC)
 	key := "dkey000000000003"
 	issues := []trackerIssue{makeTrackerIssueWithLabel("trk-open-stale", "open", key, 48*time.Hour, now)}
 
 	got := findBlockingIssue(issues, key, defaultDedupPolicy(), now)
-	if got != "" {
-		t.Errorf("expected 48h-old open issue to NOT block, got %q", got)
+	if got == "" {
+		t.Error("expected open issue to block regardless of age, got empty string")
 	}
 }
 
@@ -395,24 +394,22 @@ func TestFindBlockingIssue_NoMatchingLabel(t *testing.T) {
 }
 
 func TestFindBlockingIssue_UnparseableUpdatedAt(t *testing.T) {
-	// Broken updated_at should fail open (not block). We prefer a redundant
-	// proposal — which a human can notice and fix — over permanent suppression
-	// caused by bad tracker data. in-progress still blocks because its TTL is
-	// not consulted.
+	// Open and in-progress always block regardless of updated_at quality.
+	// Cancelled with broken updated_at should fail open (not block).
 	key := "dkey000000000008"
 	labels := "auto,nen,dedup:" + key
 	now := time.Date(2026, 4, 5, 12, 0, 0, 0, time.UTC)
 
-	t.Run("open-with-broken-updated-at-does-not-block", func(t *testing.T) {
+	t.Run("open-with-broken-updated-at-still-blocks", func(t *testing.T) {
 		issues := []trackerIssue{{ID: "trk-broken", Status: "open", Labels: &labels, UpdatedAt: "not-a-timestamp"}}
-		if got := findBlockingIssue(issues, key, defaultDedupPolicy(), now); got != "" {
-			t.Errorf("expected unparseable open updated_at to NOT block, got %q", got)
+		if got := findBlockingIssue(issues, key, defaultDedupPolicy(), now); got == "" {
+			t.Error("expected open issue to block even with broken updated_at")
 		}
 	})
-	t.Run("open-with-empty-updated-at-does-not-block", func(t *testing.T) {
+	t.Run("open-with-empty-updated-at-still-blocks", func(t *testing.T) {
 		issues := []trackerIssue{{ID: "trk-empty", Status: "open", Labels: &labels, UpdatedAt: ""}}
-		if got := findBlockingIssue(issues, key, defaultDedupPolicy(), now); got != "" {
-			t.Errorf("expected empty open updated_at to NOT block, got %q", got)
+		if got := findBlockingIssue(issues, key, defaultDedupPolicy(), now); got == "" {
+			t.Error("expected open issue to block even with empty updated_at")
 		}
 	})
 	t.Run("in-progress-with-broken-updated-at-still-blocks", func(t *testing.T) {
@@ -423,13 +420,10 @@ func TestFindBlockingIssue_UnparseableUpdatedAt(t *testing.T) {
 	})
 }
 
-func TestFindBlockingIssue_StaleOpenRegression(t *testing.T) {
-	// Simulates multiple stale open batch issues lingering days past the TTL.
-	// None of them may block a fresh proposal — otherwise the dedup label
-	// permanently suppresses the category, which is the original bug.
+func TestFindBlockingIssue_MultipleOpenIssuesBlock(t *testing.T) {
+	// Multiple open issues with the same dedup label: the first match blocks.
 	now := time.Date(2026, 4, 5, 12, 0, 0, 0, time.UTC)
 	createdAt := now.Add(-5 * 24 * time.Hour)
-	age := now.Sub(createdAt)
 
 	key := "dkey000000000009"
 	labels := "auto,nen,gyo,dedup:" + key
@@ -439,76 +433,38 @@ func TestFindBlockingIssue_StaleOpenRegression(t *testing.T) {
 		{ID: "trk-0E8F", Status: "open", Labels: &labels, UpdatedAt: updatedAt},
 		{ID: "trk-6C01", Status: "open", Labels: &labels, UpdatedAt: updatedAt},
 		{ID: "trk-F121", Status: "open", Labels: &labels, UpdatedAt: updatedAt},
-		{ID: "trk-7F3A", Status: "open", Labels: &labels, UpdatedAt: updatedAt},
-		{ID: "trk-3C08", Status: "open", Labels: &labels, UpdatedAt: updatedAt},
-	}
-
-	if age < 24*time.Hour {
-		t.Fatalf("test setup bug: simulated age %s should be > 24h", age)
 	}
 
 	got := findBlockingIssue(issues, key, defaultDedupPolicy(), now)
-	if got != "" {
-		t.Errorf("regression: expected stale open issues (%s old) to NOT block, got %q", age, got)
+	if got == "" {
+		t.Error("expected open issues to block regardless of age, got empty string")
+	}
+	if got != "trk-0E8F" {
+		t.Errorf("expected first matching open issue trk-0E8F, got %q", got)
 	}
 }
 
 func TestFindBlockingIssue_CustomPolicy(t *testing.T) {
-	// Verify the policy is actually consulted (not hardcoded 24h/7d).
+	// Verify the cancelled TTL policy is actually consulted (not hardcoded).
 	now := time.Date(2026, 4, 5, 12, 0, 0, 0, time.UTC)
 	key := "dkey00000000000a"
-	strict := dedupBlockingPolicy{staleOpenTTL: time.Hour, cancelledTTL: time.Hour}
+	strict := dedupBlockingPolicy{cancelledTTL: time.Hour}
 
-	issues := []trackerIssue{makeTrackerIssueWithLabel("trk-open-2h", "open", key, 2*time.Hour, now)}
-	if got := findBlockingIssue(issues, key, strict, now); got != "" {
-		t.Errorf("expected strict 1h TTL to expire 2h-old open issue, got %q", got)
+	// Open issues always block regardless of policy TTL.
+	openIssues := []trackerIssue{makeTrackerIssueWithLabel("trk-open-2h", "open", key, 2*time.Hour, now)}
+	if got := findBlockingIssue(openIssues, key, strict, now); got == "" {
+		t.Error("expected open issue to always block, got empty string")
 	}
 
-	// But the default 24h policy should still block it.
-	if got := findBlockingIssue(issues, key, defaultDedupPolicy(), now); got == "" {
-		t.Error("expected default 24h TTL to still block 2h-old open issue")
-	}
-}
-
-// --- quality-score TTL scaling ---
-
-func TestFindBlockingIssue_HighQualityScoreLengthensBlockingWindow(t *testing.T) {
-	now := time.Date(2026, 4, 5, 12, 0, 0, 0, time.UTC)
-	key := "qualityhigh00001"
-	// 30h-old open issue: normally OUTSIDE the 24h default staleOpenTTL → would not block.
-	issues := []trackerIssue{makeTrackerIssueWithLabel("trk-quality-high", "open", key, 30*time.Hour, now)}
-
-	// High quality score 0.8: effectiveOpenTTL = 24h × 2 × 0.8 = 38.4h.
-	// 30h < 38.4h → should block.
-	highPolicy := defaultDedupPolicy()
-	highPolicy.qualityMultiplier = 0.8
-	if got := findBlockingIssue(issues, key, highPolicy, now); got == "" {
-		t.Error("expected high-quality score to lengthen TTL and block 30h-old open issue, got empty string")
+	// Cancelled issue 2h old: strict 1h policy should NOT block.
+	cancelledIssues := []trackerIssue{makeTrackerIssueWithLabel("trk-cancel-2h", "cancelled", key, 2*time.Hour, now)}
+	if got := findBlockingIssue(cancelledIssues, key, strict, now); got != "" {
+		t.Errorf("expected strict 1h cancelledTTL to expire 2h-old cancelled issue, got %q", got)
 	}
 
-	// Sanity: with default policy (qualityMultiplier=0), same issue should NOT block.
-	if got := findBlockingIssue(issues, key, defaultDedupPolicy(), now); got != "" {
-		t.Errorf("expected default policy to not block 30h-old open issue, got %q", got)
-	}
-}
-
-func TestFindBlockingIssue_LowQualityScoreShortensBlockingWindow(t *testing.T) {
-	now := time.Date(2026, 4, 5, 12, 0, 0, 0, time.UTC)
-	key := "qualitylow000001"
-	// 12h-old open issue: normally INSIDE the 24h default staleOpenTTL → would block.
-	issues := []trackerIssue{makeTrackerIssueWithLabel("trk-quality-low", "open", key, 12*time.Hour, now)}
-
-	// Low quality score 0.2: effectiveOpenTTL = 24h × 2 × 0.2 = 9.6h.
-	// 12h > 9.6h → should NOT block.
-	lowPolicy := defaultDedupPolicy()
-	lowPolicy.qualityMultiplier = 0.2
-	if got := findBlockingIssue(issues, key, lowPolicy, now); got != "" {
-		t.Errorf("expected low-quality score to shorten TTL and not block 12h-old open issue, got %q", got)
-	}
-
-	// Sanity: with default policy (qualityMultiplier=0), same issue should block.
-	if got := findBlockingIssue(issues, key, defaultDedupPolicy(), now); got == "" {
-		t.Error("expected default policy to block 12h-old open issue")
+	// But the default 7d policy should still block the cancelled issue.
+	if got := findBlockingIssue(cancelledIssues, key, defaultDedupPolicy(), now); got == "" {
+		t.Error("expected default 7d cancelledTTL to still block 2h-old cancelled issue")
 	}
 }
 
@@ -597,8 +553,8 @@ func TestWasRecentlyProposed_TrueAfterRecord(t *testing.T) {
 func TestWasRecentlyProposed_FalseAfterExpiry(t *testing.T) {
 	db := openTestProposalsDB(t)
 	key := "oldkey1122334455"
-	// Insert a record older than 24h
-	old := time.Now().UTC().Add(-25 * time.Hour).Format(time.RFC3339)
+	// Insert a record older than 7 days
+	old := time.Now().UTC().Add(-8 * 24 * time.Hour).Format(time.RFC3339)
 	if _, err := db.Exec(`INSERT INTO proposals (dedup_key, last_proposed_at) VALUES (?, ?)`, key, old); err != nil {
 		t.Fatalf("insert old record: %v", err)
 	}
@@ -607,7 +563,7 @@ func TestWasRecentlyProposed_FalseAfterExpiry(t *testing.T) {
 		t.Fatalf("wasRecentlyProposed: %v", err)
 	}
 	if recent {
-		t.Error("expected false for record older than 24h, got true")
+		t.Error("expected false for record older than 7 days, got true")
 	}
 }
 
@@ -1207,9 +1163,9 @@ func TestProposeReviewBlockerGroup_DedupSkipsWhenIssueExists(t *testing.T) {
 }
 
 // Regression guard: a stale open review-blocker tracker issue (older than
-// staleOpenTTL) must no longer suppress a new proposal. Mirrors the
-// 2026-03-31 stuck-issue incident but on the review-blocker path.
-func TestProposeReviewBlockerGroup_StaleOpenIssueDoesNotBlock(t *testing.T) {
+// Open issues always block — even stale ones. The issue is unresolved,
+// so re-proposing would create duplicates.
+func TestProposeReviewBlockerGroup_OpenIssueBlocks(t *testing.T) {
 	tmpHome := t.TempDir()
 	t.Setenv("HOME", tmpHome)
 
@@ -1238,13 +1194,17 @@ func TestProposeReviewBlockerGroup_StaleOpenIssueDoesNotBlock(t *testing.T) {
 	if err != nil {
 		t.Fatalf("proposeReviewBlockerGroup: %v", err)
 	}
-	if p == nil {
-		t.Fatal("expected a fresh proposal for stale open issue, got nil")
+	if p != nil {
+		t.Errorf("expected no proposal when open issue exists, got %+v", p)
 	}
+	foundBlocking := false
 	for _, s := range skipped {
 		if strings.Contains(s.Reason, "blocking tracker issue") {
-			t.Errorf("stale open issue should not be reported as blocking: %+v", s)
+			foundBlocking = true
 		}
+	}
+	if !foundBlocking {
+		t.Error("expected open issue to be reported as blocking in skipped reasons")
 	}
 }
 
@@ -1285,5 +1245,96 @@ func TestRemediationMissionDir_RespectsAllukaHome(t *testing.T) {
 
 	if !strings.HasPrefix(got, custom) {
 		t.Errorf("remediationMissionDir() = %q, want path under ALLUKA_HOME %q", got, custom)
+	}
+}
+
+// --- schedulerJobExists JSON parsing ---
+//
+// The scheduler CLI has shipped two shapes for `query items --json` over time:
+// a wrapped envelope `{"items": [...], "count": N}` (current) and a bare JSON
+// array `[...]` (older). schedulerJobExistsInOutput accepts both so version
+// skew between an installed scheduler binary and an installed shu binary can't
+// silently break `shu propose --init`. These tests guard both shapes.
+
+func TestSchedulerJobExistsInOutput_EnvelopeMatchesName(t *testing.T) {
+	out := []byte(`{
+		"items": [
+			{"id": 1, "name": "propose-remediations", "schedule": "0 */4 * * *"},
+			{"id": 2, "name": "dispatch-approved", "schedule": "*/15 * * * *"}
+		],
+		"count": 2
+	}`)
+	got, err := schedulerJobExistsInOutput(out, "dispatch-approved")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !got {
+		t.Error("expected dispatch-approved to be found in envelope shape, got false")
+	}
+}
+
+func TestSchedulerJobExistsInOutput_EnvelopeMissingName(t *testing.T) {
+	out := []byte(`{"items": [{"id": 1, "name": "propose-remediations"}], "count": 1}`)
+	got, err := schedulerJobExistsInOutput(out, "close-sweep")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got {
+		t.Error("expected close-sweep to be absent, got true")
+	}
+}
+
+func TestSchedulerJobExistsInOutput_BareArrayMatchesName(t *testing.T) {
+	// Older scheduler versions returned a bare array. Defensive fallback must
+	// still recognize that shape so version-skew across upgrades doesn't break
+	// nen init.
+	out := []byte(`[
+		{"id": 1, "name": "propose-remediations"},
+		{"id": 2, "name": "dispatch-approved"}
+	]`)
+	got, err := schedulerJobExistsInOutput(out, "dispatch-approved")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !got {
+		t.Error("expected dispatch-approved to be found in bare-array shape, got false")
+	}
+}
+
+func TestSchedulerJobExistsInOutput_BareArrayMissingName(t *testing.T) {
+	out := []byte(`[{"id": 1, "name": "propose-remediations"}]`)
+	got, err := schedulerJobExistsInOutput(out, "close-sweep")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got {
+		t.Error("expected close-sweep to be absent, got true")
+	}
+}
+
+func TestSchedulerJobExistsInOutput_EmptyEnvelope(t *testing.T) {
+	got, err := schedulerJobExistsInOutput([]byte(`{"items": [], "count": 0}`), "anything")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got {
+		t.Error("empty envelope should never match")
+	}
+}
+
+func TestSchedulerJobExistsInOutput_EmptyBareArray(t *testing.T) {
+	got, err := schedulerJobExistsInOutput([]byte(`[]`), "anything")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got {
+		t.Error("empty bare array should never match")
+	}
+}
+
+func TestSchedulerJobExistsInOutput_MalformedJSONReturnsError(t *testing.T) {
+	_, err := schedulerJobExistsInOutput([]byte(`not json`), "x")
+	if err == nil {
+		t.Error("expected error for malformed JSON, got nil")
 	}
 }

@@ -118,8 +118,11 @@ func supersedeFindings(ids []string, supersededBy string) (int64, error) {
 		args = append(args, id)
 	}
 
+	// Guard against clobbering an existing supersede reason — preserves audit
+	// trail when a subset of ids was already resolved out-of-band (e.g.
+	// "manual:false-positive" or a concurrent mission's supersede).
 	query := fmt.Sprintf(
-		"UPDATE findings SET superseded_by = ? WHERE id IN (%s)",
+		"UPDATE findings SET superseded_by = ? WHERE id IN (%s) AND superseded_by = ''",
 		strings.Join(placeholders, ","),
 	)
 	result, err := db.Exec(query, args...)

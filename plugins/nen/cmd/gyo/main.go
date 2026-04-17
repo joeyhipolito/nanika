@@ -39,6 +39,12 @@ const (
 	gyoMinMissions           = 10
 	gyoMinMissionsFailureRate = 10 // failure-rate requires its own baseline floor
 	gyoBaselineDays          = 7
+
+	// Noisy-metric thresholds — used for metrics with high natural variance
+	// (failure_rate, retries) to reduce false positives.
+	gyoZThresholdMediumNoisy   = 3.5 // z >= 3.5 → medium  (noisy metrics)
+	gyoZThresholdHighNoisy     = 4.0 // z >= 4.0 → high    (noisy metrics)
+	gyoZThresholdCriticalNoisy = 5.0 // z >= 5.0 → critical (noisy metrics)
 )
 
 func main() {
@@ -369,10 +375,10 @@ func gyoDetectMetricAnomalies(missions []gyoMissionRow) []scan.Finding {
 				continue
 			}
 			z := gyoZScore(c.value, c.st)
-			if z < gyoZThresholdMedium {
+			sev, flagged := gyoSeverityForMetric(c.metric, z)
+			if !flagged {
 				continue
 			}
-			sev := gyoSeverity(z)
 			findings = append(findings, scan.Finding{
 				ID:       gyoFindingID(),
 				Ability:  gyoAbility,
@@ -399,7 +405,7 @@ func gyoDetectMetricAnomalies(missions []gyoMissionRow) []scan.Finding {
 	return findings
 }
 
-// gyoSeverity maps a z-score to a severity level.
+// gyoSeverity maps a z-score to a severity level using global thresholds.
 // z=2.5-3.0 → medium, z=3.0-4.0 → high, z>4.0 → critical.
 func gyoSeverity(z float64) scan.Severity {
 	switch {
@@ -410,6 +416,36 @@ func gyoSeverity(z float64) scan.Severity {
 	default:
 		return scan.SeverityMedium
 	}
+}
+
+// noisyMetrics is the set of metric names that use elevated thresholds to
+// reduce false positives from natural variance.
+var noisyMetrics = map[string]struct{}{
+	"failure_rate": {},
+	"retries":      {},
+}
+
+// gyoSeverityForMetric maps a z-score to a severity level for the given
+// metric. Noisy metrics (failure_rate, retries) use higher thresholds;
+// all other metrics use the global thresholds. Returns (severity, true) when
+// the z-score clears the minimum threshold, or ("", false) when it does not.
+func gyoSeverityForMetric(metric string, z float64) (scan.Severity, bool) {
+	if _, noisy := noisyMetrics[metric]; noisy {
+		switch {
+		case z >= gyoZThresholdCriticalNoisy:
+			return scan.SeverityCritical, true
+		case z >= gyoZThresholdHighNoisy:
+			return scan.SeverityHigh, true
+		case z >= gyoZThresholdMediumNoisy:
+			return scan.SeverityMedium, true
+		default:
+			return "", false
+		}
+	}
+	if z < gyoZThresholdMedium {
+		return "", false
+	}
+	return gyoSeverity(z), true
 }
 
 func gyoDetectSilentFailures(missions []gyoMissionRow, eventsDir string) ([]scan.Finding, error) {

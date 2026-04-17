@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -339,5 +340,273 @@ func TestAllFindingsSuperseded_MissingIDs(t *testing.T) {
 	}
 	if !ok {
 		t.Error("expected all superseded (missing IDs treated as resolved), got false")
+	}
+}
+
+// --- findingsRecovered tests ---
+
+// insertFindingFull inserts a finding with full control over source, found_at, and superseded_by.
+func insertFindingFull(t *testing.T, db *sql.DB, id, source string, foundAt time.Time, supersededBy string) {
+	t.Helper()
+	now := time.Now().UTC().Format(time.RFC3339)
+	_, err := db.Exec(`INSERT INTO findings
+		(id, ability, category, severity, title, description, scope_kind, scope_value, evidence, source, found_at, superseded_by, created_at)
+		VALUES (?, 'test', 'test', 'high', 'Test', 'Test desc', 'workspace', 'ws-1', '[]', ?, ?, ?, ?)`,
+		id, source, foundAt.UTC().Format(time.RFC3339), supersededBy, now)
+	if err != nil {
+		t.Fatalf("insert finding %s: %v", id, err)
+	}
+}
+
+func TestFindingsRecovered(t *testing.T) {
+	now := time.Now().UTC()
+	stale := now.Add(-72 * time.Hour) // older than 48h findingStaleness
+	fresh := now.Add(-1 * time.Hour)  // newer than 48h findingStaleness
+
+	freshBeat := now.Add(-5 * time.Minute) // within 30min scannerFreshness
+
+	type seed struct {
+		id, source   string
+		foundAt      time.Time
+		supersededBy string
+	}
+	cases := []struct {
+		name       string
+		seeds      []seed
+		ids        []string
+		heartbeats map[string]time.Time
+		wantResult bool
+	}{
+		{
+			name:       "empty IDs returns false",
+			ids:        []string{},
+			heartbeats: map[string]time.Time{"scanner-a": freshBeat},
+			wantResult: false,
+		},
+		{
+			name: "one scanner dead returns false",
+			seeds: []seed{
+				{id: "f-1", source: "scanner-alive", foundAt: stale},
+				{id: "f-2", source: "scanner-dead", foundAt: stale},
+			},
+			ids: []string{"f-1", "f-2"},
+			heartbeats: map[string]time.Time{
+				"scanner-alive": freshBeat,
+				// scanner-dead is absent from heartbeats → treated as dead
+			},
+			wantResult: false,
+		},
+		{
+			name: "all alive and stale found_at returns true",
+			seeds: []seed{
+				{id: "f-1", source: "scanner-a", foundAt: stale},
+				{id: "f-2", source: "scanner-b", foundAt: stale},
+			},
+			ids: []string{"f-1", "f-2"},
+			heartbeats: map[string]time.Time{
+				"scanner-a": freshBeat,
+				"scanner-b": freshBeat,
+			},
+			wantResult: true,
+		},
+		{
+			name: "already superseded finding skipped returns false",
+			seeds: []seed{
+				// f-1 is already superseded — excluded from recovery check.
+				{id: "f-1", source: "scanner-a", foundAt: stale, supersededBy: "mission:ws-1"},
+			},
+			ids: []string{"f-1"},
+			heartbeats: map[string]time.Time{
+				"scanner-a": freshBeat,
+			},
+			// Query filters out superseded findings → seen==0 → false.
+			wantResult: false,
+		},
+		{
+			name: "missing ID does not block recovery",
+			seeds: []seed{
+				{id: "f-1", source: "scanner-a", foundAt: stale},
+			},
+			ids: []string{"f-1", "f-ghost"},
+			heartbeats: map[string]time.Time{
+				"scanner-a": freshBeat,
+			},
+			// f-ghost not in DB → ignored; f-1 passes alive+stale → true.
+			wantResult: true,
+		},
+		{
+			name: "fresh found_at blocks recovery",
+			seeds: []seed{
+				{id: "f-1", source: "scanner-a", foundAt: fresh},
+			},
+			ids: []string{"f-1"},
+			heartbeats: map[string]time.Time{
+				"scanner-a": freshBeat,
+			},
+			wantResult: false,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			path, cleanup := withTempFindingsPath(t)
+			defer cleanup()
+
+			db := openFindingsDB(t, path)
+			for _, s := range tc.seeds {
+				insertFindingFull(t, db, s.id, s.source, s.foundAt, s.supersededBy)
+			}
+			db.Close()
+
+			got, err := findingsRecovered(tc.ids, 48*time.Hour, 30*time.Minute, tc.heartbeats)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if got != tc.wantResult {
+				t.Errorf("findingsRecovered() = %v, want %v", got, tc.wantResult)
+			}
+		})
+	}
+}
+
+// --- runCloseSweep recovery branch integration tests ---
+
+// writeMission writes a minimal remediation mission file to dir and returns its path.
+func writeMission(t *testing.T, dir, filename, trackerIssue string, findingIDs []string, generatedAt time.Time) string {
+	t.Helper()
+	idLines := ""
+	for _, id := range findingIDs {
+		idLines += "  - " + id + "\n"
+	}
+	content := fmt.Sprintf("---\nsource: shu-propose\ntracker_issue: %s\nfinding_ids:\n%sgenerated_at: \"%s\"\n---\n\n# Fix: test\n",
+		trackerIssue, idLines, generatedAt.UTC().Format(time.RFC3339))
+	path := filepath.Join(dir, filename)
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("write mission %s: %v", filename, err)
+	}
+	return path
+}
+
+// writeStatsJSON writes a nen-daemon.stats.json file with the given scanner → lastSuccessAt entries.
+func writeStatsJSON(t *testing.T, dir string, scanners map[string]time.Time) {
+	t.Helper()
+	statsDir := filepath.Join(dir, "nen")
+	if err := os.MkdirAll(statsDir, 0o755); err != nil {
+		t.Fatalf("create stats dir: %v", err)
+	}
+	obj := `{"scanners":{`
+	first := true
+	for name, ts := range scanners {
+		if !first {
+			obj += ","
+		}
+		obj += fmt.Sprintf(`%q:{"last_success_at":%q}`, name, ts.UTC().Format(time.RFC3339))
+		first = false
+	}
+	obj += "}}"
+	if err := os.WriteFile(filepath.Join(statsDir, "nen-daemon.stats.json"), []byte(obj), 0o644); err != nil {
+		t.Fatalf("write stats.json: %v", err)
+	}
+}
+
+func TestRunCloseSweep_RecoveryBranch(t *testing.T) {
+	now := time.Now().UTC()
+
+	// Point ALLUKA_HOME at a temp dir so all paths resolve there.
+	allukaDir := t.TempDir()
+	t.Setenv("ALLUKA_HOME", allukaDir)
+
+	dbPath := filepath.Join(allukaDir, "nen", "findings.db")
+
+	// Seed a finding with stale found_at (3 days ago) — no prior supersession.
+	db := openFindingsDB(t, dbPath)
+	insertFindingFull(t, db, "f-recovery-1", "test-scanner", now.Add(-72*time.Hour), "")
+	db.Close()
+
+	// Write a fresh scanner heartbeat (5 minutes ago).
+	writeStatsJSON(t, allukaDir, map[string]time.Time{
+		"test-scanner": now.Add(-5 * time.Minute),
+	})
+
+	// Write the remediation mission file.
+	missionDir := t.TempDir()
+	writeMission(t, missionDir, "mission-recovery.md", "TRK-99",
+		[]string{"f-recovery-1"}, now.Add(-48*time.Hour))
+
+	// Stub tracker: status=open; update/comment calls succeed (exit 0).
+	writeStubTracker(t, `{"items":[{"id":"abc-99","seq_id":99,"status":"open"}]}`)
+
+	report, err := runCloseSweep(context.Background(), sweepOptions{
+		MissionDir: missionDir,
+		DryRun:     false,
+	})
+	if err != nil {
+		t.Fatalf("runCloseSweep: %v", err)
+	}
+	if report.SweptToDone != 1 {
+		t.Errorf("SweptToDone = %d, want 1; errors: %v", report.SweptToDone, report.Errors)
+	}
+	if report.Skipped != 0 {
+		t.Errorf("Skipped = %d, want 0; errors: %v", report.Skipped, report.Errors)
+	}
+
+	// Verify findings.superseded_by was written.
+	db2, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open findings.db for verify: %v", err)
+	}
+	defer db2.Close()
+	var supersededBy string
+	if err := db2.QueryRow(`SELECT superseded_by FROM findings WHERE id = 'f-recovery-1'`).Scan(&supersededBy); err != nil {
+		t.Fatalf("query superseded_by: %v", err)
+	}
+	if supersededBy != "sweep:metric-recovered" {
+		t.Errorf("superseded_by = %q, want %q", supersededBy, "sweep:metric-recovered")
+	}
+}
+
+// TestRunCloseSweep_RecoveryBranchDryRun verifies that DryRun=true gates the
+// UPDATE: the sweep counts the mission as SweptToDone but does NOT write
+// superseded_by to the findings DB.
+func TestRunCloseSweep_RecoveryBranchDryRun(t *testing.T) {
+	now := time.Now().UTC()
+
+	allukaDir := t.TempDir()
+	t.Setenv("ALLUKA_HOME", allukaDir)
+
+	dbPath := filepath.Join(allukaDir, "nen", "findings.db")
+
+	db := openFindingsDB(t, dbPath)
+	insertFindingFull(t, db, "f-dry-1", "test-scanner", now.Add(-72*time.Hour), "")
+	db.Close()
+
+	writeStatsJSON(t, allukaDir, map[string]time.Time{
+		"test-scanner": now.Add(-5 * time.Minute),
+	})
+
+	missionDir := t.TempDir()
+	writeMission(t, missionDir, "mission-dryrun.md", "TRK-99",
+		[]string{"f-dry-1"}, now.Add(-48*time.Hour))
+
+	writeStubTracker(t, `{"items":[{"id":"abc-99","seq_id":99,"status":"open"}]}`)
+
+	report, err := runCloseSweep(context.Background(), sweepOptions{
+		MissionDir: missionDir,
+		DryRun:     true,
+	})
+	if err != nil {
+		t.Fatalf("runCloseSweep dry-run: %v", err)
+	}
+	if report.SweptToDone != 1 {
+		t.Errorf("SweptToDone = %d, want 1; errors: %v", report.SweptToDone, report.Errors)
+	}
+
+	// superseded_by must NOT be written when dry-run is true.
+	db2, _ := sql.Open("sqlite", dbPath)
+	defer db2.Close()
+	var supersededBy string
+	db2.QueryRow(`SELECT superseded_by FROM findings WHERE id = 'f-dry-1'`).Scan(&supersededBy)
+	if supersededBy != "" {
+		t.Errorf("dry-run: superseded_by = %q, want empty (no DB write)", supersededBy)
 	}
 }

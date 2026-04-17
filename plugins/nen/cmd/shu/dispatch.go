@@ -212,8 +212,7 @@ func selectNextDispatchable(ctx context.Context) (*trackerIssue, string, error) 
 		return nil, "", fmt.Errorf("querying tracker: %w", err)
 	}
 
-	home, _ := os.UserHomeDir()
-	remDir := filepath.Join(home, ".alluka", "missions", "remediation")
+	remDir := remediationMissionDir()
 
 	for _, issue := range issues {
 		if issue.Status != "in-progress" || !issue.hasLabel("auto") {

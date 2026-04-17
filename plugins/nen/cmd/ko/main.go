@@ -286,6 +286,15 @@ func cmdEvaluate(ctx context.Context, args []string) error {
 		fmt.Fprintf(os.Stderr, "warn: finish run: %v\n", dbErr)
 	}
 
+	// Emit findings to findings.db for suites below threshold.
+	suites := aggregateBySuite(configPath, results.Tests)
+	emitted, emitErr := emitFindings(ctx, suites, time.Now().UTC())
+	if emitErr != nil {
+		fmt.Fprintf(os.Stderr, "warn: emit ko findings: %v\n", emitErr)
+	} else if len(emitted) > 0 {
+		fmt.Printf("Emitted %d finding(s) to findings.db\n", len(emitted))
+	}
+
 	fmt.Printf("\nResults: %d passed, %d failed (%d total)\n", results.Passed, results.Failed, results.Total)
 	fmt.Printf("%s\n", tracker.FormatSummary(*model))
 	if results.Failed > 0 {

@@ -5,8 +5,8 @@
   "description": "MCP server for the nen ability system. Exposes nen scanners and findings via the Model Context Protocol (stdio JSON-RPC transport).",
   "icon": "MinimalisticMagnifer",
   "binary": "nen-mcp",
-  "build": "go build -ldflags \"-s -w\" -o bin/nen-mcp ./cmd/nen-mcp",
-  "install": "ln -sf $(pwd)/bin/nen-mcp ~/bin/nen-mcp",
+  "build": "GOWORK=off go build -ldflags \"-s -w\" -o bin/nen-mcp ./cmd/nen-mcp",
+  "install": "ln -sf $(pwd)/bin/nen-mcp ~/.alluka/bin/nen-mcp",
   "tags": ["nen", "mcp", "model-context-protocol", "scanner"],
   "mcp": {
     "servers": {

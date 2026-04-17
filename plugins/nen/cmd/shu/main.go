@@ -52,13 +52,20 @@ type pluginStatus struct {
 	Status string `json:"status"`
 }
 
-// koSuiteResult is one entry from `ko evaluate --json`.
-type koSuiteResult struct {
-	Suite      string  `json:"suite"`
-	Score      float64 `json:"score"`
-	PassCount  int     `json:"pass_count"`
-	FailCount  int     `json:"fail_count"`
-	TotalCount int     `json:"total_count"`
+// koRunSummary is the run-level summary from `ko results --json`.
+type koRunSummary struct {
+	ID          string    `json:"ID"`
+	ConfigPath  string    `json:"ConfigPath"`
+	Description string    `json:"Description"`
+	StartedAt   time.Time `json:"StartedAt"`
+	Total       int       `json:"Total"`
+	Passed      int       `json:"Passed"`
+	Failed      int       `json:"Failed"`
+}
+
+// koResultsOutput is the top-level JSON from `ko results --json`.
+type koResultsOutput struct {
+	Run koRunSummary `json:"run"`
 }
 
 // FindingSummary is a condensed finding for query output.
@@ -415,51 +422,45 @@ func evaluateEngage(ctx context.Context) ComponentResult {
 	return cr
 }
 
-// evaluateKo runs `ko evaluate --json` and derives a health score from suite results.
-// It uses its own 5-minute context because promptfoo evaluations can be slow.
-// Suites scoring below 80% are flagged [MEDIUM]; below 60% are flagged [HIGH].
-func evaluateKo(_ context.Context) ComponentResult {
+// evaluateKo reads the most recent ko eval run via `ko results --json` and
+// derives a health score from the pass rate. Running a new eval is expensive
+// (claude-opus-4-6 + extended thinking); the scheduler job handles periodic
+// re-evaluation. This function reports on what the last run produced.
+// Runs below 80% are flagged [MEDIUM]; below 60% are flagged [HIGH].
+func evaluateKo(ctx context.Context) ComponentResult {
 	cr := ComponentResult{Score: 100}
 
-	koCtx, koCancel := context.WithTimeout(context.Background(), 5*time.Minute)
-	defer koCancel()
-
 	bin := binaryPath("ko")
-	out, err := runCommand(koCtx, bin, "evaluate", "--json")
+	out, err := runCommand(ctx, bin, "results", "--json")
 	if err != nil {
 		cr.Score = 0
-		cr.Issues = []string{fmt.Sprintf("ko evaluate failed: %v", err)}
+		cr.Issues = []string{fmt.Sprintf("ko results failed: %v", err)}
 		return cr
 	}
 
-	var suites []koSuiteResult
-	if err := json.Unmarshal(out, &suites); err != nil {
+	var koOut koResultsOutput
+	if err := json.Unmarshal(out, &koOut); err != nil {
 		cr.Score = 50
-		cr.Issues = []string{fmt.Sprintf("parsing ko evaluate JSON: %v", err)}
+		cr.Issues = []string{fmt.Sprintf("parsing ko results JSON: %v", err)}
 		return cr
 	}
 
-	if len(suites) == 0 {
+	run := koOut.Run
+	if run.Total == 0 {
 		cr.Score = 50
-		cr.Issues = []string{"ko evaluate returned no suites"}
+		cr.Issues = []string{"ko results returned no tests — run `ko evaluate <config.yaml>` first"}
 		return cr
 	}
 
-	minScore := 100.0
-	var issues []string
-	for _, s := range suites {
-		if s.Score < minScore {
-			minScore = s.Score
-		}
-		if s.Score < 60 {
-			issues = append(issues, fmt.Sprintf("[HIGH] %s eval %.1f%%", s.Suite, s.Score))
-		} else if s.Score < 80 {
-			issues = append(issues, fmt.Sprintf("[MEDIUM] %s eval %.1f%%", s.Suite, s.Score))
-		}
+	passRate := float64(run.Passed) / float64(run.Total) * 100
+	cr.Score = int(passRate)
+
+	if passRate < 60 {
+		cr.Issues = []string{fmt.Sprintf("[HIGH] %s: %d/%d passing (%.0f%%)", run.Description, run.Passed, run.Total, passRate)}
+	} else if passRate < 80 {
+		cr.Issues = []string{fmt.Sprintf("[MEDIUM] %s: %d/%d passing (%.0f%%)", run.Description, run.Passed, run.Total, passRate)}
 	}
 
-	cr.Score = int(minScore)
-	cr.Issues = issues
 	return cr
 }
 

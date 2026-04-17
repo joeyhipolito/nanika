@@ -8,8 +8,22 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/joeyhipolito/nen/internal/scan"
+)
+
+// Staleness thresholds for the recovery-sweep branch. A finding is considered
+// "recovered" when its source scanner has reported success within
+// scannerFreshness (proving the scanner is alive and would re-emit the
+// finding if the underlying problem still existed) and the finding's
+// found_at is older than findingStaleness (the scanner has had ample
+// opportunity to re-surface it).
+const (
+	findingStaleness = 48 * time.Hour
+	scannerFreshness = 30 * time.Minute
 )
 
 // sweepOptions configures how runCloseSweep behaves.
@@ -117,6 +131,12 @@ func parseRemediationMissionMeta(path string) (remediationMissionMeta, error) {
 // ID in the list has a non-empty superseded_by. Missing IDs (never inserted)
 // are treated as superseded — they cannot be active.
 func allFindingsSuperseded(ids []string) (bool, error) {
+	// Empty input is not vacuous truth here — refuse to declare "all
+	// superseded" when there are no IDs to check, so callers never
+	// auto-close a tracker issue with no supporting findings.
+	if len(ids) == 0 {
+		return false, nil
+	}
 	path := findingsDBPath()
 	if _, err := os.Stat(path); os.IsNotExist(err) {
 		// No findings DB at all — treat everything as superseded (nothing to close).
@@ -158,6 +178,115 @@ func allFindingsSuperseded(ids []string) (bool, error) {
 		return false, fmt.Errorf("iterating findings: %w", err)
 	}
 	return activeCount == 0, nil
+}
+
+// loadScannerHeartbeats reads the nen-daemon stats file and returns a
+// map of scanner name → most recent successful scan timestamp. Any read
+// or parse error is non-fatal: callers receive an empty map and proceed
+// (they will treat missing heartbeats as "scanner not alive").
+func loadScannerHeartbeats() (map[string]time.Time, error) {
+	heartbeats := map[string]time.Time{}
+	dir, err := scan.Dir()
+	if err != nil {
+		return heartbeats, nil
+	}
+	path := filepath.Join(dir, "nen", "nen-daemon.stats.json")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return heartbeats, nil
+	}
+	var stats struct {
+		Scanners map[string]*struct {
+			LastSuccessAt *time.Time `json:"last_success_at,omitempty"`
+		} `json:"scanners"`
+	}
+	if err := json.Unmarshal(data, &stats); err != nil {
+		// Non-fatal, but a corrupt stats file silently disables recovery —
+		// emit one line so the partial-write path (however rare, given
+		// atomic temp+rename in nen-daemon) is not completely invisible.
+		fmt.Fprintf(os.Stderr, "shu close-sweep: parse nen-daemon stats %s: %v\n", path, err)
+		return heartbeats, nil
+	}
+	for name, s := range stats.Scanners {
+		if s != nil && s.LastSuccessAt != nil {
+			heartbeats[name] = *s.LastSuccessAt
+		}
+	}
+	return heartbeats, nil
+}
+
+// findingsRecovered returns true when every finding in ids was produced by a
+// scanner that is still actively running (heartbeat within scannerFreshness)
+// AND whose found_at is older than findingStaleness. The combination proves
+// the scanner has had ample opportunity to re-emit the finding but hasn't,
+// so the underlying condition has been "recovered" (metric resolved) even
+// though nothing explicitly superseded the finding.
+//
+// Edge cases, in order:
+//  1. Empty ids → false (vacuous-truth guard; never auto-close when there
+//     is nothing to verify).
+//  2. Per-finding liveness: source scanner missing from heartbeats or stale
+//     beyond scannerFreshness → false (cannot trust recovery when the
+//     scanner isn't demonstrably running).
+//  3. Per-finding staleness: found_at within the last findingStaleness →
+//     false (finding is too fresh to call recovered).
+//
+// A finding ID present in ids but absent from the DB is ignored; if no IDs
+// are found in the DB at all, returns false.
+func findingsRecovered(ids []string, findingStaleness time.Duration, scannerFreshness time.Duration, heartbeats map[string]time.Time) (bool, error) {
+	if len(ids) == 0 {
+		return false, nil
+	}
+	path := findingsDBPath()
+	if _, err := os.Stat(path); os.IsNotExist(err) {
+		return false, nil
+	}
+	db, err := sql.Open("sqlite", "file:"+path+"?mode=ro")
+	if err != nil {
+		return false, fmt.Errorf("open findings.db: %w", err)
+	}
+	defer db.Close()
+
+	placeholders := make([]string, len(ids))
+	args := make([]any, len(ids))
+	for i, id := range ids {
+		placeholders[i] = "?"
+		args[i] = id
+	}
+
+	rows, err := db.Query(
+		fmt.Sprintf("SELECT id, source, found_at FROM findings WHERE id IN (%s) AND superseded_by = ''", strings.Join(placeholders, ",")),
+		args...,
+	)
+	if err != nil {
+		return false, fmt.Errorf("querying findings: %w", err)
+	}
+	defer rows.Close()
+
+	now := time.Now().UTC()
+	seen := 0
+	for rows.Next() {
+		var id, source string
+		var foundAt time.Time
+		if err := rows.Scan(&id, &source, &foundAt); err != nil {
+			return false, fmt.Errorf("scanning finding: %w", err)
+		}
+		seen++
+		lastSeen, ok := heartbeats[source]
+		if !ok || now.Sub(lastSeen) > scannerFreshness {
+			return false, nil
+		}
+		if now.Sub(foundAt) < findingStaleness {
+			return false, nil
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return false, fmt.Errorf("iterating findings: %w", err)
+	}
+	if seen == 0 {
+		return false, nil
+	}
+	return true, nil
 }
 
 // trackerIssueStatus fetches status via `tracker query items --json` and
@@ -215,6 +344,8 @@ func runCloseSweep(ctx context.Context, opts sweepOptions) (sweepReport, error) 
 		return report, fmt.Errorf("reading remediation dir: %w", err)
 	}
 
+	heartbeats, _ := loadScannerHeartbeats()
+
 	for _, entry := range entries {
 		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".md") {
 			continue
@@ -246,6 +377,42 @@ func runCloseSweep(ctx context.Context, opts sweepOptions) (sweepReport, error) 
 			report.Skipped++
 			continue
 		case "open", "in-progress":
+			// Recovery branch: if every finding's source scanner is alive
+			// and its found_at is stale, the metric has recovered on its
+			// own. Supersede and close without requiring any prior
+			// superseded_by mark.
+			recovered, err := findingsRecovered(meta.FindingIDs, findingStaleness, scannerFreshness, heartbeats)
+			if err != nil {
+				report.Skipped++
+				report.Errors = append(report.Errors, fmt.Sprintf("%s: checking recovery: %v", entry.Name(), err))
+				continue
+			}
+			if recovered {
+				if !opts.DryRun {
+					if _, err := supersedeFindings(meta.FindingIDs, "sweep:metric-recovered"); err != nil {
+						report.Errors = append(report.Errors, fmt.Sprintf("%s: superseding findings: %v", entry.Name(), err))
+						report.Skipped++
+						continue
+					}
+				}
+				// If markTrackerDone fails after supersedeFindings succeeded,
+				// findings DB is marked resolved while the tracker issue
+				// stays open. This self-heals on the next sweep: findings
+				// are now superseded, so the allFindingsSuperseded branch
+				// below will close the tracker. The transient mismatch is
+				// bounded by the sweep interval (15 min).
+				if err := markTrackerDone(meta.TrackerIssue,
+					"swept: findings recovered (source scanner alive, found_at stale)",
+					opts.DryRun,
+				); err != nil {
+					report.Errors = append(report.Errors, fmt.Sprintf("%s: marking done: %v", entry.Name(), err))
+					report.Skipped++
+					continue
+				}
+				report.SweptToDone++
+				continue
+			}
+
 			superseded, err := allFindingsSuperseded(meta.FindingIDs)
 			if err != nil {
 				report.Skipped++

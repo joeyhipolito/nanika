@@ -350,6 +350,7 @@ func (r *Runner) runTest(ctx context.Context, tc *TestCase) *TestResult {
 
 	// Query LLM
 	output, err := r.queryFn(queryCtx, prompt)
+	result.DurationMs = time.Since(start).Milliseconds()
 	if err != nil {
 		result.Error = fmt.Sprintf("query LLM: %v", err)
 		result.Passed = false
@@ -357,7 +358,6 @@ func (r *Runner) runTest(ctx context.Context, tc *TestCase) *TestResult {
 	}
 
 	result.Output = output
-	result.DurationMs = time.Since(start).Milliseconds()
 	result.CacheHit = usagePtr.CacheHit
 	result.InputTokens = usagePtr.InputTokens
 	result.OutputTokens = usagePtr.OutputTokens

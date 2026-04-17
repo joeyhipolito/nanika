@@ -7,7 +7,7 @@ MCP server for the nen ability system. Exposes nanika's internal SQLite state â€
 ```bash
 cd plugins/nen_mcp
 go build -ldflags "-s -w" -o bin/nen-mcp ./cmd/nen-mcp
-ln -sf "$(pwd)/bin/nen-mcp" ~/bin/nen-mcp
+ln -sf "$(pwd)/bin/nen-mcp" ~/.alluka/bin/nen-mcp
 nen-mcp doctor
 ```
 
@@ -27,10 +27,10 @@ Requires Go 1.22+. No CGo â€” uses the pure-Go SQLite driver (`modernc.org/sqlit
 ### Install binary
 
 ```bash
-ln -sf "$(pwd)/bin/nen-mcp" ~/bin/nen-mcp
+ln -sf "$(pwd)/bin/nen-mcp" ~/.alluka/bin/nen-mcp
 ```
 
-`~/bin` must be on your `$PATH`. Verify with `which nen-mcp`.
+`~/.alluka/bin` must be on your `$PATH`. Verify with `which nen-mcp`.
 
 ### Register MCP server
 

@@ -31,7 +31,7 @@ func CallCLI(ctx context.Context, model, prompt string) (string, error) {
 		"--model", model,
 		"--print",
 		"--output-format", "text",
-		"--max-turns", "1",
+		"--max-turns", "5",
 		"--dangerously-skip-permissions",
 		"-p", prompt,
 	)

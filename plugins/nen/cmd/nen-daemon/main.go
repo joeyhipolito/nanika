@@ -50,10 +50,11 @@ type Event struct {
 
 // scannerStat tracks per-scanner routing metrics.
 type scannerStat struct {
-	EventsRouted int64      `json:"events_routed"`
-	ErrorCount   int64      `json:"error_count"`
-	LastError    string     `json:"last_error,omitempty"`
-	LastErrorAt  *time.Time `json:"last_error_at,omitempty"`
+	EventsRouted  int64      `json:"events_routed"`
+	ErrorCount    int64      `json:"error_count"`
+	LastError     string     `json:"last_error,omitempty"`
+	LastErrorAt   *time.Time `json:"last_error_at,omitempty"`
+	LastSuccessAt *time.Time `json:"last_success_at,omitempty"`
 }
 
 // daemonStats is written to disk by the running daemon so the status
@@ -434,6 +435,8 @@ func routeEvent(ctx context.Context, ev Event, scanners []scannerCfg, st *store,
 		}
 		ss := scannerStatFor(stats, sc.name)
 		ss.EventsRouted++
+		now := time.Now().UTC()
+		ss.LastSuccessAt = &now
 		for _, w := range warnings {
 			fmt.Fprintf(os.Stderr, "nen-daemon: scanner %s warning: %s\n", sc.name, w)
 		}

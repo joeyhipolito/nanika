@@ -335,11 +335,6 @@ func runPropose(args []string) error {
 	}
 	defer proposalsDB.Close()
 
-	qs, err := ko.NewQualityStore(proposalsDB)
-	if err != nil {
-		return fmt.Errorf("opening quality store: %w", err)
-	}
-
 	out := proposeOutput{Proposed: []proposal{}, Skipped: []skippedFinding{}}
 	proposedKeys := make(map[string]bool)
 	deferred := 0
@@ -383,13 +378,11 @@ func runPropose(args []string) error {
 				return fmt.Errorf("checking proposal recency for batch %s/%s: %w", ability, category, err)
 			} else if recent {
 				for _, f := range item.findings {
-					out.Skipped = append(out.Skipped, skippedFinding{FindingID: f.ID, Reason: "proposed within the last 24 hours"})
+					out.Skipped = append(out.Skipped, skippedFinding{FindingID: f.ID, Reason: "proposed within the last 7 days"})
 				}
 				continue
 			}
-			batchPolicy := defaultDedupPolicy()
-			batchPolicy.qualityMultiplier = qs.LookupScore(ctx, ability, category)
-			if issueID := findBlockingIssue(existing, key, batchPolicy, time.Now().UTC()); issueID != "" {
+			if issueID := findBlockingIssue(existing, key, defaultDedupPolicy(), time.Now().UTC()); issueID != "" {
 				for _, f := range item.findings {
 					out.Skipped = append(out.Skipped, skippedFinding{FindingID: f.ID, Reason: fmt.Sprintf("blocking tracker issue %s covers same category", issueID)})
 				}
@@ -465,12 +458,10 @@ func runPropose(args []string) error {
 			if recent, err := wasRecentlyProposed(proposalsDB, key); err != nil {
 				return fmt.Errorf("checking proposal recency for %s: %w", f.ID, err)
 			} else if recent {
-				out.Skipped = append(out.Skipped, skippedFinding{FindingID: f.ID, Reason: "proposed within the last 24 hours"})
+				out.Skipped = append(out.Skipped, skippedFinding{FindingID: f.ID, Reason: "proposed within the last 7 days"})
 				continue
 			}
-			findingPolicy := defaultDedupPolicy()
-			findingPolicy.qualityMultiplier = qs.LookupScore(ctx, f.Ability, f.Category)
-			if issueID := findBlockingIssue(existing, key, findingPolicy, time.Now().UTC()); issueID != "" {
+			if issueID := findBlockingIssue(existing, key, defaultDedupPolicy(), time.Now().UTC()); issueID != "" {
 				out.Skipped = append(out.Skipped, skippedFinding{FindingID: f.ID, Reason: fmt.Sprintf("blocking tracker issue %s covers same category", issueID)})
 				continue
 			}
@@ -558,7 +549,7 @@ func runPropose(args []string) error {
 			for _, f := range groupFindings {
 				out.Skipped = append(out.Skipped, skippedFinding{
 					FindingID: f.ID,
-					Reason:    "proposed within the last 24 hours",
+					Reason:    "proposed within the last 7 days",
 				})
 			}
 			continue
@@ -722,32 +713,14 @@ func computeDedupKey(f proposableFinding) string {
 
 // dedupBlockingPolicy captures how long each tracker-issue status suppresses new
 // proposals with the same dedup label. `done` and `closed` issues never block —
-// they are treated as resolved or rejected. `in-progress` always blocks. `open`
-// and `cancelled` block only while they are within their respective TTLs.
+// they are treated as resolved or rejected. `in-progress` and `open` always
+// block. `cancelled` blocks only while it is within its TTL.
 type dedupBlockingPolicy struct {
-	staleOpenTTL      time.Duration // how long an `open` issue suppresses new proposals
-	cancelledTTL      time.Duration // how long a `cancelled` issue suppresses new proposals
-	qualityMultiplier float64       // ko quality score in [0,1]; 0 = no data (use base TTL unchanged)
-}
-
-// effectiveOpenTTL returns the TTL applied to `open` issues after quality scaling.
-// A qualityMultiplier of 0 (unset / no quality data) returns the base staleOpenTTL
-// unchanged, preserving backward-compatible behaviour. Otherwise the effective TTL
-// is staleOpenTTL × (2 × qualityMultiplier), which maps:
-//
-//	0.5 (ko.DefaultQualityScore, neutral) → 1.0× (no change from baseline)
-//	>0.5 (high quality, past proposals succeeded) → longer TTL, fewer re-proposals
-//	<0.5 (low quality, past proposals failed/stalled) → shorter TTL, faster retries
-func (p dedupBlockingPolicy) effectiveOpenTTL() time.Duration {
-	if p.qualityMultiplier == 0 {
-		return p.staleOpenTTL
-	}
-	return time.Duration(float64(p.staleOpenTTL) * 2 * p.qualityMultiplier)
+	cancelledTTL time.Duration // how long a `cancelled` issue suppresses new proposals
 }
 
 func defaultDedupPolicy() dedupBlockingPolicy {
 	return dedupBlockingPolicy{
-		staleOpenTTL: 24 * time.Hour,
 		cancelledTTL: 7 * 24 * time.Hour,
 	}
 }
@@ -759,16 +732,14 @@ func defaultDedupPolicy() dedupBlockingPolicy {
 // Policy table:
 //
 //	in-progress → always blocks (actively being worked)
-//	open        → blocks while updated_at is within policy.staleOpenTTL
+//	open        → always blocks (issue exists but unresolved)
 //	cancelled   → blocks while updated_at is within policy.cancelledTTL
 //	done        → never blocks (recurrence means the fix did not stick; re-propose)
 //	closed      → never blocks (rejected or superseded)
 //	other       → never blocks (unknown statuses do not silently suppress)
 //
 // If updated_at is missing or unparseable for a status with a TTL, the issue is
-// treated as expired (not blocking). The whole point of this policy is that
-// permanent suppression by stale tracker data is the bug being fixed — broken
-// data should fail open (propose), not fail closed (suppress forever).
+// treated as expired (not blocking).
 func findBlockingIssue(issues []trackerIssue, dedupKey string, policy dedupBlockingPolicy, now time.Time) string {
 	label := "dedup:" + dedupKey
 	for _, issue := range issues {
@@ -779,9 +750,7 @@ func findBlockingIssue(issues []trackerIssue, dedupKey string, policy dedupBlock
 		case "in-progress":
 			return issue.displayID()
 		case "open":
-			if withinTTL(issue.UpdatedAt, policy.effectiveOpenTTL(), now) {
-				return issue.displayID()
-			}
+			return issue.displayID()
 		case "cancelled":
 			if withinTTL(issue.UpdatedAt, policy.cancelledTTL, now) {
 				return issue.displayID()
@@ -892,7 +861,7 @@ func wasRecentlyProposed(db *sql.DB, dedupKey string) (bool, error) {
 	if err != nil {
 		return false, fmt.Errorf("parsing last_proposed_at for %s: %w", dedupKey, err)
 	}
-	return time.Since(t) < 24*time.Hour, nil
+	return time.Since(t) < 7*24*time.Hour, nil
 }
 
 // recordProposed upserts a proposal into proposals.db with the enrichment
@@ -918,8 +887,6 @@ func recordProposed(db *sql.DB, dedupKey, ability, category, trackerIssue string
 func severityToPriority(severity string) string {
 	switch severity {
 	case "critical":
-		return "P0"
-	case "high":
 		return "P1"
 	default:
 		return "P2"
@@ -1107,16 +1074,37 @@ func schedulerJobExists(name string) (bool, error) {
 	if err != nil {
 		return false, fmt.Errorf("scheduler query items: %w", err)
 	}
-	var resp struct {
-		Items []struct {
-			Name string `json:"name"`
-		} `json:"items"`
+	return schedulerJobExistsInOutput(out, name)
+}
+
+// schedulerJobExistsInOutput parses the scheduler CLI's JSON output and reports
+// whether a job named `name` is present. Extracted from schedulerJobExists so
+// the JSON shape can be unit-tested without stubbing exec. Accepts both shapes
+// scheduler has shipped over time: the current envelope `{"items": [...]}` and
+// the older bare array `[...]`. Version drift between installed scheduler and
+// installed shu binaries is the failure mode this defensively handles.
+func schedulerJobExistsInOutput(out []byte, name string) (bool, error) {
+	type item struct {
+		Name string `json:"name"`
 	}
-	if err := json.Unmarshal(out, &resp); err != nil {
+	var envelope struct {
+		Items []item `json:"items"`
+	}
+	if err := json.Unmarshal(out, &envelope); err == nil && envelope.Items != nil {
+		for _, it := range envelope.Items {
+			if it.Name == name {
+				return true, nil
+			}
+		}
+		return false, nil
+	}
+	// Fall back to bare-array shape (older scheduler versions).
+	var items []item
+	if err := json.Unmarshal(out, &items); err != nil {
 		return false, fmt.Errorf("parsing scheduler items: %w", err)
 	}
-	for _, item := range resp.Items {
-		if item.Name == name {
+	for _, it := range items {
+		if it.Name == name {
 			return true, nil
 		}
 	}
@@ -1189,11 +1177,11 @@ func runProposeInit() error {
 		if out, err := exec.Command("scheduler", "jobs", "add",
 			"--name", "evaluate-weekly",
 			"--cron", "0 10 * * 1",
-			"--command", "shu evaluate --json",
+			"--command", "ko evaluate-proposals --json",
 		).CombinedOutput(); err != nil {
 			return fmt.Errorf("adding evaluate-weekly job: %s: %w", strings.TrimSpace(string(out)), err)
 		}
-		fmt.Println("Added scheduler job: evaluate-weekly (Mondays 10am)")
+		fmt.Println("Added scheduler job: evaluate-weekly (Ko quality eval, Mondays 10am)")
 	}
 
 	exists, err = schedulerJobExists("close-sweep")

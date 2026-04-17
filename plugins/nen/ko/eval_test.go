@@ -595,7 +595,7 @@ func TestCallLLMCommandArgs(t *testing.T) {
 		"--model", model,
 		"--print",
 		"--output-format", "text",
-		"--max-turns", "1",
+		"--max-turns", "5",
 		"--dangerously-skip-permissions",
 		"-p", prompt,
 	}
