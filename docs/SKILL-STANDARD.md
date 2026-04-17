@@ -31,13 +31,13 @@ All skills auto-discover from `.claude/skills/` — no flags needed.
 ~/nanika/.claude/skills/{name}/       # Symlink → ~/skills/{name}/.claude/skills/{name}
 ```
 
-Each CLI skill has a companion binary: source at `~/skills/{name}/`, binary symlinked to `~/bin/{name}`. The CLI repo is the source of truth for SKILL.md — Nanika symlinks to it.
+Each CLI skill has a companion binary: source at `~/skills/{name}/`, binary symlinked to `~/.alluka/bin/{name}`. The CLI repo is the source of truth for SKILL.md — Nanika symlinks to it.
 
 ### Skill Types
 
 | Type | Example | Location | `allowed-tools` | `## Commands` |
 |------|---------|----------|----------------|--------------|
-| CLI wrapper | orchestrator, tracker, scheduler | Symlink → `~/skills/{name}/.claude/skills/{name}` | Required | Required |
+| CLI wrapper | engage, scout, orchestrator | Symlink → `~/skills/{name}/.claude/skills/{name}` | Required | Required |
 | Pipeline | channels, decomposer | Real dir in `.claude/skills/` | Not required | Not required |
 | Knowledge | golang-pro, vercel-react-best-practices, security-best-practices | Symlink → `~/.agents/skills/{name}` | Not required | Not required |
 
@@ -55,10 +55,10 @@ Location (canonical): `~/skills/{name}/.claude/skills/{name}/SKILL.md`
 
 ```yaml
 ---
-name: tracker
-description: Local issue tracker with hierarchical relationships and blocking links. Use when user asks about tracking tasks, subtasks, priorities, or dependency chains.
-allowed-tools: Bash(tracker:*)
-argument-hint: "[issue-id]"
+name: scout
+description: Gathers intelligence on configurable topics via scout CLI. Use when user asks about news, trends, scraping, intel gathering, or monitoring topics.
+allowed-tools: Bash(scout:*)
+argument-hint: "[topic-name]"
 ---
 ```
 
@@ -94,9 +94,9 @@ Commands in `## Commands` directly determine the AGENTS-MD routing index. The sc
 Commands must start with the CLI binary name:
 
 ```bash
-tracker list                              # List all tracked issues
-tracker show trk-ABC1                     # Show one issue
-tracker create "Task" --priority P0       # Create a new issue
+scout topics                              # List all configured topics
+scout gather "ai-agents"                  # Gather specific topic
+scout intel "ai-agents" --json            # JSON output
 ```
 
 ## 3. AGENTS-MD Block Format
@@ -133,7 +133,7 @@ CLI repos are the unit of distribution. Each repo at `~/skills/{name}/` owns its
 
 ```bash
 npx skills i owner/skill-name          # Install from GitHub
-cp -r .claude/skills/tracker ~/.claude/skills/  # Manual copy
+cp -r .claude/skills/scout ~/.claude/skills/  # Manual copy
 ```
 
 ### Cross-Agent Compatibility

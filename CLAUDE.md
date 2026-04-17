@@ -45,6 +45,13 @@ Quick reference:
 PHASE: <name> | OBJECTIVE: <concrete deliverable> | PERSONA: <persona> | SKILLS: <skill1,skill2> | DEPENDS: <phase1,phase2>
 ```
 
+OBJECTIVES must name verifiable success criteria, not directives. Vague objectives are the top driver of gate-failure retries (76% of retry waste in a 7d audit — see `~/.alluka/workspaces/20260414-9ec71068/workers/data-analyst-phase-2/retry-waste-breakdown.md`). Every retry on an Opus phase wastes $3–5.
+
+- ❌ `OBJECTIVE: Verify the implementation and close out tracker issues`
+- ✅ `OBJECTIVE: Verify by (1) running <binary> and confirming the three behaviors listed in TRK-XXX, (2) closing the issue via \`tracker update TRK-XXX --status done\`. Success = tracker list shows status=done and binary output matches the expected checklist.`
+
+Rule of thumb: if another worker couldn't tell whether the phase succeeded without re-reading the whole codebase, the objective isn't specific enough.
+
 ### Before Running
 
 Always dry-run first:
@@ -77,7 +84,7 @@ PHASE: review | OBJECTIVE: Review the implementation for correctness and test co
 
 ### nanika-context
 
-`~/bin/nanika-context`
+`~/bin/nanika-context` (source: `plugins/orchestrator/scripts/nanika-context.sh`)
 
 Prints a system-state snapshot to stdout for manual paste into a Claude session. Runs without spawning any missions or changing state.
 
@@ -143,10 +150,79 @@ orchestrator hooks inject-context --limit 15 --max-bytes 4096
 
 `preflight` is the right choice for SessionStart. `inject-context` is for targeted learnings-only injection inside worker sessions.
 
+### orchestrator dream
+
+Mines Claude Code session transcripts for durable learnings. Walks `~/.claude/projects/` JSONL files, chunks multi-turn conversations into token-bounded windows, and extracts decisions, insights, patterns, and gotchas into the learnings DB using Haiku.
+
+**Three dedup layers prevent flooding the DB:**
+1. File-level sha256 — skip unchanged transcripts entirely
+2. Chunk-level sha256 — skip re-extraction for identical conversation windows
+3. Cosine similarity at 0.85 inside `learning.DB.Insert` — final semantic gate
+
+Worker sessions (cwd inside `~/.alluka/worktrees/`) are excluded — their output is already captured live during phase execution.
+
+```bash
+# Run one extraction cycle (processes up to 20 files by default)
+orchestrator dream run
+
+# Only look at transcripts modified in the last 24 hours
+orchestrator dream run --since 24h
+
+# Filter to a specific session by path substring
+orchestrator dream run --session my-project
+
+# Reprocess everything (ignores file hash cache)
+orchestrator dream run --force
+
+# Preview what would run without calling Haiku or writing to the DB
+orchestrator dream run --dry-run --verbose
+
+# Show processed file/chunk counts
+orchestrator dream status
+
+# Clear processing state so the next run re-mines all transcripts
+# (does not remove any learnings already stored)
+orchestrator dream reset
+```
+
+**Relationship to the learning pipeline:**
+- `orchestrator dream run` → extracts learnings → writes to `learnings.db`
+- `orchestrator hooks preflight` → reads `learnings.db` → injects top learnings into every SessionStart
+- `orchestrator hooks inject-context` → same DB, targeted injection inside worker sessions
+
+Dream is the **offline consolidation path**. The live path (`CaptureWithFocus` during phase execution) captures worker session output in real time; dream catches everything else — interactive sessions, experiments, one-off scripts.
+
+
+### nanika-update
+
+`scripts/nanika-update.sh` (source: `scripts/nanika-update.sh`)
+
+Builds, installs, restarts daemons, and verifies all plugins discovered via `plugin.json`. Runs four phases per plugin: `build → install → restart → verify`. Daemon restart is only performed for `scheduler` and `nen`.
+
+```bash
+# Build and install all plugins, restart scheduler and nen daemons, verify binaries
+scripts/nanika-update.sh
+
+# Preview what would run without executing anything
+scripts/nanika-update.sh --dry-run
+
+# Update only the discord and telegram plugins
+scripts/nanika-update.sh --only discord,telegram
+
+# Update everything except dust (slow Rust build)
+scripts/nanika-update.sh --skip dust
+
+# Machine-readable output — pipe to jq for status checks
+scripts/nanika-update.sh --json | jq '[.[] | select(.status != "ok")]'
+
+# Dry-run in JSON mode — useful for CI diff previews
+scripts/nanika-update.sh --dry-run --json
+```
+
 <!-- NANIKA-AGENTS-MD-START -->
 [Nanika Skills Index][root: .claude/skills]IMPORTANT: Prefer retrieval-led reasoning over pre-training-led reasoning. Read skill files before making assumptions.
 
-|agent-browser — Browser automation CLI for AI agents:{.claude/skills/agent-browser/SKILL.md}|`agent-browser open https://example.com/form`|`agent-browser snapshot -i`|`agent-browser fill @e1 "user@example.com"`|`agent-browser fill @e2 "password123"`|`agent-browser click @e3`|`agent-browser wait --load networkidle`|`agent-browser snapshot -i`|`agent-browser open https://example.com && agent-browser wait --load networkidle && agent-browser snapshot -i`|`agent-browser fill @e1 "user@example.com" && agent-browser fill @e2 "password123" && agent-browser click @e3`|`agent-browser open https://example.com && agent-browser wait --load networkidle && agent-browser screenshot page.png`|`agent-browser --auto-connect state save ./auth.json`|`agent-browser --state ./auth.json open https://app.example.com/dashboard`|`agent-browser --profile ~/.myapp open https://app.example.com/login`|`agent-browser --profile ~/.myapp open https://app.example.com/dashboard`|
+|agent-browser — Browser automation CLI for AI agents:{.claude/skills/agent-browser/SKILL.md}|
 |ai-seo — When the user wants to optimize content for AI search engines, get cited by LLMs, or appear in AI-generated answers:{.claude/skills/ai-seo/SKILL.md}|
 |article — Full article pipeline — from topic research to Substack draft:{.claude/skills/article/SKILL.md}|
 |better-auth-best-practices — Configure Better Auth server and client, set up database adapters, manage sessions, add plugins, and handle environment variables:{.claude/skills/better-auth-best-practices/SKILL.md}|
@@ -159,11 +235,26 @@ orchestrator hooks inject-context --limit 15 --max-bytes 4096
 |golang-design-patterns — Idiomatic Golang design patterns — functional options, constructors, error flow and cascading, resource management and lifecycle, graceful shutdown, resilience, architecture, dependency injection, data handling, and streaming:{.claude/skills/golang-design-patterns/SKILL.md}|
 |golang-error-handling — Idiomatic Golang error handling — creation, wrapping with %w, errors.Is/As, errors.Join, custom error types, sentinel errors, panic/recover, the single handling rule, structured logging with slog, HTTP request logging middleware, and samber/oops for production errors:{.claude/skills/golang-error-handling/SKILL.md}|
 |golang-testing — Provides a comprehensive guide for writing production-ready Golang tests:{.claude/skills/golang-testing/SKILL.md}|
-|orchestrator — Executes tasks and missions via orchestrator CLI:{.claude/skills/orchestrator/SKILL.md}|`orchestrator run "research golang error handling best practices"`|`orchestrator run --domain personal "plan my Japan trip"`|`orchestrator run ~/.alluka/missions/FEATURE.md`|`orchestrator run --dry-run "build authentication system"`|`orchestrator status`|`orchestrator cleanup`|`orchestrator cleanup --older 7d`|`orchestrator metrics`|`orchestrator metrics --last 10`|`orchestrator metrics --domain dev`|`orchestrator metrics --status failed`|`orchestrator metrics --mission <id>`|`orchestrator metrics --days 30`|
+|orchestrator — Executes tasks and missions via orchestrator CLI:{.claude/skills/orchestrator/SKILL.md}|
 |product-marketing-context — When the user wants to create or update their product marketing context document:{.claude/skills/product-marketing-context/SKILL.md}|
 |rust-best-practices — Guide for writing idiomatic Rust code based on Apollo GraphQL's best practices handbook:{.claude/skills/rust-best-practices/SKILL.md}|
 |social-content — When the user wants help creating, scheduling, or optimizing social media content for LinkedIn, Twitter/X, Instagram, TikTok, Facebook, or other platforms:{.claude/skills/social-content/SKILL.md}|
 |supabase-postgres-best-practices — Postgres performance optimization and best practices from Supabase:{.claude/skills/supabase-postgres-best-practices/SKILL.md}|
 |vercel-react-best-practices — React and Next.js performance optimization guidelines from Vercel Engineering:{.claude/skills/vercel-react-best-practices/SKILL.md}|
 |youtube-transcript — Extract transcripts from YouTube videos:{.claude/skills/youtube-transcript/SKILL.md}|
+|discord — Send native voice messages and text to Discord channels via the discord CLI:{plugins/discord/skills/SKILL.md}|
+|elevenlabs — ElevenLabs TTS CLI — generate voiceover audio, format narration scripts, run forced alignment, and produce timing maps from the terminal:{plugins/elevenlabs/skills/SKILL.md}|
+|engage — Cross-platform comment engagement CLI — scan, draft, review, approve, and post comments across YouTube, LinkedIn, Reddit, and Substack:{plugins/engage/skills/SKILL.md}|
+|gmail — Reads inbox, triages threads, applies labels, organizes email, and composes/sends email across multiple Gmail accounts via gmail CLI:{plugins/gmail/skills/SKILL.md}|
+|linkedin — LinkedIn CLI — publish posts, read feed, comment, react, and automate engagement from the terminal:{plugins/linkedin/skills/SKILL.md}|
+|nen_mcp — MCP server for the nen ability system:{plugins/nen_mcp/skills/SKILL.md}|
+|obsidian — Obsidian vault CLI — read, write, search, capture, triage, enrich, and ingest into your Obsidian vault from the terminal:{plugins/obsidian/skills/SKILL.md}|
+|reddit — Reddit CLI — submit posts, read feeds, comment, vote, and search from the terminal using browser cookies:{plugins/reddit/skills/SKILL.md}|
+|scheduler — Schedules and runs cron jobs and the nanika publishing pipeline via scheduler CLI:{plugins/scheduler/skills/SKILL.md}|
+|scout — Gathers intelligence on configurable topics via scout CLI:{plugins/scout/skills/SKILL.md}|
+|substack — Substack CLI — publish posts, manage drafts, post notes, comment, and automate feed engagement from the terminal:{plugins/substack/skills/SKILL.md}|
+|telegram — Send voice messages and text to Telegram chats via the telegram CLI:{plugins/telegram/skills/SKILL.md}|
+|tracker — Local issue tracker with hierarchical relationships, blocking links, and priority-based ready detection:{plugins/tracker/skills/SKILL.md}|
+|ynab — YNAB CLI — manage budgets, transactions, categories, and accounts from the terminal via the YNAB API:{plugins/ynab/skills/SKILL.md}|
+|youtube — YouTube CLI — scan channels, post comments, like videos, and manage OAuth from the terminal:{plugins/youtube/skills/SKILL.md}|
 <!-- NANIKA-AGENTS-MD-END -->

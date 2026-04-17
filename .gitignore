@@ -18,6 +18,9 @@ go.work
 personas/artist/kurzgesagt/
 personas/artist/kurzgesagt-frames/
 
+# Runtime-rotating persona memory — written by persistent worker, not source
+personas/*/MEMORY.md
+
 # Installed skills — core is tracked, everything else is user-installed
 skills/*/
 !skills/orchestrator/

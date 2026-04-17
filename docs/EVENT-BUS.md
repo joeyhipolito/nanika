@@ -10,7 +10,7 @@ token_estimate: 1200
 
 # Orchestrator Event Bus
 
-Subscribe to orchestrator events for live monitoring and integration with external tools. Events are published as newline-delimited JSON (JSONL) and streamed over a Unix domain socket.
+Subscribe to orchestrator events for live dashboards, custom monitoring, and integration with external tools. Events are published as newline-delimited JSON (JSONL) and streamed over a Unix domain socket.
 
 ## Event Types
 
@@ -139,7 +139,7 @@ File structure:
 
 ```json
 {"id":"evt_9452b9030e139c7b","type":"git.worktree_created","timestamp":"2026-03-26T09:36:58.03867Z","sequence":1,"mission_id":"20260326-05ca0d8e","data":{"base_branch":"main","branch":"via/20260326-05ca0d8e/linear-issue-id-nan-95-target-repo-nanik","worktree_path":"/Users/joeyhipolito/.alluka/worktrees/20260326-05ca0d8e"}}
-{"id":"evt_c96761a1fd1ad13a","type":"file_overlap.detected","timestamp":"2026-03-26T10:09:02.805309Z","sequence":792,"mission_id":"20260326-05ca0d8e","data":{"file":"plugins/nen/cmd/shu/propose.go","phases":["phase-1","phase-2","phase-3","phase-4","phase-5"],"severity":"high"}}
+{"id":"evt_c96761a1fd1ad13a","type":"file_overlap.detected","timestamp":"2026-03-26T10:09:02.805309Z","sequence":792,"mission_id":"20260326-05ca0d8e","data":{"file":"plugins/reddit/cmd/reddit-cli/main.go","phases":["phase-1","phase-2","phase-3","phase-4","phase-5"],"severity":"high"}}
 ```
 
 ## Integration Pattern

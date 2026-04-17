@@ -63,7 +63,24 @@ You: Active missions:
 
 ## Voice Message Handling
 
-When a voice message arrives (attachment with audio MIME type like `audio/ogg`, `audio/mpeg`, `audio/mp4`, `audio/wav`), reply asking the user to resend the request as text. Inbound transcription is not wired up in the base release — plug in your own transcription CLI if you want it, then download with `download_attachment(chat_id, message_id)` and route the transcript through the same command-routing table above.
+When a voice message arrives (attachment with audio MIME type like `audio/ogg`, `audio/mpeg`, `audio/mp4`, `audio/wav`):
+
+1. Download the attachment using `download_attachment(chat_id, message_id)`
+2. Transcribe it: `elevenlabs transcribe --input <downloaded_path>`
+3. Use the transcription as the message content — process it exactly as if the user had typed it
+4. Reply with a brief confirmation of what you heard before acting on it
+
+Example:
+```
+[Voice message arrives]
+→ download_attachment(chat_id, message_id) → /tmp/voice_123.ogg
+→ elevenlabs transcribe --input /tmp/voice_123.ogg → "check the status of my running missions"
+→ Reply: "Got it — checking mission status..."
+→ orchestrator status
+→ Reply with results
+```
+
+If `elevenlabs` CLI is not available, reply: "Voice transcription unavailable. Please send a text message instead."
 
 ## What NOT To Do
 
