@@ -142,33 +142,13 @@ _strip_inline_comments() {
 
 # Build one routing line for a skill
 # Usage: build_skill_line <skill_name> <description> <skill_rel_path> <SKILL.md_path> [fallback_tool_name]
+# Header-only — command tails stripped after eval found zero worker hits in 992 output.md files.
 build_skill_line() {
     local name="$1"
     local description="$2"
     local skill_rel="$3"
-    local skill_file="$4"
-    local fallback="${5:-}"
-
-    # Determine effective tool name for command extraction
-    # If the frontmatter name yields no commands, fall back to plugin dir name
-    local raw_cmds
-    raw_cmds="$(extract_commands "$skill_file" "$name")"
-    if [ -z "$raw_cmds" ] && [ -n "$fallback" ] && [ "$fallback" != "$name" ]; then
-        raw_cmds="$(extract_commands "$skill_file" "$fallback")"
-    fi
-
-    local commands=()
-    while IFS= read -r cmd; do
-        [ -z "$cmd" ] && continue
-        commands+=("\`$cmd\`")
-    done <<< "$raw_cmds"
-
-    local line="|${name} — ${description}:{${skill_rel}}"
-    for cmd in "${commands[@]+"${commands[@]}"}"; do
-        line+="|${cmd}"
-    done
-    line+="|"
-    echo "$line"
+    # $4 (skill_file) and $5 (fallback) accepted for caller compatibility, unused.
+    echo "|${name} — ${description}:{${skill_rel}}|"
 }
 
 # --- Main generation ---

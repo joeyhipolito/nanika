@@ -9,27 +9,46 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # Categories: core (always installed), optional (opt-in)
 
 CORE_SKILLS=(orchestrator)
-CORE_PLUGINS=()
-OPTIONAL_PLUGINS=()
-ALL_PLUGINS=()
+CORE_PLUGINS=(nen tracker scheduler)
+OPTIONAL_PLUGINS=(discord telegram)
+ALL_PLUGINS=(nen tracker scheduler discord telegram)
 
 plugin_desc() {
   case "$1" in
     orchestrator) echo "Multi-agent mission execution" ;;
     decomposer)   echo "Mission decomposition (knowledge-only)" ;;
+    nen)          echo "Self-improvement (Shu, Gyo, Ko, En, Ryu)" ;;
+    tracker)      echo "Local issue tracker (Rust)" ;;
+    scheduler)    echo "Cron jobs + dispatch loop" ;;
+    discord)      echo "Channel notifications + voice messages" ;;
+    telegram)     echo "Channel notifications + voice messages" ;;
     *) echo "" ;;
   esac
 }
 
 plugin_required_prereqs() {
-  echo ""
+  case "$1" in
+    tracker)   echo "cargo" ;;
+    *) echo "" ;;
+  esac
 }
 
 plugin_configure_cmd() {
-  echo ""
+  case "$1" in
+    discord)    echo "discord configure|Discord bot token" ;;
+    telegram)   echo "telegram configure|Telegram bot token" ;;
+    scheduler)  echo "scheduler init|Initialize job database" ;;
+    *) echo "" ;;
+  esac
 }
 
 plugin_category() {
+  local p="$1"
+  case "$p" in
+    nen|tracker|scheduler) echo "core"; return ;;
+  esac
+  local c
+  for c in "${OPTIONAL_PLUGINS[@]}"; do [[ "$c" == "$p" ]] && echo "optional" && return; done
   echo "unknown"
 }
 
@@ -279,19 +298,22 @@ interactive_select() {
   local choice
   if [[ "$USE_GUM" -eq 1 ]]; then
     choice=$(gum choose --cursor="● " \
-      "Core          orchestrator" \
+      "Core          orchestrator + nen + tracker + scheduler" \
+      "Everything    Core + discord, telegram (requires Rust)" \
       "Custom        Choose individual plugins")
     choice=$(echo "$choice" | awk '{print $1}' | tr '[:upper:]' '[:lower:]')
   else
     echo "  What would you like to install?"
     echo ""
-    echo "  1) Core           orchestrator"
-    echo "  2) Custom         Choose individual plugins"
+    echo "  1) Core           orchestrator + nen + tracker + scheduler"
+    echo "  2) Everything     Core + discord, telegram"
+    echo "  3) Custom         Choose individual plugins"
     echo ""
     read -rp "  Choice [1]: " choice
     case "${choice:-1}" in
       1) choice="core" ;;
-      2) choice="custom" ;;
+      2) choice="everything" ;;
+      3) choice="custom" ;;
       *) die "Invalid choice: $choice" ;;
     esac
   fi
@@ -299,6 +321,9 @@ interactive_select() {
   case "$choice" in
     core*)
       SELECTED_PLUGINS=("${CORE_PLUGINS[@]}")
+      ;;
+    everything*)
+      SELECTED_PLUGINS=("${CORE_PLUGINS[@]}" "${RECOMMENDED_PLUGINS[@]}" "${OPTIONAL_PLUGINS[@]}")
       ;;
     custom*)
       interactive_custom_select
@@ -309,35 +334,77 @@ interactive_select() {
 interactive_custom_select() {
   SELECTED_PLUGINS=("${CORE_PLUGINS[@]}")
 
-  local selectable=()
+  local selectable=("${RECOMMENDED_PLUGINS[@]}" "${OPTIONAL_PLUGINS[@]}")
 
   if [[ "$USE_GUM" -eq 1 ]]; then
     echo ""
-    echo "  Core (always installed): orchestrator, decomposer"
+    echo "  Core (always installed): orchestrator, decomposer, nen"
     echo ""
 
-    local items=() p
+    # Build item list and pre-select recommended
+    local items=() selected_args=() p
     for p in "${selectable[@]}"; do
       items+=("$(format_item "$p")")
     done
+    for p in "${RECOMMENDED_PLUGINS[@]}"; do
+      selected_args+=(--selected "$(format_item "$p")")
+    done
 
-    if [[ ${#items[@]} -gt 0 ]]; then
-      local chosen
-      chosen=$(printf '%s\n' "${items[@]}" | gum choose --no-limit \
-        --cursor-prefix="[ ] " --selected-prefix="[x] " --unselected-prefix="[ ] " \
-        --header="Select plugins (Space to toggle, Enter to confirm):") || true
+    local chosen
+    chosen=$(printf '%s\n' "${items[@]}" | gum choose --no-limit \
+      --cursor-prefix="[ ] " --selected-prefix="[x] " --unselected-prefix="[ ] " \
+      "${selected_args[@]}" \
+      --header="Select plugins (Space to toggle, Enter to confirm):") || true
 
-      while IFS= read -r line; do
-        local name
-        name=$(echo "$line" | awk '{print $1}')
-        [[ -n "$name" ]] && SELECTED_PLUGINS+=("$name")
-      done <<< "$chosen"
-    fi
+    while IFS= read -r line; do
+      local name
+      name=$(echo "$line" | awk '{print $1}')
+      [[ -n "$name" ]] && SELECTED_PLUGINS+=("$name")
+    done <<< "$chosen"
   else
     echo ""
-    echo "  Core (always installed): orchestrator, decomposer"
+    echo "  Core (always installed): orchestrator, decomposer, nen"
     echo ""
-    info "No optional plugins available."
+    echo "  Recommended:"
+    local idx=1 p
+    for p in "${RECOMMENDED_PLUGINS[@]}"; do
+      printf "    %2d) %-16s %s\n" "$idx" "$p" "$(plugin_desc "$p")"
+      idx=$((idx + 1))
+    done
+    echo ""
+    echo "  Optional:"
+    for p in "${OPTIONAL_PLUGINS[@]}"; do
+      printf "    %2d) %-16s %s\n" "$idx" "$p" "$(plugin_desc "$p")"
+      idx=$((idx + 1))
+    done
+    echo ""
+    echo "  Default (recommended): ${RECOMMENDED_PLUGINS[*]}"
+    echo ""
+    read -rp "  Enter names or numbers (comma-separated), 'a' for all, Enter for default: " input
+
+    if [[ -z "$input" ]]; then
+      SELECTED_PLUGINS+=("${RECOMMENDED_PLUGINS[@]}")
+    elif [[ "$input" == "a" || "$input" == "all" ]]; then
+      SELECTED_PLUGINS+=("${selectable[@]}")
+    else
+      IFS=',' read -ra picks <<< "$input"
+      local pick
+      for pick in "${picks[@]}"; do
+        pick=$(echo "$pick" | tr -d ' ')
+        if [[ "$pick" =~ ^[0-9]+$ ]]; then
+          local pidx=$((pick - 1))
+          if [[ $pidx -ge 0 && $pidx -lt ${#selectable[@]} ]]; then
+            SELECTED_PLUGINS+=("${selectable[$pidx]}")
+          else
+            warn "Invalid number: $pick (skipping)"
+          fi
+        elif contains "$pick" "${selectable[@]}"; then
+          SELECTED_PLUGINS+=("$pick")
+        else
+          warn "Unknown plugin: $pick (skipping)"
+        fi
+      done
+    fi
   fi
 }
 
@@ -403,6 +470,70 @@ check_prerequisites() {
     die "$errors required prerequisite(s) missing. Install them and re-run."
   fi
 
+  # ── Conditionally required ──
+  local need_cargo=0 need_wails=0 need_node=0 p
+  for p in "${SELECTED_PLUGINS[@]}"; do
+    case "$p" in
+      tracker)   need_cargo=1 ;;
+      dashboard) need_wails=1; need_node=1 ;;
+    esac
+  done
+
+  local conditional_missing=()
+  local has_conditional=$(( need_cargo + need_wails + need_node ))
+
+  if [[ "$has_conditional" -gt 0 ]]; then
+    [[ "$JSON_OUTPUT" -eq 0 ]] && echo "" && info "For selected plugins:"
+  fi
+
+  if [[ "$need_cargo" -eq 1 ]]; then
+    if command -v cargo >/dev/null 2>&1; then
+      local cargo_ver
+      cargo_ver=$(cargo --version 2>/dev/null)
+      ok "cargo     $cargo_ver"
+      record_prereq "cargo" "ok" "$cargo_ver" "tracker"
+    else
+      fail "cargo     not found (needed for tracker)"
+      info "          Install: curl https://sh.rustup.rs -sSf | sh"
+      record_prereq "cargo" "missing" "" "tracker"
+      conditional_missing+=("cargo:tracker")
+    fi
+  fi
+
+  if [[ "$need_wails" -eq 1 ]]; then
+    if command -v wails >/dev/null 2>&1; then
+      local wails_ver
+      wails_ver=$(wails version 2>/dev/null || echo "present")
+      ok "wails     $wails_ver"
+      record_prereq "wails" "ok" "$wails_ver" "dashboard"
+    else
+      fail "wails     not found (needed for dashboard)"
+      info "          Install: go install github.com/wailsapp/wails/v2/cmd/wails@latest"
+      record_prereq "wails" "missing" "" "dashboard"
+      conditional_missing+=("wails:dashboard")
+    fi
+  fi
+
+  if [[ "$need_node" -eq 1 ]]; then
+    if command -v node >/dev/null 2>&1; then
+      local node_raw node_major
+      node_raw=$(node --version)
+      node_major=$(parse_major "$node_raw")
+      if version_gte "$node_major" 22; then
+        ok "node      $node_raw"
+        record_prereq "node" "ok" "$node_raw" "dashboard"
+      else
+        fail "node      $node_raw (need >= 22)"
+        record_prereq "node" "old" "$node_raw" "dashboard"
+        conditional_missing+=("node:dashboard")
+      fi
+    else
+      fail "node      not found (needed for dashboard)"
+      record_prereq "node" "missing" "" "dashboard"
+      conditional_missing+=("node:dashboard")
+    fi
+  fi
+
   # ── Optional ──
   [[ "$JSON_OUTPUT" -eq 0 ]] && echo "" && info "Optional:"
 
@@ -414,6 +545,62 @@ check_prerequisites() {
     record_prereq "gemini" "missing" "" ""
   fi
 
+  if contains "linkedin" "${SELECTED_PLUGINS[@]}"; then
+    local chrome_found=0
+    if command -v google-chrome >/dev/null 2>&1 || command -v chromium >/dev/null 2>&1; then
+      chrome_found=1
+    elif [[ "$(uname)" == "Darwin" ]]; then
+      [[ -d "/Applications/Google Chrome.app" ]] || [[ -d "/Applications/Chromium.app" ]] && chrome_found=1
+    fi
+    if [[ "$chrome_found" -eq 1 ]]; then
+      ok "chrome    found"
+      record_prereq "chrome" "ok" "" "linkedin"
+    else
+      warn "chrome    not found (needed for linkedin browser automation)"
+      record_prereq "chrome" "missing" "" "linkedin"
+    fi
+  fi
+
+  # ── Handle conditional missing ──
+  if [[ ${#conditional_missing[@]} -gt 0 ]]; then
+    echo ""
+    # Collect unique affected plugins
+    local plugins_to_skip=() entry tool plugin
+    for entry in "${conditional_missing[@]}"; do
+      plugin="${entry##*:}"
+      contains "$plugin" "${plugins_to_skip[@]}" || plugins_to_skip+=("$plugin")
+    done
+
+    if [[ "$NO_INTERACTIVE" -eq 1 ]]; then
+      for p in "${plugins_to_skip[@]}"; do
+        remove_from_selected "$p"
+        SKIPPED_PLUGINS+=("$p")
+        warn "Skipping $p (missing prerequisite)"
+      done
+    else
+      for entry in "${conditional_missing[@]}"; do
+        tool="${entry%%:*}"
+        plugin="${entry##*:}"
+        # Skip if already handled (e.g. dashboard needs both wails+node)
+        if [[ ${#SKIPPED_PLUGINS[@]} -gt 0 ]] && contains "$plugin" "${SKIPPED_PLUGINS[@]}"; then
+          continue
+        fi
+
+        echo -e "  ${BOLD}$tool${RESET} is needed for ${BOLD}$plugin${RESET} but is not installed."
+        echo ""
+        local action
+        if [[ "$USE_GUM" -eq 1 ]]; then
+          action=$(gum choose "Skip $plugin and continue" "Abort and install $tool first")
+          [[ "$action" == *"Abort"* ]] && die "Aborting. Install $tool, then re-run."
+        else
+          read -rp "  Skip $plugin and continue? [Y/n] " action
+          [[ "${action:-y}" =~ ^[Nn] ]] && die "Aborting. Install $tool, then re-run."
+        fi
+        remove_from_selected "$plugin"
+        SKIPPED_PLUGINS+=("$plugin")
+      done
+    fi
+  fi
 }
 
 # ── Dry Run ──────────────────────────────────────────────────────────────────
@@ -427,6 +614,12 @@ print_dry_run() {
     printf "    %-18s skills/%-14s → ~/.alluka/bin/%s\n" "$s" "$s" "$s"
   done
   echo "    decomposer         skills/decomposer     → (knowledge-only)"
+  local p
+  for p in "${CORE_PLUGINS[@]}"; do
+    if [[ "$p" == "nen" ]]; then
+      printf "    %-18s plugins/%-14s → ~/.alluka/bin/{shu,gyo,en,ryu}\n" "$p" "$p"
+    fi
+  done
   echo ""
 
   # Non-core selected
@@ -475,8 +668,18 @@ print_dry_run() {
   echo ""
   echo "  Would run:"
   echo "    make build-skills"
+  echo "    Build plugins: ${SELECTED_PLUGINS[*]}"
   echo "    Install binaries to ~/.alluka/bin/"
+  if contains "tracker" "${SELECTED_PLUGINS[@]}"; then
+    echo "    tracker init"
+  fi
   echo "    orchestrator doctor"
+  if contains "nen" "${SELECTED_PLUGINS[@]}"; then
+    echo "    Create scheduler config at ~/.alluka/scheduler/config.json"
+    echo "    Symlink nen binaries (shu, gyo, ko, en, ryu) into ~/.alluka/bin/"
+    echo "    Register nanika scheduler launchd service (com.nanika.scheduler)"
+    echo "    shu propose --init (register daily shu evaluation cron jobs)"
+  fi
 }
 
 # ── Create Directories ───────────────────────────────────────────────────────
@@ -488,7 +691,8 @@ create_directories() {
     ~/.alluka/missions \
     ~/.alluka/logs \
     ~/.alluka/workspaces \
-    ~/.alluka/worktrees
+    ~/.alluka/worktrees \
+    ~/.alluka/nen/scanners
   mkdir -p ~/bin
   ok "~/.alluka/ layout ready"
   ok "~/bin ready"
@@ -609,6 +813,11 @@ install_all() {
     fi
   done
 
+  mkdir -p "$HOME/.alluka/bin"
+  # Note: plugin binaries live in ~/.alluka/bin (the project's canonical
+  # install location). PATH is exported with ~/.alluka/bin ahead of ~/bin
+  # below, so no ~/bin mirror is needed or created here.
+
   # agent-browser lives in asdf shims — symlink into ~/.alluka/bin so daemons find it
   local ab_src
   for ab_src in "$HOME/.asdf/shims/agent-browser" "$HOME/.local/share/mise/shims/agent-browser" "$HOME/bin/agent-browser"; do
@@ -619,7 +828,20 @@ install_all() {
     fi
   done
 
-  export PATH="$HOME/bin:$HOME/.alluka/bin:$PATH"
+  # claude lives in ~/.local/bin or nvm paths — symlink into ~/.alluka/bin so daemons find it
+  local claude_src
+  local nvm_dir="${NVM_DIR:-$HOME/.nvm}"
+  local nvm_claude
+  nvm_claude=$(find "$nvm_dir/versions/node" -name "claude" -type f 2>/dev/null | sort -V | tail -1)
+  for claude_src in "$HOME/.local/bin/claude" ${nvm_claude:+"$nvm_claude"} "/usr/local/bin/claude"; do
+    if [[ -f "$claude_src" ]]; then
+      ln -sf "$claude_src" "$HOME/.alluka/bin/claude"
+      ok "claude → ~/.alluka/bin/claude"
+      break
+    fi
+  done
+
+  export PATH="$HOME/.alluka/bin:$HOME/bin:$PATH"
 }
 
 # ── launchd Setup (macOS only) ───────────────────────────────────────────────
@@ -636,7 +858,7 @@ setup_launchd() {
   mkdir -p "$launch_agents"
 
   local template_dir="$REPO_ROOT/scripts/launchd"
-  local daemons=(orchestrator-daemon)
+  local daemons=(orchestrator-daemon nen-daemon scheduler-daemon)
   local labels=()
   local plists=()
 
@@ -721,6 +943,91 @@ setup_launchd() {
 # ── Post-Install ─────────────────────────────────────────────────────────────
 
 post_install() {
+  # Tracker init (idempotent)
+  if contains "tracker" "${SELECTED_PLUGINS[@]}" && \
+     [[ ${#FAILED_PLUGINS[@]} -eq 0 || ! $(contains "tracker" "${FAILED_PLUGINS[@]}" && echo yes) ]]; then
+    step "Initializing tracker"
+    if command -v tracker >/dev/null 2>&1; then
+      if tracker init 2>/dev/null; then
+        ok "tracker init OK"
+      else
+        warn "tracker init returned non-zero (may already be initialized)"
+      fi
+    else
+      warn "tracker not in PATH — run manually: tracker init"
+    fi
+  fi
+
+  # Scheduler config auto-create with defaults (idempotent)
+  if contains "scheduler" "${SELECTED_PLUGINS[@]}"; then
+    local scheduler_cfg_dir="$HOME/.alluka/scheduler"
+    local scheduler_cfg_file="$scheduler_cfg_dir/config"
+    if [[ ! -f "$scheduler_cfg_file" ]]; then
+      step "Creating scheduler config with defaults"
+      mkdir -p "$scheduler_cfg_dir"
+      chmod 700 "$scheduler_cfg_dir"
+      cat > "$scheduler_cfg_file" <<EOF
+# scheduler configuration
+# Generated by install.sh
+
+db_path = $scheduler_cfg_dir/scheduler.db
+log_level = info
+shell = /bin/sh
+max_concurrent = 4
+dashboard_token =
+EOF
+      chmod 600 "$scheduler_cfg_file"
+      ok "created $scheduler_cfg_file"
+    fi
+  fi
+
+  # Scheduler init (idempotent)
+  if contains "scheduler" "${SELECTED_PLUGINS[@]}" && \
+     command -v scheduler >/dev/null 2>&1; then
+    step "Initializing scheduler"
+    if scheduler init 2>/dev/null; then
+      ok "scheduler init OK"
+    else
+      warn "scheduler init returned non-zero (may already be initialized)"
+    fi
+  fi
+
+  # Self-improvement loop setup (idempotent)
+  if command -v shu >/dev/null 2>&1 && command -v scheduler >/dev/null 2>&1; then
+    step "Setting up self-improvement loop"
+    if shu propose --init 2>/dev/null; then
+      ok "shu propose --init OK (scheduler jobs registered)"
+    else
+      warn "shu propose --init returned non-zero (jobs may already exist)"
+    fi
+  fi
+
+  # Verify nen binaries landed in ~/.alluka/bin and scanners in ~/.alluka/nen/scanners.
+  # nen-daemon resolves scanners by path under ~/.alluka/nen/scanners/, and
+  # ~/.alluka/bin is ahead of ~/bin in PATH, so no ~/bin mirror is created.
+  if contains "nen" "${SELECTED_PLUGINS[@]}"; then
+    step "Verifying nen install locations"
+    local alluka_bin="$HOME/.alluka/bin"
+    local scanners_dir="$HOME/.alluka/nen/scanners"
+    local b src
+    for b in shu ko nen-daemon; do
+      src="$alluka_bin/$b"
+      if [[ -f "$src" || -L "$src" ]]; then
+        ok "$b → $src"
+      else
+        warn "$src not found — nen may not be fully installed"
+      fi
+    done
+    for b in gyo en ryu; do
+      src="$scanners_dir/$b"
+      if [[ -f "$src" ]]; then
+        ok "$b → $src"
+      else
+        warn "$src not found — nen scanners may not be fully installed"
+      fi
+    done
+  fi
+
   # Run doctor on each installed plugin
   step "Running health checks"
   local plugin binary
@@ -760,6 +1067,8 @@ post_install() {
   if [[ "$(uname)" == "Darwin" ]]; then
     info "  Auto-start daemons (registered with launchd):"
     info "    ${GREEN}✓${RESET} orchestrator-daemon  ${DIM}# mission executor${RESET}"
+    info "    ${GREEN}✓${RESET} nen-daemon           ${DIM}# self-improvement loop${RESET}"
+    info "    ${GREEN}✓${RESET} scheduler-daemon     ${DIM}# cron job runner${RESET}"
     echo ""
   fi
 
@@ -783,6 +1092,8 @@ post_install() {
 
   # Verify section
   info "  Verify:"
+  info "    ${CYAN}scheduler jobs${RESET}       ${DIM}# confirm shu/ko jobs are scheduled${RESET}"
+  info "    ${CYAN}shu evaluate${RESET}         ${DIM}# run a health check${RESET}"
   info "    ${CYAN}orchestrator status${RESET}  ${DIM}# confirm daemon is running${RESET}"
   echo ""
 

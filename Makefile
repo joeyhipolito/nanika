@@ -17,7 +17,7 @@ BUILDABLE_SKILLS := $(shell \
 	done)
 
 .PHONY: FORCE help list \
-        build build-skills build-plugins \
+        build build-skills build-plugins build-dashboard \
         install install-skills setup doctor clean uninstall \
         build-all install-all test-all
 
@@ -45,7 +45,7 @@ build-%: FORCE $(BIN_DIR)
 	echo "  build  $$skill  ($$pkg)"; \
 	cd "$$d" && go build -o $(BIN_DIR)/$$skill $$pkg
 
-# install-<skill>: go install primary package → GOPATH/bin
+# install-<skill>: go install primary package → ~/.alluka/bin
 install-%: FORCE
 	@skill=$*; \
 	d=$(SKILLS_DIR)/$$skill; \
@@ -55,7 +55,8 @@ install-%: FORCE
 	elif [ -f "$$d/main.go" ];                 then pkg="."; \
 	else echo "Error: no main package found for '$$skill'"; exit 1; fi; \
 	echo "  install  $$skill  ($$pkg)"; \
-	cd "$$d" && go install $$pkg
+	mkdir -p $(ALLUKA_HOME)/bin; \
+	cd "$$d" && GOBIN=$(ALLUKA_HOME)/bin go install $$pkg
 
 # test-<skill>: run all tests in the skill module
 test-%: FORCE
@@ -69,8 +70,8 @@ test-%: FORCE
 
 build-skills: $(addprefix build-,$(BUILDABLE_SKILLS)) ## Build all skills → bin/
 build-all:    $(addprefix build-,$(BUILDABLE_SKILLS)) ## Alias for build-skills
-install-all:  $(addprefix install-,$(BUILDABLE_SKILLS)) ## Install all skills to GOPATH/bin
-install-skills: $(addprefix install-,$(BUILDABLE_SKILLS)) ## Install all skills to GOPATH/bin
+install-all:  $(addprefix install-,$(BUILDABLE_SKILLS)) ## Install all skills to ~/.alluka/bin
+install-skills: $(addprefix install-,$(BUILDABLE_SKILLS)) ## Install all skills to ~/.alluka/bin
 test-all:     $(addprefix test-,$(BUILDABLE_SKILLS)) ## Test all skills
 
 # ── plugins ──────────────────────────────────────────────────────────────────
@@ -78,7 +79,7 @@ test-all:     $(addprefix test-,$(BUILDABLE_SKILLS)) ## Test all skills
 # Reads the `build` field from each plugins/*/plugin.json and runs it.
 # Go plugins use GOWORK=off to isolate from the repo workspace.
 # Rust plugins (build starts with "cargo") run cargo directly.
-# Plugins without a build field are skipped here.
+# Plugins without a build field (dashboard, nen) are skipped here.
 build-plugins: ## Build all plugins via plugin.json build field
 	@for d in $(PLUGINS_DIR)/*/; do \
 		name=$$(basename "$$d"); \
@@ -133,22 +134,28 @@ build-plugin-nen_mcp: FORCE ## Build nen-mcp binary → plugins/nen_mcp/bin/nen-
 	@echo "  build  nen_mcp"
 	@cd $(PLUGINS_DIR)/nen_mcp && GOWORK=off go build -ldflags "-s -w" -o bin/nen-mcp ./cmd/nen-mcp
 
-install-plugin-nen_mcp: FORCE ## Install nen-mcp binary → ~/bin/nen-mcp
+install-plugin-nen_mcp: FORCE ## Install nen-mcp binary → ~/.alluka/bin/nen-mcp
 	@echo "  install  nen_mcp"
-	@cd $(PLUGINS_DIR)/nen_mcp && ln -sf $(PLUGINS_DIR)/nen_mcp/bin/nen-mcp $(HOME)/bin/nen-mcp
+	@mkdir -p $(ALLUKA_HOME)/bin
+	@cd $(PLUGINS_DIR)/nen_mcp && ln -sf $(PLUGINS_DIR)/nen_mcp/bin/nen-mcp $(ALLUKA_HOME)/bin/nen-mcp
 
+# dashboard has its own Makefile; wails build produces a universal .app bundle.
+build-dashboard: ## Build Nanika.app via wails (darwin/universal)
+	@echo "  build  dashboard"
+	@cd $(PLUGINS_DIR)/dashboard && wails build -platform darwin/universal
 
 # ── top-level build ──────────────────────────────────────────────────────────
 
-build: build-skills build-plugins ## Build everything (skills + plugins)
+build: build-skills build-plugins build-dashboard ## Build everything (skills + plugins + dashboard)
 
 # ── install ──────────────────────────────────────────────────────────────────
 
 # Reads the `install` field from each plugins/*/plugin.json and runs it from
 # within the plugin directory so that $(pwd) expands correctly.
-# nen's install.sh builds and installs the scanner binaries to ~/.alluka/.
-install: ## Install plugin binaries to ~/bin/ via plugin.json install field
-	@mkdir -p $(HOME)/bin
+# All plugins install to ~/.alluka/bin per the project convention; nen's
+# install.sh additionally installs scanner binaries to ~/.alluka/nen/scanners/.
+install: ## Install plugin binaries to ~/.alluka/bin via plugin.json install field
+	@mkdir -p $(ALLUKA_HOME)/bin
 	@for d in $(PLUGINS_DIR)/*/; do \
 		name=$$(basename "$$d"); \
 		pjson="$$d/plugin.json"; \
@@ -171,7 +178,6 @@ setup: ## Create ~/.alluka/ dirs, build everything, install binaries
 	           $(ALLUKA_HOME)/workspaces \
 	           $(ALLUKA_HOME)/worktrees \
 	           $(ALLUKA_HOME)/nen/scanners
-	@mkdir -p $(HOME)/bin
 	@echo "--- Building ---"
 	$(MAKE) build
 	@echo "--- Installing ---"
