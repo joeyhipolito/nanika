@@ -104,6 +104,12 @@ type Phase struct {
 	// the base branch. Populated by the engine after successful completion when
 	// the phase ran in a git worktree. Used for cross-phase overlap detection.
 	ChangedFiles []string `json:"changed_files,omitempty"`
+
+	// Worker is the persistent worker name assigned to this phase (e.g. "alpha").
+	// Empty means no persistent worker was used. Populated by the engine when
+	// shouldAssignPersistentWorker selects the phase for persistent execution.
+	// Persisted in checkpoints so resume runs can attribute costs correctly.
+	Worker string `json:"worker,omitempty"`
 }
 
 // FileOverlap records a file that was modified by more than one parallel phase.
@@ -160,7 +166,6 @@ type ContextBundle struct {
 	MissionContext string   // key-value pairs extracted from the mission task header
 	ModelTier      string   // think/work/quick
 	Skills         []Skill  // inlined skill content (phase-specific)
-	SkillIndex     string   // full skill routing index (all available tools)
 	Constraints    []string // guardrails
 	PriorContext   string   // output from dependency phases
 	Learnings      string   // relevant learnings from DB
@@ -185,6 +190,13 @@ type ContextBundle struct {
 	// Keys are phase names; values are the notes content (already capped).
 	// Injected into CLAUDE.md as "Prior Phase Notes".
 	PriorScratch map[string]string
+	// WorkerName is the persistent worker's display name (e.g. "alpha").
+	// Empty when no persistent worker is assigned.
+	WorkerName string
+	// WorkerMemory is the pre-formatted, byte-budget-capped memory from the
+	// persistent worker's memory store. Empty when no persistent worker is
+	// assigned or the worker has no relevant memory entries.
+	WorkerMemory string
 }
 
 // Skill represents an inlined skill reference.
@@ -239,8 +251,9 @@ type OrchestratorConfig struct {
 	Force            bool          // bypass quota gate (--force flag)
 	Domain           string        // dev/personal/work/creative/academic
 	MaxTurns         int           // max agentic turns per worker (default 50)
-	DisableLearnings bool          // skip learning retrieval and injection
-	GateMode         GateMode      // warn (fail-forward) or block (fail phase); default block
+	DisableLearnings    bool          // skip learning retrieval and injection
+	GateMode            GateMode      // warn (fail-forward) or block (fail phase); default block
+	NoPersistentWorker  bool          // disable persistent worker assignment for all phases
 	// StallTimeout is the global watchdog stall timeout applied to all phases
 	// that do not specify their own TIMEOUT: field. Overrides ORCHESTRATOR_STALL_TIMEOUT.
 	// Zero means fall back to ORCHESTRATOR_STALL_TIMEOUT or the 5-minute default.

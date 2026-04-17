@@ -23,6 +23,7 @@ func init() {
 	metricsCmd.Flags().String("status", "", "filter by status (success/failed/running)")
 	metricsCmd.Flags().Int("days", 0, "show missions from last N days")
 	metricsCmd.Flags().String("decomp-source", "", "filter by decomp source (predecomposed/decomp.llm/decomp.keyword/template/unknown)")
+	metricsCmd.Flags().String("worker", "", "filter by persistent worker name (e.g. alpha), or 'ephemeral' for missions with no persistent phases")
 
 	metricsCmd.AddCommand(
 		&cobra.Command{
@@ -100,6 +101,7 @@ func showMetrics(cmd *cobra.Command, args []string) error {
 	statusFilter, _ := cmd.Flags().GetString("status")
 	days, _ := cmd.Flags().GetInt("days")
 	decompSourceFilter, _ := cmd.Flags().GetString("decomp-source")
+	workerFilter, _ := cmd.Flags().GetString("worker")
 
 	ctx, cancel := context.WithTimeout(cmd.Context(), 15*time.Second)
 	defer cancel()
@@ -110,7 +112,7 @@ func showMetrics(cmd *cobra.Command, args []string) error {
 	}
 	defer db.Close()
 
-	missions, err := db.QueryMissions(ctx, last, domainFilter, days, statusFilter, decompSourceFilter)
+	missions, err := db.QueryMissions(ctx, last, domainFilter, days, statusFilter, decompSourceFilter, workerFilter)
 	if err != nil {
 		return fmt.Errorf("querying missions: %w", err)
 	}

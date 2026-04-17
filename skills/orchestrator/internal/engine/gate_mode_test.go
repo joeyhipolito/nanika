@@ -29,7 +29,7 @@ func newGateModeEngine(t *testing.T, mode core.GateMode) *Engine {
 	wsPath := t.TempDir()
 	ws := &core.Workspace{ID: "ws-gate-mode-test", Path: wsPath, Domain: "dev"}
 	cfg := &core.OrchestratorConfig{GateMode: mode}
-	e := New(ws, cfg, nil, nil, "").WithEmitter(event.NoOpEmitter{})
+	e := New(ws, cfg, nil, nil).WithEmitter(event.NoOpEmitter{})
 	e.RegisterExecutor(core.Runtime("stub-gate"), shortErrorExecutor{})
 	return e
 }
@@ -107,7 +107,7 @@ func TestGateModeDefaultIsBlock(t *testing.T) {
 	ws := &core.Workspace{ID: "ws-gate-default-test", Path: wsPath, Domain: "dev"}
 	// GateMode intentionally left as zero value.
 	cfg := &core.OrchestratorConfig{}
-	e := New(ws, cfg, nil, nil, "").WithEmitter(event.NoOpEmitter{})
+	e := New(ws, cfg, nil, nil).WithEmitter(event.NoOpEmitter{})
 	e.RegisterExecutor(core.Runtime("stub-gate"), shortErrorExecutor{})
 
 	plan := singlePhaseGatePlan()

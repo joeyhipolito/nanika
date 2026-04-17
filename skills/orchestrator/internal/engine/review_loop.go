@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"fmt"
+	"os"
 	"strings"
 
 	"github.com/joeyhipolito/orchestrator-cli/internal/core"
@@ -45,6 +46,23 @@ func ParseReviewFindings(output string) ReviewFindings {
 	return f
 }
 
+// ParseReviewFindingsFromArtifact reads the file at artifactPath and parses
+// it with ParseReviewFindings. Returns an os.ErrNotExist-wrapped error when
+// the file is absent so callers can distinguish "no artifact" from "artifact
+// present but unparseable" (the latter returns nil error with empty findings).
+func ParseReviewFindingsFromArtifact(artifactPath string) (ReviewFindings, error) {
+	data, err := os.ReadFile(artifactPath)
+	if err != nil {
+		return ReviewFindings{}, err
+	}
+	return ParseReviewFindings(string(data)), nil
+}
+
+// reviewOutputLooksMalformed reports whether the reviewer output is non-empty,
+// has no parsed findings, AND lacks a structural header at the start of any
+// line. Line-start matching prevents prose mentions of the format string
+// (e.g. backtick-quoted `### Blockers` inside a scratchpad note) from
+// defeating the safeguard.
 func reviewOutputLooksMalformed(output string, findings ReviewFindings) bool {
 	trimmed := strings.TrimSpace(output)
 	if trimmed == "" {
@@ -53,7 +71,13 @@ func reviewOutputLooksMalformed(output string, findings ReviewFindings) bool {
 	if len(findings.Blockers) > 0 || len(findings.Warnings) > 0 {
 		return false
 	}
-	return !strings.Contains(trimmed, "### Blockers") && !strings.Contains(trimmed, "### Warnings")
+	for _, line := range strings.Split(trimmed, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "### Blockers" || line == "### Warnings" {
+			return false
+		}
+	}
+	return true
 }
 
 // parseSection scans lines for a header matching sectionHeader, then collects

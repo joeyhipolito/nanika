@@ -167,7 +167,7 @@ func TestMetricsIntegration(t *testing.T) {
 
 	// --- 4. Query back and verify the data arrived intact ---------------------
 
-	rows, err := db.QueryMissions(ctx, 10, "", 0, "", "")
+	rows, err := db.QueryMissions(ctx, 10, "", 0, "", "", "")
 	if err != nil {
 		t.Fatalf("QueryMissions: %v", err)
 	}
@@ -332,7 +332,7 @@ func TestExecutePhase_PersistsSkillInvocationsBeforeMissionCompletion(t *testing
 		Path:   wsPath,
 		Domain: "dev",
 	}
-	e := New(ws, &core.OrchestratorConfig{}, nil, nil, "")
+	e := New(ws, &core.OrchestratorConfig{}, nil, nil)
 	e.RegisterExecutor(core.Runtime("tool-capture"), toolEventExecutor{})
 
 	phase := &core.Phase{
@@ -416,7 +416,7 @@ func TestExecutePhase_RetryPreservesParsedSkillsFromEarlierAttempts(t *testing.T
 		Path:   wsPath,
 		Domain: "dev",
 	}
-	e := New(ws, &core.OrchestratorConfig{}, nil, nil, "")
+	e := New(ws, &core.OrchestratorConfig{}, nil, nil)
 	retryExec := &retrySkillExecutor{}
 	e.RegisterExecutor(core.Runtime("retry-tool-capture"), retryExec)
 
@@ -495,7 +495,7 @@ func TestExecutePhase_RetryDoesNotDoubleCountRepeatedSkillsAcrossAttempts(t *tes
 		Path:   wsPath,
 		Domain: "dev",
 	}
-	e := New(ws, &core.OrchestratorConfig{}, nil, nil, "")
+	e := New(ws, &core.OrchestratorConfig{}, nil, nil)
 	retryExec := &retryDuplicateSkillExecutor{}
 	e.RegisterExecutor(core.Runtime("retry-dup-tool-capture"), retryExec)
 
@@ -574,7 +574,7 @@ func TestExecutePhase_EmptyLegacyPhaseIDUsesStableFallbackForToolCapture(t *test
 		Path:   wsPath,
 		Domain: "dev",
 	}
-	e := New(ws, &core.OrchestratorConfig{}, nil, nil, "")
+	e := New(ws, &core.OrchestratorConfig{}, nil, nil)
 	e.RegisterExecutor(core.Runtime("legacy-phase-id-tool-capture"), legacyPhaseIDExecutor{})
 
 	phase := &core.Phase{
@@ -735,7 +735,7 @@ func TestRecordPhaseSkillsDB_FinalCompletedPhaseStoresSuccessStatus(t *testing.T
 	}
 	t.Cleanup(func() { db.Close() })
 
-	rows, err := db.QueryMissions(context.Background(), 10, "", 0, "", "")
+	rows, err := db.QueryMissions(context.Background(), 10, "", 0, "", "", "")
 	if err != nil {
 		t.Fatalf("QueryMissions: %v", err)
 	}

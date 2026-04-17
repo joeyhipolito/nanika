@@ -2038,12 +2038,12 @@ func TestSeedMemory_GlobalEntriesPrependedBeforePersona(t *testing.T) {
 	t.Setenv("HOME", tmpHome)
 
 	// Write global entry.
-	globalDir := filepath.Join(tmpHome, "nanika", "global")
+	globalDir := filepath.Join(tmpHome, ".alluka", "memory")
 	if err := os.MkdirAll(globalDir, 0700); err != nil {
 		t.Fatal(err)
 	}
 	globalEntry := "- global tip about deployments"
-	if err := os.WriteFile(filepath.Join(globalDir, "MEMORY.md"), []byte(globalEntry+"\n"), 0600); err != nil {
+	if err := os.WriteFile(filepath.Join(globalDir, "global.md"), []byte(globalEntry+"\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -2152,7 +2152,7 @@ func TestMergeMemoryBack_AutoPromotesHighUsed(t *testing.T) {
 	}
 
 	// Global should contain the promoted entry.
-	globalPath := filepath.Join(tmpHome, "nanika", "global", "MEMORY.md")
+	globalPath := filepath.Join(tmpHome, ".alluka", "memory", "global.md")
 	globalGot, err := os.ReadFile(globalPath)
 	if err != nil {
 		t.Fatalf("reading global MEMORY.md: %v", err)
@@ -2200,7 +2200,7 @@ func TestPromotePersonaEntries_ByUsedCount(t *testing.T) {
 		t.Errorf("expected 1 promoted, got %d", n)
 	}
 
-	globalPath := filepath.Join(tmpHome, "nanika", "global", "MEMORY.md")
+	globalPath := filepath.Join(tmpHome, ".alluka", "memory", "global.md")
 	globalGot, err := os.ReadFile(globalPath)
 	if err != nil {
 		t.Fatalf("reading global: %v", err)
@@ -2228,11 +2228,11 @@ func TestPromotePersonaEntries_NoDuplicatesInGlobal(t *testing.T) {
 	t.Setenv("HOME", tmpHome)
 
 	// Pre-populate global with the same entry.
-	globalDir := filepath.Join(tmpHome, "nanika", "global")
+	globalDir := filepath.Join(tmpHome, ".alluka", "memory")
 	if err := os.MkdirAll(globalDir, 0700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(globalDir, "MEMORY.md"), []byte("- duplicate tip\n"), 0600); err != nil {
+	if err := os.WriteFile(filepath.Join(globalDir, "global.md"), []byte("- duplicate tip\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -2252,7 +2252,7 @@ func TestPromotePersonaEntries_NoDuplicatesInGlobal(t *testing.T) {
 		t.Errorf("expected 0 promoted (duplicate), got %d", n)
 	}
 
-	globalGot, err := os.ReadFile(filepath.Join(globalDir, "MEMORY.md"))
+	globalGot, err := os.ReadFile(filepath.Join(globalDir, "global.md"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2358,10 +2358,10 @@ func setupSessionMemoryFile(t *testing.T, tmpHome, sourceDir, filename, name, en
 	}
 }
 
-// readGlobalMemory reads ~/nanika/global/MEMORY.md and returns lines.
+// readGlobalMemory reads ~/.alluka/memory/global.md and returns lines.
 func readGlobalMemory(t *testing.T, tmpHome string) []string {
 	t.Helper()
-	path := filepath.Join(tmpHome, "nanika", "global", "MEMORY.md")
+	path := filepath.Join(tmpHome, ".alluka", "memory", "global.md")
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -2535,8 +2535,90 @@ func TestBridgeSessionMemory_SkipsNonProjectTypes(t *testing.T) {
 	if len(lines) != 1 {
 		t.Fatalf("want 1 line, got %d: %v", len(lines), lines)
 	}
-	if !strings.Contains(lines[0], "New active project note") {
+	if !strings.Contains(lines[0], "Active project") {
 		t.Errorf("expected project entry, got %q", lines[0])
+	}
+}
+
+// TestPromoteEntriesToGlobal_BridgeHashMigrationDedup verifies that promoting an
+// entry whose content matches an existing global entry (even when the existing entry
+// was hashed from old body text and the incoming entry uses name-based content) is
+// treated as a duplicate. This covers the hash migration mismatch where re-running
+// BridgeSessionMemory would create duplicates if only hash comparison was used.
+func TestPromoteEntriesToGlobal_BridgeHashMigrationDedup(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+
+	// Pre-populate global MEMORY.md with an entry using old-style content.
+	// The normalized content is "auth middleware rewrite for compliance".
+	globalDir := filepath.Join(tmpHome, ".alluka", "memory")
+	if err := os.MkdirAll(globalDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	oldEntry := "- Auth middleware rewrite for compliance | type: project | filed: 2026-04-01"
+	if err := os.WriteFile(filepath.Join(globalDir, "global.md"), []byte(oldEntry+"\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	// The incoming entry has the same normalized content but may differ in casing/whitespace
+	// (simulating bridge using the YAML name field instead of the old body text).
+	incoming := &MemoryEntry{
+		Content: "Auth middleware rewrite for compliance",
+		Type:    "project",
+		Filed:   time.Date(2026, 4, 9, 0, 0, 0, 0, time.UTC),
+		Bridged: time.Date(2026, 4, 9, 0, 0, 0, 0, time.UTC),
+	}
+
+	promoted, err := promoteEntriesToGlobal([]*MemoryEntry{incoming})
+	if err != nil {
+		t.Fatalf("promoteEntriesToGlobal: %v", err)
+	}
+	if promoted != 0 {
+		t.Errorf("expected 0 promoted (duplicate via normalized content), got %d", promoted)
+	}
+
+	// Verify global still has exactly 1 line.
+	lines := readGlobalMemory(t, tmpHome)
+	if len(lines) != 1 {
+		t.Errorf("expected 1 line in global MEMORY.md, got %d: %v", len(lines), lines)
+	}
+}
+
+// TestPromoteEntriesToGlobal_BridgeHashMigrationDedup_CaseVariant verifies
+// dedup works when the incoming entry has different casing than the existing
+// global entry (e.g., "Auth Middleware" vs "auth middleware").
+func TestPromoteEntriesToGlobal_BridgeHashMigrationDedup_CaseVariant(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+
+	globalDir := filepath.Join(tmpHome, ".alluka", "memory")
+	if err := os.MkdirAll(globalDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	// Old entry with specific casing.
+	oldEntry := "- Auth Middleware Rewrite | type: project | filed: 2026-03-01"
+	if err := os.WriteFile(filepath.Join(globalDir, "global.md"), []byte(oldEntry+"\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	// Incoming with different casing — normalizedContent should still match.
+	incoming := &MemoryEntry{
+		Content: "auth middleware rewrite",
+		Type:    "project",
+		Filed:   time.Date(2026, 4, 9, 0, 0, 0, 0, time.UTC),
+	}
+
+	promoted, err := promoteEntriesToGlobal([]*MemoryEntry{incoming})
+	if err != nil {
+		t.Fatalf("promoteEntriesToGlobal: %v", err)
+	}
+	if promoted != 0 {
+		t.Errorf("expected 0 promoted (case-insensitive duplicate), got %d", promoted)
+	}
+
+	lines := readGlobalMemory(t, tmpHome)
+	if len(lines) != 1 {
+		t.Errorf("expected 1 line after dedup, got %d: %v", len(lines), lines)
 	}
 }
 

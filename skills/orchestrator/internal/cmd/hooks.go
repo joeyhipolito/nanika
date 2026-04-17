@@ -66,7 +66,7 @@ func init() {
 	bridgeSessionCmd := &cobra.Command{
 		Use:   "bridge-session",
 		Short: "Bridge project/reference entries from session MEMORY.md into global memory",
-		Long:  "Reads the Claude Code auto-memory MEMORY.md for the given project directory, extracts entries with type 'project' or 'reference', and merges them into ~/nanika/global/MEMORY.md with a bridged: stamp. Idempotent: re-running never duplicates entries.",
+		Long:  "Reads the Claude Code auto-memory MEMORY.md for the given project directory, extracts entries with type 'project' or 'reference', and merges them into ~/.alluka/memory/global.md with a bridged: stamp. Idempotent: re-running never duplicates entries.",
 		RunE:  runBridgeSession,
 	}
 	bridgeSessionCmd.Flags().String("source-dir", "", "project directory whose Claude auto-memory to read (default: ~/nanika)")

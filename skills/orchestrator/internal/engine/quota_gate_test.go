@@ -56,7 +56,7 @@ func quotaTestEngine(t *testing.T, cfgDir string, force bool) *Engine {
 	t.Helper()
 	t.Setenv("ORCHESTRATOR_CONFIG_DIR", cfgDir)
 	ws := &core.Workspace{ID: "ws-quota-test", Path: t.TempDir(), Domain: "dev"}
-	return New(ws, &core.OrchestratorConfig{Force: force}, nil, nil, "")
+	return New(ws, &core.OrchestratorConfig{Force: force}, nil, nil)
 }
 
 // TestQuotaGate_CacheReadExcludedFromUtilization verifies that cache_read tokens

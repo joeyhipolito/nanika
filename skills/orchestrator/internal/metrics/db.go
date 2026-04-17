@@ -125,6 +125,9 @@ type PhaseRecord struct {
 	TokensCacheCreation int     `json:"tokens_cache_creation,omitempty"` // cache creation tokens
 	TokensCacheRead     int     `json:"tokens_cache_read,omitempty"`     // cache read tokens
 	CostUSD             float64 `json:"cost_usd,omitempty"`              // cost in USD
+	// WorkerName is the persistent worker that ran this phase (e.g. "alpha").
+	// Empty means the phase ran on an ephemeral worker.
+	WorkerName string `json:"worker_name,omitempty"`
 }
 
 func (p *PhaseRecord) UnmarshalJSON(data []byte) error {
@@ -151,6 +154,7 @@ func (p *PhaseRecord) UnmarshalJSON(data []byte) error {
 		TokensCacheCreation   int      `json:"tokens_cache_creation,omitempty"`
 		TokensCacheRead       int      `json:"tokens_cache_read,omitempty"`
 		CostUSD               float64  `json:"cost_usd,omitempty"`
+		WorkerName            string   `json:"worker_name,omitempty"`
 	}
 
 	var aux phaseRecordJSON
@@ -182,6 +186,7 @@ func (p *PhaseRecord) UnmarshalJSON(data []byte) error {
 	p.TokensCacheCreation = aux.TokensCacheCreation
 	p.TokensCacheRead = aux.TokensCacheRead
 	p.CostUSD = aux.CostUSD
+	p.WorkerName = aux.WorkerName
 	return nil
 }
 
@@ -295,7 +300,8 @@ func (d *DB) initSchema() error {
 				tokens_cache_creation INTEGER NOT NULL DEFAULT 0,
 				tokens_cache_read    INTEGER NOT NULL DEFAULT 0,
 				cost_usd             REAL NOT NULL DEFAULT 0,
-				parsed_skills        TEXT NOT NULL DEFAULT ''
+				parsed_skills        TEXT NOT NULL DEFAULT '',
+				worker_name          TEXT NOT NULL DEFAULT ''
 			)`},
 		{"skill_invocations table", `
 			CREATE TABLE IF NOT EXISTS skill_invocations (
@@ -362,6 +368,26 @@ func (d *DB) initSchema() error {
 		{"add missions.tokens_cache_read_total", `ALTER TABLE missions ADD COLUMN tokens_cache_read_total INTEGER NOT NULL DEFAULT 0`},
 		{"add phases.error_type", `ALTER TABLE phases ADD COLUMN error_type TEXT NOT NULL DEFAULT ''`},
 		{"add phases.error_message", `ALTER TABLE phases ADD COLUMN error_message TEXT NOT NULL DEFAULT ''`},
+		{"add phases.worker_name", `ALTER TABLE phases ADD COLUMN worker_name TEXT NOT NULL DEFAULT ''`},
+		// NOTE: CREATE TABLE IF NOT EXISTS is idempotent at the SQLite level — it
+		// succeeds silently when the table already exists and returns no error.
+		// This is distinct from the ALTER TABLE entries above, which rely on the
+		// "duplicate column name" suppression below. If a future refactor introduces
+		// a migration-applied ledger that skips already-seen entries, this entry
+		// must still be included in the ledger's "already applied" set so the ledger
+		// does not attempt to re-apply it and accidentally diverge on schema drift.
+		{"add usage_snapshots table", `CREATE TABLE IF NOT EXISTS usage_snapshots (
+			id                         INTEGER PRIMARY KEY AUTOINCREMENT,
+			captured_at                DATETIME NOT NULL,
+			mission_id                 TEXT NOT NULL DEFAULT '',
+			five_hour_util             REAL NOT NULL DEFAULT 0,
+			five_hour_resets_at        DATETIME,
+			seven_day_util             REAL NOT NULL DEFAULT 0,
+			seven_day_resets_at        DATETIME,
+			seven_day_sonnet_util      REAL NOT NULL DEFAULT 0,
+			seven_day_sonnet_resets_at DATETIME,
+			raw_json                   TEXT NOT NULL DEFAULT ''
+		)`},
 	}
 	for _, m := range migrations {
 		if _, err := tx.Exec(m.sql); err != nil {
@@ -380,6 +406,8 @@ func (d *DB) initSchema() error {
 		{"idx_skill_invocations_phase", `CREATE INDEX IF NOT EXISTS idx_skill_invocations_phase ON skill_invocations(phase)`},
 		{"idx_quota_snapshots_captured_at", `CREATE INDEX IF NOT EXISTS idx_quota_snapshots_captured_at ON quota_snapshots(captured_at)`},
 		{"idx_quota_snapshots_mission_id", `CREATE INDEX IF NOT EXISTS idx_quota_snapshots_mission_id ON quota_snapshots(mission_id)`},
+		{"idx_phases_worker_name", `CREATE INDEX IF NOT EXISTS idx_phases_worker_name ON phases(worker_name)`},
+		{"idx_usage_snapshots_captured_at", `CREATE INDEX IF NOT EXISTS idx_usage_snapshots_captured_at ON usage_snapshots(captured_at)`},
 	}
 	for _, idx := range postMigrationIndexes {
 		if _, err := tx.Exec(idx.sql); err != nil {
@@ -574,14 +602,16 @@ func insertPhase(ctx context.Context, tx *sql.Tx, missionID string, p PhaseRecor
 			id, mission_id, name, persona, selection_method, duration_s,
 			status, retries, gate_passed, output_len, learnings_retrieved,
 			error_type, error_message,
-			provider, model, tokens_in, tokens_out, cost_usd, parsed_skills
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			provider, model, tokens_in, tokens_out, cost_usd, parsed_skills,
+			worker_name, tokens_cache_creation, tokens_cache_read
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`,
 		phaseID, missionID, p.Name, p.Persona, p.SelectionMethod, p.DurationS,
 		p.Status, p.Retries, gatePassed, p.OutputLen, p.LearningsRetrieved,
 		p.ErrorType, p.ErrorMessage,
 		p.Provider, p.Model, p.TokensIn, p.TokensOut, p.CostUSD,
 		marshalSkillsJSON(p.ParsedSkills),
+		p.WorkerName, p.TokensCacheCreation, p.TokensCacheRead,
 	)
 	if err != nil {
 		return fmt.Errorf("inserting phase %s: %w", phaseID, err)
@@ -605,8 +635,9 @@ func upsertPhase(ctx context.Context, execer execContexter, missionID string, p 
 			id, mission_id, name, persona, selection_method, duration_s,
 			status, retries, gate_passed, output_len, learnings_retrieved,
 			error_type, error_message,
-			provider, model, tokens_in, tokens_out, cost_usd, parsed_skills
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			provider, model, tokens_in, tokens_out, cost_usd, parsed_skills,
+			worker_name, tokens_cache_creation, tokens_cache_read
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET
 			mission_id = excluded.mission_id,
 			name = excluded.name,
@@ -625,13 +656,17 @@ func upsertPhase(ctx context.Context, execer execContexter, missionID string, p 
 			tokens_in = excluded.tokens_in,
 			tokens_out = excluded.tokens_out,
 			cost_usd = excluded.cost_usd,
-			parsed_skills = excluded.parsed_skills
+			parsed_skills = excluded.parsed_skills,
+			worker_name = excluded.worker_name,
+			tokens_cache_creation = excluded.tokens_cache_creation,
+			tokens_cache_read = excluded.tokens_cache_read
 	`,
 		phaseID, missionID, p.Name, p.Persona, p.SelectionMethod, p.DurationS,
 		p.Status, p.Retries, gatePassed, p.OutputLen, p.LearningsRetrieved,
 		p.ErrorType, p.ErrorMessage,
 		p.Provider, p.Model, p.TokensIn, p.TokensOut, p.CostUSD,
 		marshalSkillsJSON(p.ParsedSkills),
+		p.WorkerName, p.TokensCacheCreation, p.TokensCacheRead,
 	)
 	if err != nil {
 		return fmt.Errorf("upserting phase %s: %w", phaseID, err)
@@ -1143,10 +1178,18 @@ type DayTrend struct {
 }
 
 // QueryMissions returns a list of missions ordered newest first, applying optional filters.
-// domain="" skips domain filtering; days=0 skips date filtering; decompSource="" skips decomp_source filtering.
-func (d *DB) QueryMissions(ctx context.Context, limit int, domain string, days int, status string, decompSource string) ([]MissionSummary, error) {
+// domain="" skips domain filtering; days=0 skips date filtering; decompSource="" skips decomp_source filtering;
+// worker="" skips worker filtering. A non-empty worker filter returns only missions that ran at least one
+// phase on the named persistent worker. Pass "ephemeral" to match phases with no persistent worker assigned.
+func (d *DB) QueryMissions(ctx context.Context, limit int, domain string, days int, status string, decompSource string, worker string) ([]MissionSummary, error) {
 	if limit <= 0 {
 		limit = 20
+	}
+	// "ephemeral" is a CLI-facing alias for the empty string stored in phases.worker_name
+	// when no persistent worker was assigned.
+	workerMatch := worker
+	if worker == "ephemeral" {
+		workerMatch = ""
 	}
 	rows, err := d.db.QueryContext(ctx, `
 		SELECT m.id, m.domain, m.status, m.decomp_source, m.task, m.duration_s,
@@ -1161,9 +1204,13 @@ func (d *DB) QueryMissions(ctx context.Context, limit int, domain string, days i
 		  AND (? = 0 OR m.started_at >= datetime('now', '-' || ? || ' days'))
 		  AND (? = '' OR m.status = ?)
 		  AND (? = '' OR m.decomp_source = ?)
+		  AND (? = '' OR EXISTS (
+		      SELECT 1 FROM phases p2
+		      WHERE p2.mission_id = m.id AND p2.worker_name = ?
+		  ))
 		ORDER BY m.started_at DESC
 		LIMIT ?
-	`, domain, domain, days, days, status, status, decompSource, decompSource, limit)
+	`, domain, domain, days, days, status, status, decompSource, decompSource, worker, workerMatch, limit)
 	if err != nil {
 		return nil, fmt.Errorf("querying missions: %w", err)
 	}
@@ -1505,6 +1552,55 @@ func (d *DB) GetRecentSnapshots(ctx context.Context, window time.Duration) ([]Qu
 		out = append(out, s)
 	}
 	return out, rows.Err()
+}
+
+// UsageSnapshot records real plan-utilization figures fetched from the
+// Anthropic OAuth usage endpoint at a point in time.
+type UsageSnapshot struct {
+	ID                    int64      `json:"id,omitempty"`
+	CapturedAt            time.Time  `json:"captured_at"`
+	MissionID             string     `json:"mission_id"`
+	FiveHourUtil          float64    `json:"five_hour_util"`
+	FiveHourResetsAt      *time.Time `json:"five_hour_resets_at,omitempty"`
+	SevenDayUtil          float64    `json:"seven_day_util"`
+	SevenDayResetsAt      *time.Time `json:"seven_day_resets_at,omitempty"`
+	SevenDaySonnetUtil    float64    `json:"seven_day_sonnet_util"`
+	SevenDaySonnetResetsAt *time.Time `json:"seven_day_sonnet_resets_at,omitempty"`
+	RawJSON               string     `json:"raw_json"`
+}
+
+// InsertUsageSnapshot writes a single row to the usage_snapshots table.
+func (d *DB) InsertUsageSnapshot(ctx context.Context, s UsageSnapshot) error {
+	capturedAt := s.CapturedAt
+	if capturedAt.IsZero() {
+		capturedAt = time.Now().UTC()
+	}
+	toNullable := func(t *time.Time) interface{} {
+		if t == nil || t.IsZero() {
+			return nil
+		}
+		return t.UTC().Format(time.RFC3339)
+	}
+	_, err := d.db.ExecContext(ctx, `
+		INSERT INTO usage_snapshots (
+			captured_at, mission_id,
+			five_hour_util, five_hour_resets_at,
+			seven_day_util, seven_day_resets_at,
+			seven_day_sonnet_util, seven_day_sonnet_resets_at,
+			raw_json
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`,
+		capturedAt.UTC().Format(time.RFC3339),
+		s.MissionID,
+		s.FiveHourUtil, toNullable(s.FiveHourResetsAt),
+		s.SevenDayUtil, toNullable(s.SevenDayResetsAt),
+		s.SevenDaySonnetUtil, toNullable(s.SevenDaySonnetResetsAt),
+		s.RawJSON,
+	)
+	if err != nil {
+		return fmt.Errorf("inserting usage snapshot for mission %s: %w", s.MissionID, err)
+	}
+	return nil
 }
 
 // Get5hWindowTotals returns the sum of tokens_in, tokens_out, and cost_usd

@@ -3,6 +3,8 @@ package engine
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -785,9 +787,11 @@ func TestHandleReviewLoop_MalformedOutputTriggersRetry(t *testing.T) {
 	}
 }
 
-func TestHandleReviewLoop_MalformedOutputAtMaxLoops_PassOpen(t *testing.T) {
-	// When ReviewIteration is already at the max, a malformed review cannot
-	// inject a retry. Execution should continue (pass-open, no fix injected).
+func TestHandleReviewLoop_MalformedOutputAtMaxLoops_FailsClosed(t *testing.T) {
+	// When ReviewIteration is already at max AND output is malformed, the
+	// engine must fail-closed: mark the review phase failed with a synthetic
+	// blocker so the mission never silently ships green.
+	em := &captureEmitter{}
 	implPhase := &core.Phase{ID: "phase-1", Persona: "senior-backend-engineer", Status: core.StatusCompleted}
 	reviewPhase := &core.Phase{
 		ID:                     "phase-2",
@@ -796,19 +800,45 @@ func TestHandleReviewLoop_MalformedOutputAtMaxLoops_PassOpen(t *testing.T) {
 		Dependencies:           []string{"phase-1"},
 		MaxReviewLoops:         1,
 		ReviewIteration:        1, // already at max
+		Status:                 core.StatusCompleted,
 	}
 
 	e := newTestEngine()
+	e.emitter = em
 	e.plan.Phases = []*core.Phase{implPhase, reviewPhase}
 	e.phases["phase-1"] = implPhase
 	e.phases["phase-2"] = reviewPhase
 
 	result := e.handleReviewLoop(context.Background(), reviewPhase, "prose without structured sections")
 	if result != nil {
-		t.Fatal("expected nil when max loops reached; no retry should be injected")
+		t.Fatal("expected nil return (fail-closed marks phase failed rather than injecting another phase)")
 	}
 	if len(e.plan.Phases) != 2 {
 		t.Fatalf("expected plan unchanged at 2 phases, got %d", len(e.plan.Phases))
+	}
+	if reviewPhase.Status != core.StatusFailed {
+		t.Errorf("reviewPhase.Status = %v, want StatusFailed (fail-closed)", reviewPhase.Status)
+	}
+	if reviewPhase.Error == "" {
+		t.Error("reviewPhase.Error is empty, want fail-closed failure message")
+	}
+	if len(reviewPhase.ReviewBlockers) < 1 {
+		t.Errorf("reviewPhase.ReviewBlockers = %v, want at least one synthetic blocker", reviewPhase.ReviewBlockers)
+	}
+	// An emitted findings event must reflect the synthetic blocker.
+	evts := em.collected()
+	var findingsEvt *event.Event
+	for i := range evts {
+		if evts[i].Type == event.ReviewFindingsEmitted {
+			findingsEvt = &evts[i]
+			break
+		}
+	}
+	if findingsEvt == nil {
+		t.Fatal("expected review.findings_emitted event for fail-closed branch")
+	}
+	if passed, _ := findingsEvt.Data["passed"].(bool); passed {
+		t.Error("findings event passed = true, want false (fail-closed)")
 	}
 }
 
@@ -1673,5 +1703,255 @@ func TestHandleReviewLoop_RuntimeBoth_CodexFailureFallback(t *testing.T) {
 	fix := e.handleReviewLoop(context.Background(), reviewPhase, claudeOutput, "")
 	if fix == nil {
 		t.Fatal("expected fix phase from Claude findings when Codex fails")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// ParseReviewFindingsFromArtifact — reads a structured review.md artifact
+// ---------------------------------------------------------------------------
+
+func TestParseReviewFindingsFromArtifact_ValidFile(t *testing.T) {
+	dir := t.TempDir()
+	content := "### Blockers\n- **[api.go:10]** Missing nil check.\n\n### Warnings\n- **[util.go:5]** Unexported helper.\n"
+	path := filepath.Join(dir, "review.md")
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("setup: WriteFile: %v", err)
+	}
+
+	f, err := ParseReviewFindingsFromArtifact(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if f.Passed() {
+		t.Fatal("expected Passed()==false (blockers present)")
+	}
+	if len(f.Blockers) != 1 {
+		t.Fatalf("expected 1 blocker, got %d", len(f.Blockers))
+	}
+	if f.Blockers[0].Location != "api.go:10" {
+		t.Errorf("blocker.Location = %q, want api.go:10", f.Blockers[0].Location)
+	}
+	if len(f.Warnings) != 1 {
+		t.Fatalf("expected 1 warning, got %d", len(f.Warnings))
+	}
+}
+
+func TestParseReviewFindingsFromArtifact_MissingFile(t *testing.T) {
+	_, err := ParseReviewFindingsFromArtifact(filepath.Join(t.TempDir(), "nonexistent.md"))
+	if err == nil {
+		t.Fatal("expected error for missing file, got nil")
+	}
+}
+
+func TestParseReviewFindingsFromArtifact_EmptyFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "review.md")
+	if err := os.WriteFile(path, []byte(""), 0o600); err != nil {
+		t.Fatalf("setup: WriteFile: %v", err)
+	}
+
+	f, err := ParseReviewFindingsFromArtifact(path)
+	if err != nil {
+		t.Fatalf("unexpected error for empty file: %v", err)
+	}
+	if !f.Passed() {
+		t.Fatal("expected Passed()==true for empty artifact")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// reviewOutputLooksMalformed — line-start matching regression
+// ---------------------------------------------------------------------------
+
+func TestReviewOutputLooksMalformed_MidLineHeaderNotSuppressed(t *testing.T) {
+	// Prose mentions of the header strings must NOT defeat the safeguard.
+	// This reproduces the exact failure mode from workspace 20260410-4160cbf8
+	// phase-5/output.md where the reviewer wrote a scratchpad note containing
+	// backtick-quoted header strings.
+	input := "The review should include `### Blockers` and `### Warnings` sections.\n" +
+		"Writing the re-structured review now.\n" +
+		"**Blockers (5):** B1 foo · B2 bar · B3 baz · B4 qux · B5 quux.\n"
+	findings := ParseReviewFindings(input)
+	if !reviewOutputLooksMalformed(input, findings) {
+		t.Fatal("expected malformed=true: headers only appear mid-line inside backticks, not at line start")
+	}
+}
+
+func TestReviewOutputLooksMalformed_LineStartHeaderSuppresses(t *testing.T) {
+	// An actual line-start header must still be recognized as structured.
+	input := "Some prose.\n### Blockers\n_None._\n"
+	findings := ParseReviewFindings(input)
+	if reviewOutputLooksMalformed(input, findings) {
+		t.Fatal("expected malformed=false: line-start ### Blockers is a real header")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// handleReviewLoop — review.md artifact preference
+// ---------------------------------------------------------------------------
+
+func TestHandleReviewLoop_PrefersReviewMdArtifactOverStdout(t *testing.T) {
+	// Regression for trk-994B: the reviewer writes a structured review.md
+	// to its worker directory and emits only a prose summary to stdout.
+	// handleReviewLoop must read review.md and inject a fix phase based
+	// on its findings, rather than parsing the prose stdout (which has
+	// no ### Blockers header) and silently passing the gate.
+	ws := t.TempDir()
+
+	implPhase := &core.Phase{
+		ID:      "phase-1",
+		Persona: "senior-backend-engineer",
+		Status:  core.StatusCompleted,
+	}
+	reviewPhase := &core.Phase{
+		ID:                     "phase-2",
+		Name:                   "review",
+		Persona:                "staff-code-reviewer",
+		PersonaSelectionMethod: core.SelectionRequiredReview,
+		Dependencies:           []string{"phase-1"},
+		MaxReviewLoops:         2,
+	}
+
+	// Write a structured review.md at the path handleReviewLoop now reads.
+	workerDir := filepath.Join(ws, "workers", "staff-code-reviewer-phase-2")
+	if err := os.MkdirAll(workerDir, 0o755); err != nil {
+		t.Fatalf("setup: MkdirAll: %v", err)
+	}
+	reviewMd := "# Code Review\n\n## Summary\n\nStuff.\n\n### Blockers\n\n- **[store.go:10]** Missing nil check on store lookup.\n- **[api.go:42]** Race condition in refresh handler.\n\n### Warnings\n\n- **[util.go:5]** Unexported helper duplicates existing one.\n"
+	if err := os.WriteFile(filepath.Join(workerDir, "review.md"), []byte(reviewMd), 0o600); err != nil {
+		t.Fatalf("setup: WriteFile: %v", err)
+	}
+
+	e := &Engine{
+		plan:    &core.Plan{Phases: []*core.Phase{implPhase, reviewPhase}},
+		phases:  map[string]*core.Phase{"phase-1": implPhase, "phase-2": reviewPhase},
+		emitter: &captureEmitter{},
+		config:  &core.OrchestratorConfig{},
+		workspace: &core.Workspace{
+			ID:   "test-ws",
+			Path: ws,
+		},
+	}
+
+	// Stdout is the sort of prose summary reviewers actually emit.
+	proseSummary := "Review written to review.md. **Blockers (2):** B1 store.go nil check · B2 api.go race. **Warnings (1):** W1 util.go duplicate helper."
+	fix := e.handleReviewLoop(context.Background(), reviewPhase, proseSummary)
+	if fix == nil {
+		t.Fatal("expected fix phase injected from review.md artifact findings, got nil (silent-green bug)")
+	}
+	if !strings.Contains(fix.Objective, "store.go") && !strings.Contains(fix.Objective, "api.go") {
+		t.Errorf("fix.Objective should reference artifact blockers, got: %q", fix.Objective)
+	}
+	if len(reviewPhase.ReviewBlockers) != 2 {
+		t.Errorf("ReviewBlockers count = %d, want 2 (from review.md, not prose stdout)", len(reviewPhase.ReviewBlockers))
+	}
+}
+
+func TestHandleReviewLoop_FallsBackToStdoutWhenNoReviewMd(t *testing.T) {
+	// Backward compatibility: reviewers that inline the full structured
+	// output in stdout (historical behavior) must still work when no
+	// review.md artifact exists.
+	ws := t.TempDir()
+
+	implPhase := &core.Phase{
+		ID:      "phase-1",
+		Persona: "senior-backend-engineer",
+		Status:  core.StatusCompleted,
+	}
+	reviewPhase := &core.Phase{
+		ID:                     "phase-2",
+		Name:                   "review",
+		Persona:                "staff-code-reviewer",
+		PersonaSelectionMethod: core.SelectionRequiredReview,
+		Dependencies:           []string{"phase-1"},
+		MaxReviewLoops:         2,
+	}
+
+	e := &Engine{
+		plan:    &core.Plan{Phases: []*core.Phase{implPhase, reviewPhase}},
+		phases:  map[string]*core.Phase{"phase-1": implPhase, "phase-2": reviewPhase},
+		emitter: &captureEmitter{},
+		config:  &core.OrchestratorConfig{},
+		workspace: &core.Workspace{
+			ID:   "test-ws",
+			Path: ws,
+		},
+	}
+
+	stdoutOutput := "### Blockers\n- **[api.go:5]** Unhandled error return.\n"
+	fix := e.handleReviewLoop(context.Background(), reviewPhase, stdoutOutput)
+	if fix == nil {
+		t.Fatal("expected fix phase from stdout findings when no review.md artifact exists")
+	}
+	if !strings.Contains(fix.Objective, "api.go") {
+		t.Errorf("fix.Objective should reference stdout blocker, got: %q", fix.Objective)
+	}
+}
+
+func TestHandleReviewLoop_Regression_4160cbf8_PhasePassFive(t *testing.T) {
+	// Real-world regression fixture from workspace 20260410-4160cbf8 phase-5.
+	// The reviewer wrote five genuine blockers to review.md but emitted only
+	// a prose summary to stdout that mentioned `### Blockers` inside backticks
+	// (which defeated the old substring-based malformed safeguard) and used
+	// **Blockers (5):** inline notation (which the structured-header parser
+	// could not match). Before the fix, both reviewer phases in this workspace
+	// were marked gate_passed=true and the mission shipped silent-green.
+	ws := t.TempDir()
+
+	implPhase := &core.Phase{ID: "phase-1", Persona: "senior-backend-engineer", Status: core.StatusCompleted}
+	reviewPhase := &core.Phase{
+		ID:                     "phase-2",
+		Name:                   "review",
+		Persona:                "staff-code-reviewer",
+		PersonaSelectionMethod: core.SelectionRequiredReview,
+		Dependencies:           []string{"phase-1"},
+		MaxReviewLoops:         2,
+	}
+
+	// Inlined from ~/.alluka/workspaces/20260410-4160cbf8/workers/staff-code-reviewer-phase-5/output.md
+	proseStdout := "Phase 4's review used `##` headers and verbose finding blocks instead of the `### Blockers` / `### Warnings` with `- **[location]** description` bullet format the orchestrator parser expects. Let me verify the current state of the script and settings.json haven't changed, then re-emit the same substance in the required format.\n\n" +
+		"Review re-emitted at review.md with the orchestrator-expected structure.\n\n" +
+		"**Blockers (5):** B1 CLAUDE.md unchanged · B2 pidfile write race · B3 env var instead of positional · B4 stdin JSON payload never drained · B5 only 1 of 3 hook entries wired.\n\n" +
+		"**Warnings (4):** W1 disown no-op on bash 3.2 · W2 no signal cleanup · W3 redundant fallback · W4 SessionEnd missing async.\n"
+
+	// Sanity check: the stdout alone has no structured sections the parser can match.
+	proseOnlyFindings := ParseReviewFindings(proseStdout)
+	if len(proseOnlyFindings.Blockers) != 0 {
+		t.Fatalf("sanity: expected 0 blockers parsed from prose stdout, got %d", len(proseOnlyFindings.Blockers))
+	}
+
+	// The reviewer wrote the structured findings to review.md in its worker dir.
+	workerDir := filepath.Join(ws, "workers", "staff-code-reviewer-phase-2")
+	if err := os.MkdirAll(workerDir, 0o755); err != nil {
+		t.Fatalf("setup: MkdirAll: %v", err)
+	}
+	reviewMd := "### Blockers\n\n" +
+		"- **[CLAUDE.md:188-196]** Mission deliverable #3 (CLAUDE.md rewrite) never happened.\n" +
+		"- **[hooks/nanika-consolidate.sh:56-62]** Pidfile write race on fast orchestrator failure.\n" +
+		"- **[hooks/nanika-consolidate.sh:20-26]** Env var instead of positional nap|dream argument.\n" +
+		"- **[hooks/nanika-consolidate.sh:1-63]** Stdin JSON payload never drained.\n" +
+		"- **[settings.json]** Only 1 of 3 required hook entries wired.\n\n" +
+		"### Warnings\n\n" +
+		"- **[hooks/nanika-consolidate.sh:62]** disown PID is a no-op on bash 3.2.\n"
+	if err := os.WriteFile(filepath.Join(workerDir, "review.md"), []byte(reviewMd), 0o600); err != nil {
+		t.Fatalf("setup: WriteFile: %v", err)
+	}
+
+	e := &Engine{
+		plan:    &core.Plan{Phases: []*core.Phase{implPhase, reviewPhase}},
+		phases:  map[string]*core.Phase{"phase-1": implPhase, "phase-2": reviewPhase},
+		emitter: &captureEmitter{},
+		config:  &core.OrchestratorConfig{},
+		workspace: &core.Workspace{
+			ID:   "test-ws",
+			Path: ws,
+		},
+	}
+
+	fix := e.handleReviewLoop(context.Background(), reviewPhase, proseStdout)
+	if fix == nil {
+		t.Fatal("regression: the 4160cbf8 fixture silently passed the gate. review.md had 5 blockers but handleReviewLoop returned nil (silent-green)")
+	}
+	if len(reviewPhase.ReviewBlockers) != 5 {
+		t.Errorf("ReviewBlockers count = %d, want 5 (from the review.md fixture)", len(reviewPhase.ReviewBlockers))
 	}
 }

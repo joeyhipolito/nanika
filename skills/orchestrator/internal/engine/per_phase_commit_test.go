@@ -98,7 +98,7 @@ func TestPerPhaseCommits_OneCommitPerPhase(t *testing.T) {
 		WorktreePath: wtPath,
 	}
 	cfg := &core.OrchestratorConfig{ForceSequential: true}
-	eng := New(ws, cfg, nil, nil, "")
+	eng := New(ws, cfg, nil, nil)
 	eng.buildRunner = nil // disable build verification
 
 	// Register an executor that writes a unique file per phase.

@@ -1714,7 +1714,7 @@ func TestExecuteSequential_PriorContextFlowsBetweenDependentPhases(t *testing.T)
 		configs: make(map[string]*core.WorkerConfig),
 	}
 
-	e := New(ws, &core.OrchestratorConfig{ForceSequential: true}, nil, nil, "")
+	e := New(ws, &core.OrchestratorConfig{ForceSequential: true}, nil, nil)
 	e.RegisterExecutor(core.RuntimeClaude, exec)
 
 	plan := &core.Plan{
@@ -1830,7 +1830,7 @@ func TestObjectiveLengthGuard(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			ws := &core.Workspace{ID: "ws-obj-guard", Path: t.TempDir(), Domain: "dev"}
 			exec := instantExecutor{fail: false}
-			e := New(ws, &core.OrchestratorConfig{ForceSequential: true}, nil, nil, "").
+			e := New(ws, &core.OrchestratorConfig{ForceSequential: true}, nil, nil).
 				WithEmitter(event.NoOpEmitter{})
 			e.RegisterExecutor(core.RuntimeClaude, exec)
 

@@ -43,7 +43,7 @@ func TestExecuteParallel_CancelledPendingPhasesGetSkippedEvent(t *testing.T) {
 
 	blocking := &blockUntilCancelledExecutor{ready: make(chan struct{})}
 
-	e := New(ws, &core.OrchestratorConfig{}, nil, nil, "").WithEmitter(em)
+	e := New(ws, &core.OrchestratorConfig{}, nil, nil).WithEmitter(em)
 	e.RegisterExecutor(core.Runtime("blocking"), blocking)
 
 	// Phase A: no deps, dispatched immediately, will block in the executor.
@@ -141,7 +141,7 @@ func TestExecuteParallel_CancelEmitsSingleMissionTerminalEvent(t *testing.T) {
 
 	blocking := &blockUntilCancelledExecutor{ready: make(chan struct{})}
 
-	e := New(ws, &core.OrchestratorConfig{}, nil, nil, "").WithEmitter(em)
+	e := New(ws, &core.OrchestratorConfig{}, nil, nil).WithEmitter(em)
 	e.RegisterExecutor(core.Runtime("blocking"), blocking)
 
 	plan := &core.Plan{
@@ -218,7 +218,7 @@ func TestExecuteSequential_CancelledPendingPhasesGetSkippedEvent(t *testing.T) {
 
 	blocking := &blockUntilCancelledExecutor{ready: make(chan struct{})}
 
-	e := New(ws, &core.OrchestratorConfig{ForceSequential: true}, nil, nil, "").WithEmitter(em)
+	e := New(ws, &core.OrchestratorConfig{ForceSequential: true}, nil, nil).WithEmitter(em)
 	e.RegisterExecutor(core.Runtime("blocking"), blocking)
 
 	plan := &core.Plan{
@@ -302,7 +302,7 @@ func TestExecuteSequential_CancelEmitsMissionCancelled(t *testing.T) {
 
 	blocking := &blockUntilCancelledExecutor{ready: make(chan struct{})}
 
-	e := New(ws, &core.OrchestratorConfig{ForceSequential: true}, nil, nil, "").WithEmitter(em)
+	e := New(ws, &core.OrchestratorConfig{ForceSequential: true}, nil, nil).WithEmitter(em)
 	e.RegisterExecutor(core.Runtime("blocking"), blocking)
 
 	plan := &core.Plan{
@@ -378,7 +378,7 @@ func TestExecuteParallel_AllPendingOnPreCancelledContext(t *testing.T) {
 	// Use a blocking executor for A so it does not complete synchronously.
 	blocking := &blockUntilCancelledExecutor{ready: make(chan struct{})}
 
-	e := New(ws, &core.OrchestratorConfig{}, nil, nil, "").WithEmitter(em)
+	e := New(ws, &core.OrchestratorConfig{}, nil, nil).WithEmitter(em)
 	e.RegisterExecutor(core.Runtime("blocking"), blocking)
 
 	plan := &core.Plan{

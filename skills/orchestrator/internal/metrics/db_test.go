@@ -444,7 +444,7 @@ func TestPersonaStats(t *testing.T) {
 	})
 
 	t.Run("QueryMissions filters by domain", func(t *testing.T) {
-		rows, err := db.QueryMissions(ctx, 20, "dev", 0, "", "")
+		rows, err := db.QueryMissions(ctx, 20, "dev", 0, "", "", "")
 		if err != nil {
 			t.Fatalf("QueryMissions(dev): %v", err)
 		}
@@ -459,7 +459,7 @@ func TestPersonaStats(t *testing.T) {
 	})
 
 	t.Run("QueryMissions filters by status", func(t *testing.T) {
-		rows, err := db.QueryMissions(ctx, 20, "", 0, "failure", "")
+		rows, err := db.QueryMissions(ctx, 20, "", 0, "failure", "", "")
 		if err != nil {
 			t.Fatalf("QueryMissions(failure): %v", err)
 		}
@@ -472,7 +472,7 @@ func TestPersonaStats(t *testing.T) {
 	})
 
 	t.Run("QueryMissions top_persona is set", func(t *testing.T) {
-		rows, err := db.QueryMissions(ctx, 20, "", 0, "success", "")
+		rows, err := db.QueryMissions(ctx, 20, "", 0, "success", "", "")
 		if err != nil {
 			t.Fatalf("QueryMissions(success): %v", err)
 		}
@@ -1419,7 +1419,7 @@ func TestDecompSource(t *testing.T) {
 	})
 
 	t.Run("QueryMissions filters by decomp_source", func(t *testing.T) {
-		rows, err := db.QueryMissions(ctx, 20, "", 0, "", "predecomposed")
+		rows, err := db.QueryMissions(ctx, 20, "", 0, "", "predecomposed", "")
 		if err != nil {
 			t.Fatalf("QueryMissions(predecomposed): %v", err)
 		}
@@ -1435,7 +1435,7 @@ func TestDecompSource(t *testing.T) {
 	})
 
 	t.Run("QueryMissions filters by decomp.llm", func(t *testing.T) {
-		rows, err := db.QueryMissions(ctx, 20, "", 0, "", "decomp.llm")
+		rows, err := db.QueryMissions(ctx, 20, "", 0, "", "decomp.llm", "")
 		if err != nil {
 			t.Fatalf("QueryMissions(decomp.llm): %v", err)
 		}
@@ -1448,7 +1448,7 @@ func TestDecompSource(t *testing.T) {
 	})
 
 	t.Run("QueryMissions empty decomp_source returns all", func(t *testing.T) {
-		rows, err := db.QueryMissions(ctx, 20, "", 0, "", "")
+		rows, err := db.QueryMissions(ctx, 20, "", 0, "", "", "")
 		if err != nil {
 			t.Fatalf("QueryMissions(no filter): %v", err)
 		}
@@ -1459,7 +1459,7 @@ func TestDecompSource(t *testing.T) {
 
 	t.Run("QueryMissions combines decomp_source with status filter", func(t *testing.T) {
 		// Only decomp.keyword missions with status=failure — should be exactly ws-decomp-3.
-		rows, err := db.QueryMissions(ctx, 20, "", 0, "failure", "decomp.keyword")
+		rows, err := db.QueryMissions(ctx, 20, "", 0, "failure", "decomp.keyword", "")
 		if err != nil {
 			t.Fatalf("QueryMissions(failure+decomp.keyword): %v", err)
 		}
@@ -1780,4 +1780,273 @@ func TestMigrationFromLegacySchema(t *testing.T) {
 		t.Errorf("legacy mission task: want %q, got %q", "legacy task", task)
 	}
 
+}
+
+// readPhaseCacheFields queries the raw phases table for the two cache token
+// columns of the given phase (identified by missionID + "_" + phaseID).
+func readPhaseCacheFields(t *testing.T, db *DB, missionID, phaseID string) (creation, read int) {
+	t.Helper()
+	pk := missionID + "_" + phaseID
+	err := db.db.QueryRow(
+		`SELECT tokens_cache_creation, tokens_cache_read FROM phases WHERE id = ?`,
+		pk,
+	).Scan(&creation, &read)
+	if err != nil {
+		t.Fatalf("reading cache fields for phase %s: %v", pk, err)
+	}
+	return creation, read
+}
+
+// TestPhaseCacheTokens_InsertAndUpsert covers two scenarios:
+//
+// (a) Insert a PhaseRecord with cache token values via RecordMission (which
+// calls insertPhase), read back through the raw DB, and assert both fields
+// equal the inserted values.
+//
+// (b) Upsert round-trip: insert once with cache values A, upsert the same
+// phase ID with cache values B via UpsertMissionPhaseSnapshot, read back,
+// assert B won.
+func TestPhaseCacheTokens_InsertAndUpsert(t *testing.T) {
+	ctx := context.Background()
+	now := time.Now().UTC()
+
+	baseMission := func(wsID string) MissionRecord {
+		return MissionRecord{
+			WorkspaceID: wsID,
+			Domain:      "dev",
+			StartedAt:   now,
+			FinishedAt:  now.Add(time.Minute),
+			Status:      "success",
+		}
+	}
+
+	t.Run("insert preserves cache fields", func(t *testing.T) {
+		db := tempDB(t)
+		m := baseMission("ws-cache-insert")
+		m.Phases = []PhaseRecord{
+			{
+				ID:                  "phase-a",
+				Name:                "phase-a",
+				Persona:             "backend-engineer",
+				Status:              "completed",
+				GatePassed:          true,
+				TokensCacheCreation: 12345,
+				TokensCacheRead:     67890,
+			},
+		}
+
+		if err := db.RecordMission(ctx, m); err != nil {
+			t.Fatalf("RecordMission: %v", err)
+		}
+
+		gotCreation, gotRead := readPhaseCacheFields(t, db, "ws-cache-insert", "phase-a")
+		if gotCreation != 12345 {
+			t.Errorf("tokens_cache_creation: want 12345, got %d", gotCreation)
+		}
+		if gotRead != 67890 {
+			t.Errorf("tokens_cache_read: want 67890, got %d", gotRead)
+		}
+	})
+
+	t.Run("upsert overwrites cache fields", func(t *testing.T) {
+		db := tempDB(t)
+		wsID := "ws-cache-upsert"
+
+		// First write — cache values A.
+		phaseA := PhaseRecord{
+			ID:                  "phase-b",
+			Name:                "phase-b",
+			Persona:             "backend-engineer",
+			Status:              "running",
+			TokensCacheCreation: 111,
+			TokensCacheRead:     222,
+		}
+		if err := db.UpsertMissionPhaseSnapshot(ctx, baseMission(wsID), phaseA); err != nil {
+			t.Fatalf("UpsertMissionPhaseSnapshot (A): %v", err)
+		}
+
+		gotCreation, gotRead := readPhaseCacheFields(t, db, wsID, "phase-b")
+		if gotCreation != 111 || gotRead != 222 {
+			t.Fatalf("after first upsert: want (111, 222), got (%d, %d)", gotCreation, gotRead)
+		}
+
+		// Second write — cache values B must win.
+		phaseB := PhaseRecord{
+			ID:                  "phase-b",
+			Name:                "phase-b",
+			Persona:             "backend-engineer",
+			Status:              "completed",
+			GatePassed:          true,
+			TokensCacheCreation: 9999,
+			TokensCacheRead:     8888,
+		}
+		if err := db.UpsertMissionPhaseSnapshot(ctx, baseMission(wsID), phaseB); err != nil {
+			t.Fatalf("UpsertMissionPhaseSnapshot (B): %v", err)
+		}
+
+		gotCreation, gotRead = readPhaseCacheFields(t, db, wsID, "phase-b")
+		if gotCreation != 9999 {
+			t.Errorf("tokens_cache_creation after upsert: want 9999, got %d", gotCreation)
+		}
+		if gotRead != 8888 {
+			t.Errorf("tokens_cache_read after upsert: want 8888, got %d", gotRead)
+		}
+	})
+}
+
+func TestInsertUsageSnapshot(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("non-zero values round-trip including nullable timestamps", func(t *testing.T) {
+		db := tempDB(t)
+
+		fiveResets := time.Unix(1_700_000_100, 0).UTC().Truncate(time.Second)
+		sevenResets := time.Unix(1_700_000_200, 0).UTC().Truncate(time.Second)
+		sonnetResets := time.Unix(1_700_000_300, 0).UTC().Truncate(time.Second)
+		capturedAt := time.Now().UTC().Truncate(time.Second)
+
+		snap := UsageSnapshot{
+			CapturedAt:             capturedAt,
+			MissionID:              "ws-usage-test",
+			FiveHourUtil:           0.25,
+			FiveHourResetsAt:       &fiveResets,
+			SevenDayUtil:           0.50,
+			SevenDayResetsAt:       &sevenResets,
+			SevenDaySonnetUtil:     0.75,
+			SevenDaySonnetResetsAt: &sonnetResets,
+			RawJSON:                `{"five_hour":{"utilization":0.25}}`,
+		}
+
+		if err := db.InsertUsageSnapshot(ctx, snap); err != nil {
+			t.Fatalf("InsertUsageSnapshot: %v", err)
+		}
+
+		// Read back via raw SELECT.
+		var (
+			gotCapturedAt            string
+			gotMissionID             string
+			gotFiveHourUtil          float64
+			gotFiveHourResetsAt      sql.NullString
+			gotSevenDayUtil          float64
+			gotSevenDayResetsAt      sql.NullString
+			gotSevenDaySonnetUtil    float64
+			gotSevenDaySonnetResetsAt sql.NullString
+			gotRawJSON               string
+		)
+		err := db.db.QueryRowContext(ctx, `
+			SELECT captured_at, mission_id,
+			       five_hour_util, five_hour_resets_at,
+			       seven_day_util, seven_day_resets_at,
+			       seven_day_sonnet_util, seven_day_sonnet_resets_at,
+			       raw_json
+			FROM usage_snapshots
+			WHERE mission_id = ?
+		`, "ws-usage-test").Scan(
+			&gotCapturedAt, &gotMissionID,
+			&gotFiveHourUtil, &gotFiveHourResetsAt,
+			&gotSevenDayUtil, &gotSevenDayResetsAt,
+			&gotSevenDaySonnetUtil, &gotSevenDaySonnetResetsAt,
+			&gotRawJSON,
+		)
+		if err != nil {
+			t.Fatalf("SELECT: %v", err)
+		}
+
+		if gotMissionID != "ws-usage-test" {
+			t.Errorf("mission_id: want ws-usage-test, got %s", gotMissionID)
+		}
+		if gotFiveHourUtil != 0.25 {
+			t.Errorf("five_hour_util: want 0.25, got %v", gotFiveHourUtil)
+		}
+		if gotSevenDayUtil != 0.50 {
+			t.Errorf("seven_day_util: want 0.50, got %v", gotSevenDayUtil)
+		}
+		if gotSevenDaySonnetUtil != 0.75 {
+			t.Errorf("seven_day_sonnet_util: want 0.75, got %v", gotSevenDaySonnetUtil)
+		}
+		if gotRawJSON != `{"five_hour":{"utilization":0.25}}` {
+			t.Errorf("raw_json: got %s", gotRawJSON)
+		}
+
+		// Nullable timestamps must be present and match.
+		for _, tc := range []struct {
+			field string
+			ns    sql.NullString
+			want  time.Time
+		}{
+			{"five_hour_resets_at", gotFiveHourResetsAt, fiveResets},
+			{"seven_day_resets_at", gotSevenDayResetsAt, sevenResets},
+			{"seven_day_sonnet_resets_at", gotSevenDaySonnetResetsAt, sonnetResets},
+		} {
+			if !tc.ns.Valid {
+				t.Errorf("%s: want non-NULL, got NULL", tc.field)
+				continue
+			}
+			parsed, err := time.Parse(time.RFC3339, tc.ns.String)
+			if err != nil {
+				t.Errorf("%s: parse %q: %v", tc.field, tc.ns.String, err)
+				continue
+			}
+			if !parsed.UTC().Equal(tc.want) {
+				t.Errorf("%s: want %v, got %v", tc.field, tc.want, parsed.UTC())
+			}
+		}
+
+		// captured_at must round-trip.
+		parsedCaptured, err := time.Parse(time.RFC3339, gotCapturedAt)
+		if err != nil {
+			t.Fatalf("captured_at parse: %v", err)
+		}
+		if !parsedCaptured.UTC().Equal(capturedAt) {
+			t.Errorf("captured_at: want %v, got %v", capturedAt, parsedCaptured.UTC())
+		}
+	})
+
+	t.Run("zero resets_at stores as NULL", func(t *testing.T) {
+		db := tempDB(t)
+
+		// Pass nil pointers for all three resets_at fields.
+		snap := UsageSnapshot{
+			CapturedAt:   time.Now().UTC(),
+			MissionID:    "ws-usage-null",
+			FiveHourUtil: 0.10,
+			// FiveHourResetsAt nil → NULL
+			SevenDayUtil: 0.20,
+			// SevenDayResetsAt nil → NULL
+			SevenDaySonnetUtil: 0.30,
+			// SevenDaySonnetResetsAt nil → NULL
+			RawJSON: `{}`,
+		}
+
+		if err := db.InsertUsageSnapshot(ctx, snap); err != nil {
+			t.Fatalf("InsertUsageSnapshot: %v", err)
+		}
+
+		var (
+			gotFiveHourResetsAt      sql.NullString
+			gotSevenDayResetsAt      sql.NullString
+			gotSevenDaySonnetResetsAt sql.NullString
+		)
+		err := db.db.QueryRowContext(ctx, `
+			SELECT five_hour_resets_at, seven_day_resets_at, seven_day_sonnet_resets_at
+			FROM usage_snapshots
+			WHERE mission_id = ?
+		`, "ws-usage-null").Scan(&gotFiveHourResetsAt, &gotSevenDayResetsAt, &gotSevenDaySonnetResetsAt)
+		if err != nil {
+			t.Fatalf("SELECT: %v", err)
+		}
+
+		for _, tc := range []struct {
+			field string
+			ns    sql.NullString
+		}{
+			{"five_hour_resets_at", gotFiveHourResetsAt},
+			{"seven_day_resets_at", gotSevenDayResetsAt},
+			{"seven_day_sonnet_resets_at", gotSevenDaySonnetResetsAt},
+		} {
+			if tc.ns.Valid {
+				t.Errorf("%s: want NULL, got %q", tc.field, tc.ns.String)
+			}
+		}
+	})
 }

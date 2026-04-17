@@ -21,6 +21,7 @@ import (
 	"github.com/joeyhipolito/orchestrator-cli/internal/event"
 	"github.com/joeyhipolito/orchestrator-cli/internal/learning"
 	"github.com/joeyhipolito/orchestrator-cli/internal/sdk"
+	"github.com/joeyhipolito/orchestrator-cli/internal/worker"
 )
 
 // ---------------------------------------------------------------------------
@@ -86,11 +87,14 @@ func extractPhase(id string, deps ...string) *core.Phase {
 }
 
 // newExtractEngine creates an Engine with the given learning DB and executor.
+// Sandboxes HOME to a temp dir so the 30% persistent-worker roll can't touch
+// the real ~/.alluka/workers/alpha/ during tests.
 func newExtractEngine(t *testing.T, db *learning.DB, exec PhaseExecutor) (*Engine, *captureEmitter) {
 	t.Helper()
+	t.Setenv("HOME", t.TempDir())
 	ws := &core.Workspace{ID: "xws-" + t.Name(), Path: t.TempDir(), Domain: "test"}
 	em := &captureEmitter{}
-	e := New(ws, &core.OrchestratorConfig{}, nil, db, "").WithEmitter(em)
+	e := New(ws, &core.OrchestratorConfig{}, nil, db).WithEmitter(em)
 	e.RegisterExecutor(extractRuntime, exec)
 	return e, em
 }
@@ -496,10 +500,11 @@ func TestExtraction_FailureDoesNotFailMission(t *testing.T) {
 // no extraction goroutine is spawned: extractWG stays at zero and Execute
 // returns cleanly with no learning events.
 func TestExtraction_NilDB_NoGoroutineSpawned(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
 	ws := &core.Workspace{ID: "extract-nildb-ws", Path: t.TempDir(), Domain: "test"}
 	em := &captureEmitter{}
 	// nil db: extraction disabled entirely
-	e := New(ws, &core.OrchestratorConfig{}, nil, nil, "").WithEmitter(em)
+	e := New(ws, &core.OrchestratorConfig{}, nil, nil).WithEmitter(em)
 	e.RegisterExecutor(extractRuntime, learningOutputExecutor{output: makeLearningOutput("nildb", 2)})
 
 	plan := &core.Plan{
@@ -528,6 +533,95 @@ func TestExtraction_NilDB_NoGoroutineSpawned(t *testing.T) {
 		t.Error("extractMu is held after Execute with nil DB; goroutine leaked")
 	} else {
 		e.extractMu.Unlock()
+	}
+}
+
+// ---------------------------------------------------------------------------
+// 5. Persistent worker phases still emit learning.stored events
+// ---------------------------------------------------------------------------
+
+// TestExtraction_PersistentWorkerPhase_EmitsLearningStored verifies that phases
+// assigned to the persistent worker still go through the global learning pipeline
+// (CaptureWithFocus + learningDB.Insert + learning.stored events). Before the
+// fix, the `assignedWorker == nil` guard skipped the entire global path for
+// persistent worker phases — this test ensures they're no longer dropped.
+//
+// The test pre-loads the engine's persistentWorker so that when the random roll
+// succeeds, the persistent worker is used. It runs enough iterations to ensure
+// at least one persistent worker assignment occurs.
+func TestExtraction_PersistentWorkerPhase_EmitsLearningStored(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	db := openTempDB(t)
+
+	// Use a phase whose output has learning markers.
+	exec := learningOutputExecutor{output: makeLearningOutput("pw", 1)}
+
+	ws := &core.Workspace{ID: "xws-pw-test", Path: t.TempDir(), Domain: "test"}
+	em := &captureEmitter{}
+	e := New(ws, &core.OrchestratorConfig{}, nil, db).WithEmitter(em)
+	e.RegisterExecutor(extractRuntime, exec)
+
+	// Pre-load the persistent worker so LoadIdentity is already done.
+	wi, err := worker.LoadIdentity(persistentWorkerName)
+	if err != nil {
+		t.Fatalf("LoadIdentity: %v", err)
+	}
+	e.persistentWorker = wi
+
+	plan := &core.Plan{
+		ID:            "plan-pw",
+		Task:          "persistent worker learning.stored test",
+		ExecutionMode: "sequential",
+		Phases:        []*core.Phase{extractPhase("pw1")},
+	}
+
+	// Run multiple times until we get a persistent worker assignment.
+	// With 30% probability per trial, P(none in 50 trials) < 0.7^50 ≈ 1.8e-8.
+	var gotWorkerAssignment bool
+	for i := 0; i < 50; i++ {
+		// Reset engine state for each iteration.
+		em.mu.Lock()
+		em.events = nil
+		em.mu.Unlock()
+		e.persistentWorkerCount = 0
+
+		// Reset phase status for re-execution.
+		plan.Phases[0].Status = core.StatusPending
+		plan.Phases[0].Worker = ""
+
+		result, execErr := e.Execute(context.Background(), plan)
+		if execErr != nil {
+			t.Fatalf("Execute returned error: %v", execErr)
+		}
+		if result == nil || !result.Success {
+			t.Fatal("result.Success = false")
+		}
+
+		evts := em.collected()
+
+		// Check if the persistent worker was assigned this iteration.
+		if plan.Phases[0].Worker == persistentWorkerName {
+			gotWorkerAssignment = true
+
+			// The key assertion: learning.stored must still be emitted even when
+			// the phase was assigned to a persistent worker.
+			if firstIndexOf(evts, event.LearningStored) < 0 {
+				t.Fatal("persistent worker phase did not emit learning.stored; " +
+					"the global extraction pipeline was skipped")
+			}
+
+			break // success — found what we needed
+		}
+
+		// Even without persistent worker assignment, learning.stored should fire.
+		if firstIndexOf(evts, event.LearningStored) < 0 {
+			t.Error("non-worker phase did not emit learning.stored")
+		}
+	}
+
+	if !gotWorkerAssignment {
+		t.Fatal("persistent worker was never assigned in 50 trials (expected ~30% rate)")
 	}
 }
 

@@ -33,20 +33,21 @@ import (
 )
 
 var (
-	resume        string
-	noLearnings   bool
-	noReview      bool
-	reviewRuntime string
-	gateMode      string
-	templateName  string
-	saveTemplate  string
-	gitIsolate    bool
-	noGit         bool
-	createPR      bool
-	noDraft       bool
-	codexReview   bool
-	noComment     bool
-	stallTimeout  string
+	resume             string
+	noLearnings        bool
+	noReview           bool
+	reviewRuntime      string
+	gateMode           string
+	templateName       string
+	saveTemplate       string
+	gitIsolate         bool
+	noGit              bool
+	createPR           bool
+	noDraft            bool
+	codexReview        bool
+	noComment          bool
+	stallTimeout       string
+	noPersistentWorker bool
 )
 
 func init() {
@@ -79,6 +80,7 @@ Use --save-template to freeze a plan after execution:
 	runCmd.Flags().BoolVar(&codexReview, "codex-review", false, "post @codex review request comment on the PR after creation (requires --pr)")
 	runCmd.Flags().BoolVar(&noComment, "no-comment", false, "skip posting summary comment to Linear issue after completion")
 	runCmd.Flags().StringVar(&stallTimeout, "stall-timeout", "", "watchdog stall timeout per phase (e.g. 10m, 30m); overrides ORCHESTRATOR_STALL_TIMEOUT env var")
+	runCmd.Flags().BoolVar(&noPersistentWorker, "no-persistent-worker", false, "disable persistent worker assignment for all phases")
 
 	rootCmd.AddCommand(runCmd)
 }
@@ -467,12 +469,13 @@ func runTask(cmd *cobra.Command, args []string) error {
 		ForceSequential:  sequential,
 		Domain:           domain,
 		MaxTurns:         maxTurns,
-		DisableLearnings: noLearnings,
-		GateMode:         resolvedGateMode,
-		StallTimeout:     resolvedStallTimeout,
+		DisableLearnings:   noLearnings,
+		GateMode:           resolvedGateMode,
+		StallTimeout:       resolvedStallTimeout,
+		NoPersistentWorker: noPersistentWorker,
 	}
 
-	eng := engine.New(ws, config, embedder, db, skillIndex).WithEmitter(emitter)
+	eng := engine.New(ws, config, embedder, db).WithEmitter(emitter)
 	registerRuntimeExecutors(eng)
 	result, err := eng.Execute(ctx, plan)
 	result = normalizeExecutionResult(plan, result, err)
@@ -673,7 +676,7 @@ func resumeMission(ctx context.Context, wsPath string, db *learning.DB, embedder
 	resumeEmitter := buildEmitter(ws.ID, verbose)
 	defer resumeEmitter.Close()
 
-	eng := engine.New(ws, config, embedder, db, worker.LoadSkillIndex()).WithEmitter(resumeEmitter)
+	eng := engine.New(ws, config, embedder, db).WithEmitter(resumeEmitter)
 	registerRuntimeExecutors(eng)
 	result, err := eng.Execute(ctx, cp.Plan)
 	result = normalizeExecutionResult(cp.Plan, result, err)

@@ -64,7 +64,7 @@ func TestBuildCLAUDEmd_MinimalBundle(t *testing.T) {
 
 	// Must NOT contain optional sections when empty
 	if strings.Contains(md, "## Available Tools") {
-		t.Error("CLAUDE.md should not have tools section when no skill index")
+		t.Error("BuildCLAUDEmd must not emit '## Available Tools' — skill routing is handled at the decomposer/preflight layer, not per-worker")
 	}
 	if strings.Contains(md, "## Primary Tools") {
 		t.Error("CLAUDE.md should not have primary tools when no skills")
@@ -82,7 +82,6 @@ func TestBuildCLAUDEmd_FullBundle(t *testing.T) {
 		Persona:     "# Researcher\n\nYou are a researcher.",
 		PersonaName: "researcher",
 		Objective:   "Research Go error handling best practices",
-		SkillIndex:  "|obsidian — vault notes|scout — intel gathering|todoist — tasks|",
 		Skills: []core.Skill{
 			{Name: "scout", CommandReference: "scout gather\nscout intel"},
 			{Name: "obsidian", CommandReference: "obsidian search\nobsidian read"},
@@ -105,14 +104,6 @@ func TestBuildCLAUDEmd_FullBundle(t *testing.T) {
 	}
 
 	md := BuildCLAUDEmd(bundle)
-
-	// Skill index (all tools)
-	if !strings.Contains(md, "## Available Tools") {
-		t.Error("CLAUDE.md missing skill index section")
-	}
-	if !strings.Contains(md, "obsidian — vault notes") {
-		t.Error("CLAUDE.md missing skill index content")
-	}
 
 	// Phase-specific skills (detailed)
 	if !strings.Contains(md, "## Primary Tools for This Phase") {
@@ -161,7 +152,6 @@ func TestBuildCLAUDEmd_SectionOrder(t *testing.T) {
 		Persona:      "# Test Persona",
 		PersonaName:  "test",
 		Objective:    "Do something",
-		SkillIndex:   "|tools index here|",
 		Skills:       []core.Skill{{Name: "scout", CommandReference: "scout gather"}},
 		Constraints:  []string{"Be fast"},
 		PriorContext: "Prior work exists",
@@ -179,14 +169,13 @@ func TestBuildCLAUDEmd_SectionOrder(t *testing.T) {
 		"## Your Task",                    // 2. task objective
 		"## Context from Prior Work",      // 3. prior context (primacy zone)
 		"## Lessons from Past Missions",   // 7. learnings
-		"## Available Tools",              // 8. skill index
-		"## Primary Tools for This Phase", // 9. phase-specific skills
-		"## Constraints",                  // 10. constraints
-		"## Workspace",                    // 12. workspace
-		"## Output",                       // 13. output instructions
-		"## Scratchpad",                   // 13b. scratchpad instructions
-		"## Completion Signal",            // 14. signal instructions
-		"## Learning Capture",             // 15. capture instructions
+		"## Primary Tools for This Phase", // 8. phase-specific skills
+		"## Constraints",                  // 9. constraints
+		"## Workspace",                    // 11. workspace
+		"## Output",                       // 12. output instructions
+		"## Scratchpad",                   // 12b. scratchpad instructions
+		"## Completion Signal",            // 13. signal instructions
+		"## Learning Capture",             // 14. capture instructions
 	}
 
 	lastIdx := -1
@@ -278,22 +267,15 @@ func TestBuildCLAUDEmd_MissionContext_Populated(t *testing.T) {
 }
 
 // TestBuildCLAUDEmdLearningsPlacement verifies learnings appear after the
-// task objective and before the tools section (position 3 in the document).
+// task objective.
 func TestBuildCLAUDEmdLearningsPlacement(t *testing.T) {
 	tests := []struct {
 		name      string
 		learnings string
-		hasTools  bool
 	}{
 		{
-			name:      "learnings with skill index: appears between task and tools",
+			name:      "learnings appear after task",
 			learnings: "- [pattern] Always wrap errors with context",
-			hasTools:  true,
-		},
-		{
-			name:      "learnings without skill index: appears after task",
-			learnings: "- [gotcha] Never ignore returned errors",
-			hasTools:  false,
 		},
 	}
 
@@ -307,9 +289,6 @@ func TestBuildCLAUDEmdLearningsPlacement(t *testing.T) {
 				Domain:      "dev",
 				WorkspaceID: "ws-placement",
 				PhaseID:     "phase-1",
-			}
-			if tt.hasTools {
-				bundle.SkillIndex = "|scout — intel|obsidian — notes|"
 			}
 
 			md := BuildCLAUDEmd(bundle)
@@ -326,17 +305,6 @@ func TestBuildCLAUDEmdLearningsPlacement(t *testing.T) {
 			if learningsIdx <= taskIdx {
 				t.Errorf("learnings section (at %d) must appear after '## Your Task' (at %d)",
 					learningsIdx, taskIdx)
-			}
-
-			if tt.hasTools {
-				toolsIdx := strings.Index(md, "## Available Tools")
-				if toolsIdx < 0 {
-					t.Fatal("missing '## Available Tools' section")
-				}
-				if learningsIdx >= toolsIdx {
-					t.Errorf("learnings section (at %d) must appear before '## Available Tools' (at %d)",
-						learningsIdx, toolsIdx)
-				}
 			}
 
 			// Learnings content must be present
@@ -929,6 +897,108 @@ func TestBuildCLAUDEmd_ScratchpadInstructions(t *testing.T) {
 	}
 	if !strings.Contains(md, "<!-- /scratch -->") {
 		t.Error("CLAUDE.md missing closing scratch marker example")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// BuildCLAUDEmd: Worker Identity section
+// ---------------------------------------------------------------------------
+
+func TestBuildCLAUDEmd_WorkerIdentity_Populated(t *testing.T) {
+	bundle := core.ContextBundle{
+		Persona:      "# Backend Engineer",
+		PersonaName:  "senior-backend-engineer",
+		Objective:    "Implement the feature",
+		Domain:       "dev",
+		WorkspaceID:  "ws-worker",
+		PhaseID:      "phase-1",
+		WorkerName:   "alpha",
+		WorkerMemory: "- use atomic writes for all file mutations\n- wrap errors with context",
+	}
+
+	md := BuildCLAUDEmd(bundle)
+
+	if !strings.Contains(md, "## Worker Identity") {
+		t.Error("CLAUDE.md missing Worker Identity section when WorkerMemory is set")
+	}
+	if !strings.Contains(md, "**alpha**") {
+		t.Error("CLAUDE.md Worker Identity missing worker name")
+	}
+	if !strings.Contains(md, "atomic writes") {
+		t.Error("CLAUDE.md Worker Identity missing memory content")
+	}
+	if !strings.Contains(md, "wrap errors with context") {
+		t.Error("CLAUDE.md Worker Identity missing second memory entry")
+	}
+}
+
+func TestBuildCLAUDEmd_WorkerIdentity_Empty(t *testing.T) {
+	bundle := core.ContextBundle{
+		Persona:     "# Backend Engineer",
+		PersonaName: "senior-backend-engineer",
+		Objective:   "Implement the feature",
+		Domain:      "dev",
+		WorkspaceID: "ws-noworker",
+		PhaseID:     "phase-1",
+		// WorkerMemory and WorkerName intentionally empty
+	}
+
+	md := BuildCLAUDEmd(bundle)
+
+	if strings.Contains(md, "## Worker Identity") {
+		t.Error("CLAUDE.md must not have Worker Identity section when WorkerMemory is empty")
+	}
+}
+
+func TestBuildCLAUDEmd_WorkerIdentity_SectionOrder(t *testing.T) {
+	bundle := core.ContextBundle{
+		Persona:      "# Backend Engineer",
+		PersonaName:  "senior-backend-engineer",
+		Objective:    "Implement the feature",
+		Learnings:    "- [pattern] wrap errors",
+		Domain:       "dev",
+		WorkspaceID:  "ws-order",
+		PhaseID:      "phase-1",
+		WorkerName:   "alpha",
+		WorkerMemory: "- use atomic writes",
+	}
+
+	md := BuildCLAUDEmd(bundle)
+
+	learningsIdx := strings.Index(md, "## Lessons from Past Missions")
+	workerIdx := strings.Index(md, "## Worker Identity")
+
+	if learningsIdx < 0 {
+		t.Fatal("missing Lessons from Past Missions section")
+	}
+	if workerIdx < 0 {
+		t.Fatal("missing Worker Identity section")
+	}
+	if workerIdx <= learningsIdx {
+		t.Errorf("Worker Identity (%d) should appear after Lessons from Past Missions (%d)", workerIdx, learningsIdx)
+	}
+
+	if strings.Contains(md, "## Available Tools") {
+		t.Error("BuildCLAUDEmd must not emit '## Available Tools' — skill routing is handled at the decomposer/preflight layer, not per-worker")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// core.Phase.Worker: checkpoint tagging field exists
+// ---------------------------------------------------------------------------
+
+func TestPhaseWorkerField_ZeroValue(t *testing.T) {
+	p := core.Phase{Name: "implement"}
+	if p.Worker != "" {
+		t.Errorf("Phase.Worker zero value must be empty string, got %q", p.Worker)
+	}
+}
+
+func TestPhaseWorkerField_Settable(t *testing.T) {
+	p := core.Phase{Name: "implement"}
+	p.Worker = "alpha"
+	if p.Worker != "alpha" {
+		t.Errorf("Phase.Worker must hold assigned value; got %q", p.Worker)
 	}
 }
 

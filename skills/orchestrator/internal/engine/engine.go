@@ -31,7 +31,6 @@ type Engine struct {
 	config      *core.OrchestratorConfig
 	embedder    *learning.Embedder
 	learningDB  *learning.DB
-	skillIndex  string // cached skill routing index for all workers
 	emitter     event.Emitter
 	executors   executorRegistry // runtime → PhaseExecutor; read-only after New()
 	buildRunner BuildRunner      // nil disables build verification; set by New()
@@ -41,6 +40,17 @@ type Engine struct {
 	plan              *core.Plan             // retained for checkpoint saves
 	startTime         time.Time              // when Execute was called; passed to every checkpoint
 	injectedLearnings []learning.Learning    // accumulated across all phases, for compliance scan
+
+	// persistentWorkerCount tracks how many phases in this run have been assigned
+	// to the persistent alpha worker. Guarded by mu; passed to shouldAssignPersistentWorker.
+	persistentWorkerCount int
+
+	// persistentWorker holds the single shared WorkerIdentity pointer for the
+	// persistent alpha worker. Loaded once (under mu) when the first eligible
+	// phase is assigned; all subsequent phases reuse this pointer. Post-execution
+	// updates (RecordPhase, extractLearningsToWorkerMemory, SaveIdentity) are
+	// serialized behind mu to prevent concurrent disk writes.
+	persistentWorker *worker.WorkerIdentity
 
 	// Background learning extraction: at most one extraction runs at a time per
 	// mission (extractMu) and extractWG tracks outstanding goroutines for
@@ -53,13 +63,12 @@ type Engine struct {
 // executor registry (RuntimeClaude pre-registered). Call WithEmitter to
 // attach a real emitter and RegisterExecutor to add additional runtimes
 // before Execute.
-func New(ws *core.Workspace, config *core.OrchestratorConfig, embedder *learning.Embedder, db *learning.DB, skillIndex string) *Engine {
+func New(ws *core.Workspace, config *core.OrchestratorConfig, embedder *learning.Embedder, db *learning.DB) *Engine {
 	return &Engine{
 		workspace:   ws,
 		config:      config,
 		embedder:    embedder,
 		learningDB:  db,
-		skillIndex:  skillIndex,
 		emitter:     event.NoOpEmitter{},
 		executors:   defaultRegistry(),
 		phases:      make(map[string]*core.Phase),
@@ -316,6 +325,25 @@ func (e *Engine) executeSequential(ctx context.Context, plan *core.Plan, start t
 			if e.config.Verbose {
 				fmt.Printf("[engine] review loop: injected fix phase %s\n", fixPhase.Name)
 			}
+		}
+
+		// Fail-closed: handleReviewLoop marks the review phase failed when a
+		// malformed review cannot be retried. Cascade the failure here so the
+		// mission never ships green with an unparseable review gate.
+		if phase.Status == core.StatusFailed {
+			result.Success = false
+			if result.Error == "" {
+				result.Error = fmt.Sprintf("phase %s failed: %s", phase.Name, phase.Error)
+			}
+			skipped := e.skipSequentialDependents(ctx, plan, i, phase.ID)
+			e.saveCheckpoint(ctx)
+			if e.config.Verbose {
+				fmt.Printf("[engine] phase %s failed via review gate: %s\n", phase.Name, phase.Error)
+				if skipped > 0 {
+					fmt.Printf("[engine] skipped %d dependent phase(s) after review-gate failure in %s\n", skipped, phase.Name)
+				}
+			}
+			continue
 		}
 
 		e.commitPhaseWork(phase)
@@ -643,11 +671,59 @@ func (e *Engine) executePhase(ctx context.Context, phase *core.Phase, priorConte
 	// Collect scratch notes from completed dependency phases.
 	priorScratch := e.collectPriorScratch(phase)
 
+	// Persistent worker assignment: check eligibility, load (or reuse) the
+	// shared identity, and increment the counter — all under a single mutex
+	// hold to prevent TOCTOU races between concurrent phases.
+	var assignedWorker *worker.WorkerIdentity
+	var workerName string
+	var workerMemory string
+
+	e.mu.Lock()
+	if shouldAssignPersistentWorker(phase, e.config.NoPersistentWorker, e.persistentWorkerCount) {
+		// Lazy-load the shared identity on first assignment; reuse thereafter.
+		if e.persistentWorker == nil {
+			if wi, wiErr := worker.LoadIdentity(persistentWorkerName); wiErr == nil {
+				e.persistentWorker = wi
+			} else if e.config.Verbose {
+				fmt.Printf("[engine] phase %s: persistent worker load failed: %v\n", phase.Name, wiErr)
+			}
+		}
+		if e.persistentWorker != nil {
+			assignedWorker = e.persistentWorker
+			workerName = persistentWorkerName
+			phase.Worker = persistentWorkerName
+			e.persistentWorkerCount++
+		}
+	}
+	e.mu.Unlock()
+
+	if assignedWorker != nil {
+		// Build keyword list from objective words + persona name for relevance scoring.
+		keywords := strings.Fields(strings.ToLower(phase.Objective))
+		keywords = append(keywords, strings.Split(phase.Persona, "-")...)
+
+		const workerMemoryBudget = 2048
+		e.mu.Lock()
+		entries := assignedWorker.BudgetedMemory(keywords, workerMemoryBudget)
+		e.mu.Unlock()
+		if len(entries) > 0 {
+			var memParts []string
+			for _, entry := range entries {
+				memParts = append(memParts, entry.String())
+			}
+			workerMemory = strings.Join(memParts, "\n")
+		}
+
+		if e.config.Verbose {
+			fmt.Printf("[engine] phase %s assigned to persistent worker %q (memory entries: %d)\n",
+				phase.Name, persistentWorkerName, len(entries))
+		}
+	}
+
 	// Build context bundle
 	bundle := core.ContextBundle{
 		Objective:      phase.Objective,
 		MissionContext: extractMissionContext(e.plan.Task),
-		SkillIndex:     e.skillIndex,
 		Constraints:    phase.Constraints,
 		PriorContext:   priorContext,
 		Learnings:      learningsText,
@@ -659,6 +735,8 @@ func (e *Engine) executePhase(ctx context.Context, phase *core.Phase, priorConte
 		Role:           phase.Role,
 		Runtime:        phase.Runtime,
 		PriorScratch:   priorScratch,
+		WorkerName:     workerName,
+		WorkerMemory:   workerMemory,
 		// WorkerDir and ScratchDir are populated by worker.Spawn after the directory is created.
 	}
 
@@ -825,6 +903,16 @@ func (e *Engine) executePhase(ctx context.Context, phase *core.Phase, priorConte
 	// extractMu ensures at most one extraction runs per mission (rate limiter),
 	// and extractWG tracks outstanding goroutines for graceful shutdown.
 	// Errors are non-fatal: logged but never propagate to the caller.
+	//
+	// Both ephemeral and persistent worker phases go through this global pipeline
+	// so that CaptureWithFocus (persona-aware LLM extraction), learningDB.Insert,
+	// and learning.stored events are always produced. For persistent worker phases
+	// the captured learnings are also forwarded to the worker's local memory via
+	// a channel (workerLearningsCh) — see the assignedWorker block below.
+	var workerLearningsCh chan []learning.Learning
+	if assignedWorker != nil {
+		workerLearningsCh = make(chan []learning.Learning, 1)
+	}
 	if e.learningDB != nil {
 		outputSnap := output
 		workerName := config.Name
@@ -832,6 +920,7 @@ func (e *Engine) executePhase(ctx context.Context, phase *core.Phase, priorConte
 		wsID := e.workspace.ID
 		personaName := phase.Persona
 		phaseName := phase.Name
+		ch := workerLearningsCh // capture for goroutine
 
 		e.extractWG.Add(1)
 		go func() {
@@ -850,6 +939,12 @@ func (e *Engine) executePhase(ctx context.Context, phase *core.Phase, priorConte
 			if focusAreas := persona.GetLearningFocus(personaName); len(focusAreas) > 0 {
 				focused := learning.CaptureWithFocus(extractCtx, outputSnap, focusAreas, workerName, domain, wsID)
 				captured = append(captured, focused...)
+			}
+
+			// Forward captured learnings to the worker-local memory writer if this
+			// is a persistent worker phase (ch != nil).
+			if ch != nil {
+				ch <- captured
 			}
 
 			stored := 0
@@ -874,6 +969,10 @@ func (e *Engine) executePhase(ctx context.Context, phase *core.Phase, priorConte
 				fmt.Printf("[engine] background: stored %d learnings from phase %s\n", stored, phaseName)
 			}
 		}()
+	} else if workerLearningsCh != nil {
+		// No learning DB — still need to close the channel so the worker-local
+		// memory block doesn't block forever.
+		close(workerLearningsCh)
 	}
 
 	phase.Status = core.StatusCompleted
@@ -882,6 +981,33 @@ func (e *Engine) executePhase(ctx context.Context, phase *core.Phase, priorConte
 	phase.Output = summarize(output, 500)
 	if err := recordPhaseSkillsDB(e.workspace, e.plan, phase, e.startTime); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: phase skill metrics write failed: %v\n", err)
+	}
+
+	// Record persistent worker phase completion and persist identity.
+	// All mutations and the disk write are serialized behind e.mu so concurrent
+	// phases sharing the same *WorkerIdentity cannot corrupt state or the file.
+	// Best-effort: save failures are logged but never block phase completion.
+	if assignedWorker != nil {
+		// Wait for the global extraction goroutine to deliver captured learnings.
+		// If learningDB was nil the channel is already closed, so this returns immediately.
+		var captured []learning.Learning
+		if workerLearningsCh != nil {
+			captured = <-workerLearningsCh
+		}
+
+		e.mu.Lock()
+		// Write already-captured learnings to worker-local memory. No redundant
+		// CaptureFromText call — one extraction, two destinations (global DB + worker memory).
+		writeLearningsToWorkerMemory(assignedWorker, captured)
+		assignedWorker.RecordPhase(e.workspace.Domain, phase.CostUSD)
+		// Append a self-reflection entry every selfReflectionInterval phases.
+		maybeRecordSelfReflection(assignedWorker)
+		if saveErr := assignedWorker.SaveIdentity(); saveErr != nil {
+			if e.config.Verbose {
+				fmt.Printf("[engine] persistent worker save failed (phase %s): %v\n", phase.Name, saveErr)
+			}
+		}
+		e.mu.Unlock()
 	}
 
 	// Record which files this phase changed relative to the base branch.
@@ -1254,8 +1380,34 @@ func (e *Engine) handleReviewLoop(ctx context.Context, phase *core.Phase, output
 	if !e.IsReviewGate(phase) {
 		return nil
 	}
+
+	// Prefer the reviewer's structured review.md artifact over raw stdout.
+	// Reviewers follow a two-file contract: a detailed review.md with
+	// "### Blockers" / "### Warnings" sections, plus a terse prose summary
+	// to stdout. Parsing stdout alone misses the structured findings
+	// whenever the reviewer is disciplined about that split.
+	reviewText := output
 	findings := ParseReviewFindings(output)
-	if reviewOutputLooksMalformed(output, findings) {
+	workerReviewPath := filepath.Join(
+		e.workspace.Path,
+		"workers",
+		fmt.Sprintf("%s-%s", phase.Persona, phase.ID),
+		"review.md",
+	)
+	if artifactFindings, err := ParseReviewFindingsFromArtifact(workerReviewPath); err == nil {
+		if len(artifactFindings.Blockers) > 0 || len(artifactFindings.Warnings) > 0 {
+			findings = artifactFindings
+			if data, readErr := os.ReadFile(workerReviewPath); readErr == nil {
+				reviewText = string(data)
+			}
+			if e.config.Verbose {
+				fmt.Printf("[engine] review loop: using review.md artifact for %s (%d blocker(s), %d warning(s))\n",
+					phase.Name, len(findings.Blockers), len(findings.Warnings))
+			}
+		}
+	}
+
+	if reviewOutputLooksMalformed(reviewText, findings) {
 		e.emit(ctx, event.SystemError, phase.ID, "", map[string]any{
 			"warning": true,
 			"error":   fmt.Sprintf("review output for %s was non-empty but unstructured; triggering re-review retry", phase.Name),
@@ -1268,7 +1420,26 @@ func (e *Engine) handleReviewLoop(ctx context.Context, phase *core.Phase, output
 			}
 			return retryPhase
 		}
-		// Loop exhausted — no retry available; fall through as pass-open.
+		// Loop exhausted with malformed output. Fail-closed: mark the review
+		// phase failed and emit a synthetic blocker so the mission never ships
+		// green with an unparseable review. executeSequential sees the failed
+		// status and cascades the failure to dependent phases.
+		failureMsg := fmt.Sprintf(
+			"review output for phase %q was malformed after exhausting %d retry attempt(s) — reviewer emitted no parseable ### Blockers/### Warnings section and no review.md artifact was found; manual intervention required",
+			phase.Name, phase.ReviewIteration+1,
+		)
+		syntheticFindings := ReviewFindings{
+			Blockers: []ReviewItem{{
+				Location:    "review-gate",
+				Description: failureMsg,
+			}},
+		}
+		e.emitReviewFindings(ctx, phase, syntheticFindings)
+		phase.Status = core.StatusFailed
+		phase.Error = failureMsg
+		if e.config.Verbose {
+			fmt.Printf("[engine] review loop: malformed output exhausted retries for %s — marking phase failed\n", phase.Name)
+		}
 		return nil
 	}
 
@@ -1342,7 +1513,6 @@ func (e *Engine) runSecondaryExecutor(ctx context.Context, phase *core.Phase, pr
 	bundle := core.ContextBundle{
 		Objective:      phase.Objective,
 		MissionContext: extractMissionContext(e.plan.Task),
-		SkillIndex:     e.skillIndex,
 		Constraints:    phase.Constraints,
 		PriorContext:   priorContext,
 		Domain:         e.workspace.Domain,

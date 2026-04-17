@@ -33,10 +33,10 @@ func setupCanonical(t *testing.T, tmpHome, persona, content string) string {
 	return path
 }
 
-// setupGlobal writes content to ~/nanika/global/MEMORY.md.
+// setupGlobal writes content to ~/.alluka/memory/global.md.
 func setupGlobal(t *testing.T, tmpHome, content string) string {
 	t.Helper()
-	path := filepath.Join(tmpHome, "nanika", "global", "MEMORY.md")
+	path := filepath.Join(tmpHome, ".alluka", "memory", "global.md")
 	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
 		t.Fatal(err)
 	}
@@ -70,10 +70,10 @@ func readCanonical(t *testing.T, tmpHome, persona string) string {
 	return string(data)
 }
 
-// readGlobal reads ~/nanika/global/MEMORY.md.
+// readGlobal reads ~/.alluka/memory/global.md.
 func readGlobal(t *testing.T, tmpHome string) string {
 	t.Helper()
-	path := filepath.Join(tmpHome, "nanika", "global", "MEMORY.md")
+	path := filepath.Join(tmpHome, ".alluka", "memory", "global.md")
 	data, err := os.ReadFile(path)
 	if os.IsNotExist(err) {
 		return ""

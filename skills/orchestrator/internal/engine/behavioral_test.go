@@ -74,7 +74,7 @@ func behavPhase(id string, deps ...string) *core.Phase {
 func newBehavEngine(t *testing.T, exec PhaseExecutor) *Engine {
 	t.Helper()
 	ws := &core.Workspace{ID: "test-ws", Path: t.TempDir(), Domain: "dev"}
-	e := New(ws, &core.OrchestratorConfig{}, nil, nil, "").WithEmitter(event.NoOpEmitter{})
+	e := New(ws, &core.OrchestratorConfig{}, nil, nil).WithEmitter(event.NoOpEmitter{})
 	e.RegisterExecutor(core.Runtime("behav-test"), exec)
 	return e
 }
@@ -225,7 +225,7 @@ func TestSIGINT_CancelsGracefully_Sequential(t *testing.T) {
 	t.Parallel()
 	blocking := &blockUntilCancelledExecutor{ready: make(chan struct{})}
 	ws := &core.Workspace{ID: "test-ws", Path: t.TempDir(), Domain: "dev"}
-	e := New(ws, &core.OrchestratorConfig{}, nil, nil, "").WithEmitter(event.NoOpEmitter{})
+	e := New(ws, &core.OrchestratorConfig{}, nil, nil).WithEmitter(event.NoOpEmitter{})
 	e.RegisterExecutor(core.Runtime("blocking"), blocking)
 
 	plan := &core.Plan{
@@ -276,7 +276,7 @@ func TestSIGINT_CancelsGracefully_Parallel(t *testing.T) {
 	t.Parallel()
 	blocking := &blockUntilCancelledExecutor{ready: make(chan struct{})}
 	ws := &core.Workspace{ID: "test-ws", Path: t.TempDir(), Domain: "dev"}
-	e := New(ws, &core.OrchestratorConfig{}, nil, nil, "").WithEmitter(event.NoOpEmitter{})
+	e := New(ws, &core.OrchestratorConfig{}, nil, nil).WithEmitter(event.NoOpEmitter{})
 	e.RegisterExecutor(core.Runtime("blocking"), blocking)
 
 	plan := &core.Plan{

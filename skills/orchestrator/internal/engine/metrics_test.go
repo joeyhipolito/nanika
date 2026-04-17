@@ -253,3 +253,46 @@ func TestPlanSnapshotSucceeded(t *testing.T) {
 		})
 	}
 }
+
+func TestProviderForPhase(t *testing.T) {
+	tests := []struct {
+		name    string
+		runtime core.Runtime
+		model   string
+		want    string
+	}{
+		{
+			name:    "codex runtime -> openai",
+			runtime: core.RuntimeCodex,
+			model:   "codex-1",
+			want:    "openai",
+		},
+		{
+			name:    "claude runtime -> anthropic",
+			runtime: core.RuntimeClaude,
+			model:   "claude-sonnet-4-6",
+			want:    "anthropic",
+		},
+		{
+			name:    "unset runtime + set model -> anthropic",
+			runtime: "",
+			model:   "claude-sonnet-4-6",
+			want:    "anthropic",
+		},
+		{
+			name:    "unset runtime + unset model -> empty",
+			runtime: "",
+			model:   "",
+			want:    "",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			p := &core.Phase{Runtime: tt.runtime, Model: tt.model}
+			got := providerForPhase(p)
+			if got != tt.want {
+				t.Errorf("providerForPhase() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}

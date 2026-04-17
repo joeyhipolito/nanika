@@ -13,6 +13,7 @@ import (
 	"github.com/joeyhipolito/orchestrator-cli/internal/config"
 	"github.com/joeyhipolito/orchestrator-cli/internal/core"
 	metricsdb "github.com/joeyhipolito/orchestrator-cli/internal/metrics"
+	"github.com/joeyhipolito/orchestrator-cli/internal/usage"
 )
 
 // defaultBudgetTokens is the fallback 5h token budget (input + output, cache_read
@@ -45,6 +46,9 @@ type PhaseMetric struct {
 	TokensCacheCreation int     `json:"tokens_cache_creation,omitempty"` // cache creation tokens (accumulated across retries)
 	TokensCacheRead     int     `json:"tokens_cache_read,omitempty"`     // cache read tokens (accumulated across retries)
 	CostUSD             float64 `json:"cost_usd,omitempty"`              // total cost in USD
+	// WorkerName is the persistent worker that ran this phase (e.g. "alpha").
+	// Empty means the phase ran on an ephemeral worker.
+	WorkerName string `json:"worker_name,omitempty"`
 }
 
 // Error type constants used in PhaseMetric.ErrorType and stored in phases.error_type.
@@ -239,7 +243,41 @@ func recordQuotaSnapshotDB(m MissionMetrics) error {
 		Estimated5hUtil:   util,
 		Model:             dominantModel(m.Phases),
 	}
-	return db.InsertQuotaSnapshot(ctx, snap)
+	if err := db.InsertQuotaSnapshot(ctx, snap); err != nil {
+		return err
+	}
+
+	// Probe real plan-utilization from the Anthropic usage endpoint and persist it.
+	// This is intentionally separate from the synthetic quota snapshot above — it
+	// uses its own context and its own error path so a probe failure never blocks
+	// mission completion.
+	probeCtx, probeCancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer probeCancel()
+
+	usageSnap, err := usage.Probe(probeCtx)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "[usage-probe] %v\n", err)
+		return nil
+	}
+
+	usnap := metricsdb.UsageSnapshot{
+		MissionID:              m.WorkspaceID,
+		CapturedAt:             time.Now().UTC(),
+		FiveHourUtil:           usageSnap.FiveHourUtil,
+		FiveHourResetsAt:       usageSnap.FiveHourResetsAt,
+		SevenDayUtil:           usageSnap.SevenDayUtil,
+		SevenDayResetsAt:       usageSnap.SevenDayResetsAt,
+		SevenDaySonnetUtil:     usageSnap.SevenDaySonnetUtil,
+		SevenDaySonnetResetsAt: usageSnap.SevenDaySonnetResetsAt,
+		RawJSON:                usageSnap.RawJSON,
+	}
+	// Use a fresh context for the insert — probeCtx may have exhausted its 3 s
+	// budget during the HTTP probe itself (slow-but-successful probe). The DB
+	// write is a local SQLite operation and does not need a network timeout.
+	if err := db.InsertUsageSnapshot(context.Background(), usnap); err != nil {
+		fmt.Fprintf(os.Stderr, "[usage-probe] insert: %v\n", err)
+	}
+	return nil
 }
 
 // dominantModel returns the model with the highest cost across phases.
@@ -364,6 +402,7 @@ func toMissionRecord(m MissionMetrics) metricsdb.MissionRecord {
 			TokensCacheCreation: p.TokensCacheCreation,
 			TokensCacheRead:     p.TokensCacheRead,
 			CostUSD:             p.CostUSD,
+			WorkerName:          p.WorkerName,
 		}
 	}
 	return metricsdb.MissionRecord{
@@ -533,6 +572,7 @@ func toPhaseRecord(p *core.Phase) metricsdb.PhaseRecord {
 		TokensCacheCreation: p.TokensCacheCreation,
 		TokensCacheRead:     p.TokensCacheRead,
 		CostUSD:             p.CostUSD,
+		WorkerName:          p.Worker,
 	}
 	if p.Status == core.StatusFailed && p.Error != "" {
 		pr.ErrorType = ParseErrorType(p.Error)
@@ -542,10 +582,17 @@ func toPhaseRecord(p *core.Phase) metricsdb.PhaseRecord {
 }
 
 func providerForPhase(p *core.Phase) string {
-	if p.Model != "" {
-		return "anthropic"
+	if p.Model == "" && p.Runtime == "" {
+		return ""
 	}
-	return ""
+	switch p.Runtime {
+	case core.RuntimeCodex:
+		return "openai"
+	case core.RuntimeClaude, "":
+		return "anthropic"
+	default:
+		return string(p.Runtime)
+	}
 }
 
 // buildMetrics constructs a MissionMetrics from execution state.
@@ -607,6 +654,7 @@ func buildMetrics(ws *core.Workspace, plan *core.Plan, result *core.ExecutionRes
 			TokensCacheCreation:    p.TokensCacheCreation,
 			TokensCacheRead:        p.TokensCacheRead,
 			CostUSD:                p.CostUSD,
+			WorkerName:             p.Worker,
 		}
 		if p.Status == core.StatusFailed && p.Error != "" {
 			pm.ErrorType = ParseErrorType(p.Error)

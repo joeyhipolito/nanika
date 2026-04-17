@@ -6,8 +6,8 @@ build:
 	go build -o bin/$(BINARY_NAME) .
 
 install: build
-	mkdir -p $(HOME)/bin
-	ln -sf $(CURDIR)/bin/$(BINARY_NAME) $(HOME)/bin/$(BINARY_NAME)
+	mkdir -p $(HOME)/.alluka/bin
+	ln -sf $(CURDIR)/bin/$(BINARY_NAME) $(HOME)/.alluka/bin/$(BINARY_NAME)
 
 test:
 	go test ./...

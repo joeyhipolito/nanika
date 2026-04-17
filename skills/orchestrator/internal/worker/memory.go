@@ -143,13 +143,19 @@ func (e *MemoryEntry) String() string {
 }
 
 // normalizedContent returns a normalized form of the entry's content for dedup comparison.
-// Normalizes whitespace (collapses runs, trims edges) and lowercases.
+// Normalizes whitespace (collapses runs, trims edges), strips leading bullet markers
+// ("- " prefix from old-format entries), and lowercases. The bullet stripping handles
+// hash migration: old entries stored as "- content" must match new entries stored as
+// "content" when comparing for duplicates.
 func (e *MemoryEntry) normalizedContent() string {
 	if e == nil || e.Content == "" {
 		return ""
 	}
 	normalized := strings.Join(strings.Fields(e.Content), " ")
-	return strings.ToLower(normalized)
+	normalized = strings.ToLower(normalized)
+	// Strip leading bullet marker from old-format entries so "- foo" matches "foo".
+	normalized = strings.TrimPrefix(normalized, "- ")
+	return normalized
 }
 
 // contentHash returns a SHA256 hash of the normalized content for dedup.
@@ -239,13 +245,13 @@ func canonicalMemoryPath(personaName string) (string, error) {
 	return filepath.Join(home, "nanika", "personas", personaName, "MEMORY.md"), nil
 }
 
-// globalMemoryPath returns ~/nanika/global/MEMORY.md.
+// globalMemoryPath returns ~/.alluka/memory/global.md.
 func globalMemoryPath() (string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", fmt.Errorf("getting home dir: %w", err)
 	}
-	return filepath.Join(home, "nanika", "global", "MEMORY.md"), nil
+	return filepath.Join(home, ".alluka", "memory", "global.md"), nil
 }
 
 // workerMemoryPath returns ~/.claude/projects/<encoded-workerDir>/memory/MEMORY.md.
@@ -408,7 +414,7 @@ func enforceMemoryCeiling(personaName string) error {
 	return nil
 }
 
-// promoteEntriesToGlobal appends entries to ~/nanika/global/MEMORY.md, deduplicating
+// promoteEntriesToGlobal appends entries to ~/.alluka/memory/global.md, deduplicating
 // against existing global content. Returns the number of entries actually written.
 func promoteEntriesToGlobal(entries []*MemoryEntry) (int, error) {
 	if len(entries) == 0 {
@@ -423,7 +429,10 @@ func promoteEntriesToGlobal(entries []*MemoryEntry) (int, error) {
 	}
 
 	// Load existing global entries for dedup.
-	existingGlobal := make(map[string]bool)
+	// Two maps: hash-based (original) and normalized-content-based (handles
+	// migration from old body-hashed entries to new name-hashed entries).
+	existingHashes := make(map[string]bool)
+	existingNorm := make(map[string]bool)
 	if globalContent, rerr := os.ReadFile(globalPath); rerr == nil {
 		for _, line := range strings.Split(string(globalContent), "\n") {
 			trimmed := strings.TrimSpace(line)
@@ -432,7 +441,10 @@ func promoteEntriesToGlobal(entries []*MemoryEntry) (int, error) {
 			}
 			if e := ParseMemoryEntry(trimmed); e != nil {
 				if h := e.contentHash(); h != "" {
-					existingGlobal[h] = true
+					existingHashes[h] = true
+				}
+				if nc := e.normalizedContent(); nc != "" {
+					existingNorm[nc] = true
 				}
 			}
 		}
@@ -445,7 +457,10 @@ func promoteEntriesToGlobal(entries []*MemoryEntry) (int, error) {
 	promoted := 0
 	for _, e := range entries {
 		h := e.contentHash()
-		if h != "" && existingGlobal[h] {
+		nc := e.normalizedContent()
+		// Deduplicate: either hash match (same content, same normalization) or
+		// normalized content match (handles old-style body hash vs new-style name hash).
+		if (h != "" && existingHashes[h]) || (nc != "" && existingNorm[nc]) {
 			continue
 		}
 		if _, werr := fmt.Fprintln(f, e.String()); werr != nil {
@@ -453,7 +468,10 @@ func promoteEntriesToGlobal(entries []*MemoryEntry) (int, error) {
 			return promoted, fmt.Errorf("writing to global MEMORY.md: %w", werr)
 		}
 		if h != "" {
-			existingGlobal[h] = true
+			existingHashes[h] = true
+		}
+		if nc != "" {
+			existingNorm[nc] = true
 		}
 		promoted++
 	}
@@ -1055,7 +1073,7 @@ func mergeMemoryBack(personaName, workerDir string) error {
 
 // BridgeSessionMemory reads Claude Code's auto-memory directory for sourceDir,
 // extracts entries with type "project" or "reference" from their YAML frontmatter,
-// stamps each with a bridged: date, and merges them into ~/nanika/global/MEMORY.md.
+// stamps each with a bridged: date, and merges them into ~/.alluka/memory/global.md.
 // Idempotent: dedup is performed by content hash so re-running never duplicates.
 // sourceDir is the project directory whose Claude auto-memory to read.
 // When empty it defaults to ~/nanika (the main orchestrator project).
@@ -1106,10 +1124,18 @@ func BridgeSessionMemory(sourceDir string) (int, error) {
 		if entryType != "project" && entryType != "reference" {
 			continue
 		}
-		// Use the first non-empty line of body as content, or the name
+		// Use the name as content. If no name, use the first non-empty
+		// line of body. Multi-line bodies don't round-trip through the
+		// line-based global MEMORY.md format, so we only keep the summary.
 		entryContent := name
-		if body != "" {
-			entryContent = body
+		if entryContent == "" && body != "" {
+			for _, line := range strings.Split(body, "\n") {
+				line = strings.TrimSpace(line)
+				if line != "" && !strings.HasPrefix(line, "#") {
+					entryContent = line
+					break
+				}
+			}
 		}
 		if entryContent == "" {
 			continue

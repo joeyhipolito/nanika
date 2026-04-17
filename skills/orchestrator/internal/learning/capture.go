@@ -222,6 +222,107 @@ Worker output:
 	return result
 }
 
+// CaptureFromConversation extracts durable learnings from a multi-turn
+// conversation chunk (e.g., a Claude Code session transcript window).
+//
+// Unlike CaptureWithFocus — which targets a persona's declared focus areas
+// from single-phase output — this function is consolidation-tuned: it targets
+// decisions, insights, features discovered, and gotchas from human-Claude
+// dialogue. It is called by the dream subsystem during background transcript
+// mining.
+//
+// Prompt contract: Haiku model, max 5 learnings per call, TYPE:content format
+// matching the grammar used by CaptureWithFocus. Empty output is valid.
+// QualityScore starts at 0.4 (lower than live-captured learnings because
+// conversation extraction is less curated than persona-focused extraction).
+func CaptureFromConversation(ctx context.Context, conversationText, workerName, domain, workspaceID string) []Learning {
+	if len(conversationText) < 200 {
+		return nil
+	}
+
+	// Cap at 12K chars — conversation chunks are larger than single phase output
+	// (CaptureWithFocus caps at 8K) but still need to stay within haiku limits.
+	text := conversationText
+	if len(text) > 12000 {
+		text = text[:12000]
+	}
+
+	prompt := `You are reviewing a conversation between a human and an AI assistant. Extract durable learnings worth remembering across future sessions.
+
+Focus only on:
+- DECISION: architectural choices, tradeoffs accepted, approaches confirmed or rejected
+- INSIGHT: non-obvious discoveries about tools, APIs, system behaviour, or domain knowledge
+- PATTERN: approaches that worked or failed, reusable techniques, conventions established
+- ERROR: gotchas, pitfalls, bugs discovered, misassumptions corrected, things to avoid
+
+Output format — one learning per line:
+TYPE: content
+
+Rules:
+- TYPE must be one of: insight, pattern, error, decision
+- Content must be 50–400 characters, specific and actionable (not vague)
+- Maximum 5 learnings total
+- Skip pleasantries, summaries, obvious facts, or anything not worth remembering long-term
+- If no durable learnings exist in this chunk, output nothing (empty response is valid)
+
+Conversation:
+` + text
+
+	llmOutput, err := sdk.QueryText(ctx, prompt, &sdk.AgentOptions{
+		Model:    "haiku",
+		MaxTurns: 1,
+	})
+	if err != nil {
+		return nil
+	}
+
+	var result []Learning
+	seen := make(map[string]bool)
+
+	scanner := bufio.NewScanner(strings.NewReader(llmOutput))
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" {
+			continue
+		}
+
+		for _, ltype := range []LearningType{TypeInsight, TypePattern, TypeError, TypeDecision} {
+			prefix := string(ltype) + ":"
+			if !strings.HasPrefix(strings.ToLower(line), prefix) {
+				continue
+			}
+			content := strings.TrimSpace(line[len(prefix):])
+			content = cleanupContent(content)
+			if len(content) < 50 {
+				break
+			}
+			hash := contentHash(content)
+			if seen[hash] {
+				break
+			}
+			seen[hash] = true
+
+			result = append(result, Learning{
+				ID:           generateID(),
+				Type:         ltype,
+				Content:      content,
+				Domain:       domain,
+				WorkerName:   workerName,
+				WorkspaceID:  workspaceID,
+				QualityScore: 0.4, // reduced: conversation extraction is less curated than focus capture
+				CreatedAt:    time.Now(),
+			})
+			break
+		}
+
+		if len(result) >= 5 {
+			break
+		}
+	}
+
+	return result
+}
+
 // GenerateHookScript creates a shell script for learning capture.
 func GenerateHookScript(workerName, domain, workspacePath, outputPath string) string {
 	script := fmt.Sprintf(`#!/bin/bash

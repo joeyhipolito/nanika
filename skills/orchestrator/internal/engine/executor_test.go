@@ -84,7 +84,7 @@ func TestExecutePhase_UsesRegisteredRuntimeExecutor(t *testing.T) {
 		Path:   wsPath,
 		Domain: "dev",
 	}
-	e := New(ws, &core.OrchestratorConfig{}, nil, nil, "")
+	e := New(ws, &core.OrchestratorConfig{}, nil, nil)
 	rec := &recordingExecutor{output: "runtime-output"}
 	e.RegisterExecutor(core.Runtime("codex"), rec)
 
@@ -128,7 +128,7 @@ func TestExecutePhase_EmitsRoleHandoffAndRuntimePolicyVisibility(t *testing.T) {
 	wsPath := t.TempDir()
 	ws := &core.Workspace{ID: "ws-handoff", Path: wsPath, Domain: "dev"}
 	em := &captureEmitter{}
-	e := New(ws, &core.OrchestratorConfig{}, nil, nil, "").WithEmitter(em)
+	e := New(ws, &core.OrchestratorConfig{}, nil, nil).WithEmitter(em)
 	rec := &recordingExecutor{output: "ok"}
 	e.RegisterExecutor(core.Runtime("codex"), rec)
 
@@ -262,7 +262,7 @@ func TestCheckContract_ClaudeSatisfiesAllRoles(t *testing.T) {
 	wsPath := t.TempDir()
 	ws := &core.Workspace{ID: "ws-contract", Path: wsPath, Domain: "dev"}
 	em := &captureEmitter{}
-	e := New(ws, &core.OrchestratorConfig{}, nil, nil, "").WithEmitter(em)
+	e := New(ws, &core.OrchestratorConfig{}, nil, nil).WithEmitter(em)
 
 	for _, role := range []core.Role{core.RolePlanner, core.RoleImplementer, core.RoleReviewer} {
 		phase := &core.Phase{
@@ -291,7 +291,7 @@ func TestCheckContract_UnknownRuntimeSkipsValidation(t *testing.T) {
 	wsPath := t.TempDir()
 	ws := &core.Workspace{ID: "ws-contract", Path: wsPath, Domain: "dev"}
 	em := &captureEmitter{}
-	e := New(ws, &core.OrchestratorConfig{Verbose: true}, nil, nil, "").WithEmitter(em)
+	e := New(ws, &core.OrchestratorConfig{Verbose: true}, nil, nil).WithEmitter(em)
 
 	phase := &core.Phase{
 		ID:      "phase-1",
@@ -321,7 +321,7 @@ func TestCheckContract_ViolatedContract(t *testing.T) {
 	wsPath := t.TempDir()
 	ws := &core.Workspace{ID: "ws-violated", Path: wsPath, Domain: "dev"}
 	em := &captureEmitter{}
-	e := New(ws, &core.OrchestratorConfig{}, nil, nil, "").WithEmitter(em)
+	e := New(ws, &core.OrchestratorConfig{}, nil, nil).WithEmitter(em)
 
 	// Register a limited executor that only has tool_use (missing artifacts)
 	limited := &limitedExecutor{}

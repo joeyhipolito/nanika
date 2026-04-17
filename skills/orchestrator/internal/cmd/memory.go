@@ -26,7 +26,7 @@ Examples:
 		Use:   "promote <persona>",
 		Short: "Promote persona memory entries to global MEMORY.md",
 		Long: `Reads the persona's MEMORY.md, selects matching non-superseded entries,
-appends them to ~/nanika/global/MEMORY.md, and removes them from the persona file.
+appends them to ~/.alluka/memory/global.md, and removes them from the persona file.
 
 By default (no flags) all non-superseded entries are promoted.
 Use --match to filter by content substring, or --used to filter by minimum used count.
