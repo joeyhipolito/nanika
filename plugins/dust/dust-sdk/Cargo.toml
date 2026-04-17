@@ -5,6 +5,7 @@ edition = "2021"
 
 [dependencies]
 dust-core = { path = "../dust-core" }
-tokio = { version = "1", features = ["net", "io-util", "rt-multi-thread", "macros", "fs", "time"] }
+tokio = { version = "1", features = ["net", "io-util", "rt-multi-thread", "macros", "fs", "time", "sync"] }
 async-trait = "0.1"
 serde_json = "1"
+libc = "0.2"

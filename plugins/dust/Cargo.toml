@@ -1,3 +1,4 @@
 [workspace]
-members = ["dust-core", "dust-sdk", "dust-registry", "dust-dashboard", "plugins/hello-plugin", "plugins/dummy-plugin", "plugins/system-plugin", "plugins/dust-scheduler", "plugins/dust-health", "plugins/dust-tracker", "src-tauri"]
+members = ["dust-core", "dust-sdk", "dust-registry", "dust-conformance", "dust-conformance/fixtures/minimal"]
+exclude = ["dust-dashboard", "src-tauri", "plugins/hello-plugin", "plugins/dummy-plugin", "plugins/system-plugin", "plugins/dust-scheduler", "plugins/dust-health", "plugins/dust-tracker"]
 resolver = "2"

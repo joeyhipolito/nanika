@@ -1,0 +1,15 @@
+{
+  "name": "bash-stub",
+  "version": "0.1.0",
+  "description": "Minimal bash stub implementing the dust v1 handshake protocol.",
+  "build": "chmod +x plugin.sh",
+  "tags": ["stub", "example", "bash"],
+  "dust": {
+    "plugin_id": "bash-stub",
+    "binary": "plugin.sh",
+    "spawn_timeout_ms": 8000,
+    "capabilities": [
+      { "kind": "command", "prefix": "bash-stub" }
+    ]
+  }
+}

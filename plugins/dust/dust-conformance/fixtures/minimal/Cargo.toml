@@ -1,0 +1,13 @@
+[package]
+name = "dust-fixture-minimal"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "dust-fixture-minimal"
+path = "src/main.rs"
+
+[dependencies]
+dust-sdk = { path = "../../../dust-sdk" }
+tokio = { version = "1", features = ["net", "io-util", "rt-multi-thread", "macros", "fs", "time"] }
+serde_json = "1"

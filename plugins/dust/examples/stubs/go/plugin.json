@@ -1,0 +1,15 @@
+{
+  "name": "go-stub",
+  "version": "0.1.0",
+  "description": "Minimal Go stub implementing the dust v1 handshake protocol.",
+  "build": "go build -o go-stub .",
+  "tags": ["stub", "example", "go"],
+  "dust": {
+    "plugin_id": "go-stub",
+    "binary": "go-stub",
+    "spawn_timeout_ms": 5000,
+    "capabilities": [
+      { "kind": "command", "prefix": "go-stub" }
+    ]
+  }
+}

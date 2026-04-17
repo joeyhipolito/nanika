@@ -3,6 +3,12 @@
 //! Wire format: each message is a 4-byte big-endian length prefix followed by
 //! a UTF-8 JSON payload. Both host and plugin use the same framing on stdin/stdout.
 
+pub mod envelope;
+pub mod error;
+pub mod events;
+pub mod framing;
+pub mod state;
+
 use std::io::{self, Read, Write};
 
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
@@ -68,6 +74,69 @@ impl ListItem {
     }
 }
 
+// ── TableColumn ──────────────────────────────────────────────────────────────
+
+/// A column definition for the [`Component::Table`] variant.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TableColumn {
+    /// Display header for the column.
+    pub header: String,
+    /// Optional width hint (number of terminal columns or CSS units depending on host).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub width: Option<u32>,
+}
+
+impl TableColumn {
+    pub fn new(header: impl Into<String>) -> Self {
+        Self { header: header.into(), width: None }
+    }
+
+    pub fn with_width(mut self, width: u32) -> Self {
+        self.width = Some(width);
+        self
+    }
+}
+
+// ── KVPair ───────────────────────────────────────────────────────────────────
+
+/// A single label/value row for [`Component::KeyValue`].
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct KVPair {
+    pub label: String,
+    pub value: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub value_color: Option<Color>,
+}
+
+impl KVPair {
+    pub fn new(label: impl Into<String>, value: impl Into<String>) -> Self {
+        Self { label: label.into(), value: value.into(), value_color: None }
+    }
+
+    pub fn with_color(mut self, color: Color) -> Self {
+        self.value_color = Some(color);
+        self
+    }
+}
+
+// ── BadgeVariant ─────────────────────────────────────────────────────────────
+
+/// Visual style hint for a [`Component::Badge`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BadgeVariant {
+    Default,
+    Outline,
+    Filled,
+    Subtle,
+}
+
+impl Default for BadgeVariant {
+    fn default() -> Self {
+        Self::Default
+    }
+}
+
 // ── Component ────────────────────────────────────────────────────────────────
 
 /// UI components that a plugin can render in the dashboard.
@@ -90,10 +159,42 @@ pub enum Component {
     },
     /// A horizontal divider.
     Divider,
+    /// A tabular grid with named columns and string rows.
+    Table {
+        columns: Vec<TableColumn>,
+        rows: Vec<Vec<String>>,
+    },
+    /// A vertical list of label/value pairs (e.g. metadata summary).
+    KeyValue {
+        pairs: Vec<KVPair>,
+    },
+    /// A small inline label, optionally colored and styled.
+    Badge {
+        label: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        color: Option<Color>,
+        #[serde(default, skip_serializing_if = "is_default_badge_variant")]
+        variant: BadgeVariant,
+    },
+    /// A progress bar with an optional label.
+    Progress {
+        /// Current value. Should be in the range `[0, max]`.
+        value: f64,
+        /// Maximum value.
+        max: f64,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        label: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        color: Option<Color>,
+    },
 }
 
 fn is_default_text_style(s: &TextStyle) -> bool {
     s == &TextStyle::default()
+}
+
+fn is_default_badge_variant(v: &BadgeVariant) -> bool {
+    v == &BadgeVariant::Default
 }
 
 // ── Capability ───────────────────────────────────────────────────────────────
@@ -129,6 +230,91 @@ pub struct PluginManifest {
     /// Icon key from the dashboard icon map, e.g. "Like", "Mission".
     #[serde(skip_serializing_if = "Option::is_none")]
     pub icon: Option<String>,
+}
+
+// ── RestartPolicy ─────────────────────────────────────────────────────────────
+
+/// Controls how the registry respawns a plugin after a non-clean exit
+/// (HOTPLUG-12).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RestartPolicy {
+    /// Never respawn the plugin, even after a crash.
+    Never,
+    /// Respawn up to 3 times with exponential backoff on non-zero exit (default).
+    OnFailure,
+    /// Respawn on any exit, including clean exit, using the same backoff schedule.
+    Always,
+}
+
+impl Default for RestartPolicy {
+    fn default() -> Self {
+        Self::OnFailure
+    }
+}
+
+// ── DustManifestBlock ─────────────────────────────────────────────────────────
+
+fn default_heartbeat_interval_ms() -> u32 {
+    10_000
+}
+
+fn default_shutdown_drain_ms() -> u32 {
+    2_000
+}
+
+fn default_spawn_timeout_ms() -> u32 {
+    5_000
+}
+
+/// The `dust:` block inside a `plugin.json` file (HOTPLUG-11).
+///
+/// Required fields: `binary`, `protocol_version`.
+/// All other fields default to the values listed in the spec.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DustManifestBlock {
+    /// Path to the plugin binary, relative to the plugin directory.
+    /// MUST NOT contain `..` segments.
+    pub binary: String,
+
+    /// The plugin's protocol version as a semver string (e.g. `"1.0.0"`).
+    pub protocol_version: String,
+
+    /// Capability names this plugin advertises. Subset of
+    /// `{"widget", "command", "scheduler"}`.
+    #[serde(default)]
+    pub capabilities: Vec<String>,
+
+    /// Respawn policy on non-clean exit. Defaults to `on_failure`.
+    #[serde(default)]
+    pub restart: RestartPolicy,
+
+    /// Heartbeat interval in milliseconds. Defaults to 10 000 ms. Must be
+    /// in the range [1 000, 300 000].
+    #[serde(default = "default_heartbeat_interval_ms")]
+    pub heartbeat_interval_ms: u32,
+
+    /// Drain deadline in milliseconds. Defaults to 2 000 ms. Must be in
+    /// the range [100, 60 000].
+    #[serde(default = "default_shutdown_drain_ms")]
+    pub shutdown_drain_ms: u32,
+
+    /// Time allowed (ms) from process spawn to socket file appearance.
+    /// Defaults to 5 000 ms. Must be in the range [1 000, 60 000].
+    #[serde(default = "default_spawn_timeout_ms")]
+    pub spawn_timeout_ms: u32,
+
+    /// JSONPath-subset strings identifying fields to redact from logs (§11).
+    #[serde(default)]
+    pub log_redact: Vec<String>,
+
+    /// Optional arguments passed to the plugin binary on spawn (GAP-01).
+    ///
+    /// When present, the registry invokes `binary args[0] args[1] …` instead of
+    /// `binary` alone. Useful for multi-command CLIs that expose dust-serve as a
+    /// subcommand (e.g. `tracker dust-serve`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub args: Option<Vec<String>>,
 }
 
 // ── ActionResult ─────────────────────────────────────────────────────────────
@@ -357,5 +543,118 @@ mod tests {
         let json = serde_json::to_string(&style).unwrap();
         let back: TextStyle = serde_json::from_str(&json).unwrap();
         assert_eq!(back.color.unwrap().r, 255);
+    }
+
+    // ── New component variants ────────────────────────────────────────────────
+
+    #[test]
+    fn table_column_builder() {
+        let col = TableColumn::new("Name").with_width(20);
+        assert_eq!(col.header, "Name");
+        assert_eq!(col.width, Some(20));
+    }
+
+    #[test]
+    fn table_serde_roundtrip() {
+        let comp = Component::Table {
+            columns: vec![
+                TableColumn::new("Name"),
+                TableColumn::new("Status").with_width(10),
+            ],
+            rows: vec![
+                vec!["alpha".into(), "ok".into()],
+                vec!["beta".into(), "pending".into()],
+            ],
+        };
+        let json = serde_json::to_string(&comp).unwrap();
+        let back: Component = serde_json::from_str(&json).unwrap();
+        assert_eq!(comp, back);
+        // wire format sanity
+        assert!(json.contains("\"type\":\"table\""));
+    }
+
+    #[test]
+    fn kv_pair_builder() {
+        let pair = KVPair::new("Version", "1.2.3").with_color(Color::new(0, 200, 0));
+        assert_eq!(pair.label, "Version");
+        assert_eq!(pair.value, "1.2.3");
+        assert!(pair.value_color.is_some());
+    }
+
+    #[test]
+    fn keyvalue_serde_roundtrip() {
+        let comp = Component::KeyValue {
+            pairs: vec![
+                KVPair::new("Host", "localhost"),
+                KVPair::new("Status", "running").with_color(Color::new(0, 255, 0)),
+            ],
+        };
+        let json = serde_json::to_string(&comp).unwrap();
+        let back: Component = serde_json::from_str(&json).unwrap();
+        assert_eq!(comp, back);
+        assert!(json.contains("\"type\":\"key_value\""));
+    }
+
+    #[test]
+    fn keyvalue_omits_color_when_absent() {
+        let pair = KVPair::new("Key", "Val");
+        let json = serde_json::to_string(&pair).unwrap();
+        assert!(!json.contains("value_color"));
+    }
+
+    #[test]
+    fn badge_serde_roundtrip_default_variant() {
+        let comp = Component::Badge {
+            label: "new".into(),
+            color: None,
+            variant: BadgeVariant::Default,
+        };
+        let json = serde_json::to_string(&comp).unwrap();
+        let back: Component = serde_json::from_str(&json).unwrap();
+        assert_eq!(comp, back);
+        // default variant should be omitted from wire format
+        assert!(!json.contains("variant"), "default variant should not serialize: {json}");
+    }
+
+    #[test]
+    fn badge_serde_roundtrip_non_default_variant() {
+        let comp = Component::Badge {
+            label: "beta".into(),
+            color: Some(Color::new(100, 149, 237)),
+            variant: BadgeVariant::Outline,
+        };
+        let json = serde_json::to_string(&comp).unwrap();
+        let back: Component = serde_json::from_str(&json).unwrap();
+        assert_eq!(comp, back);
+        assert!(json.contains("\"variant\":\"outline\""));
+    }
+
+    #[test]
+    fn progress_serde_roundtrip() {
+        let comp = Component::Progress {
+            value: 42.5,
+            max: 100.0,
+            label: Some("Loading…".into()),
+            color: Some(Color::new(70, 130, 180)),
+        };
+        let json = serde_json::to_string(&comp).unwrap();
+        let back: Component = serde_json::from_str(&json).unwrap();
+        assert_eq!(comp, back);
+        assert!(json.contains("\"type\":\"progress\""));
+    }
+
+    #[test]
+    fn progress_omits_optional_fields_when_absent() {
+        let comp = Component::Progress {
+            value: 0.0,
+            max: 1.0,
+            label: None,
+            color: None,
+        };
+        let json = serde_json::to_string(&comp).unwrap();
+        assert!(!json.contains("label"));
+        assert!(!json.contains("color"));
+        let back: Component = serde_json::from_str(&json).unwrap();
+        assert_eq!(comp, back);
     }
 }

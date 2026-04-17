@@ -1,0 +1,10 @@
+{
+  "id": "dust-hello",
+  "dust": {
+    "binary": "target/debug/dust-hello",
+    "protocol_version": "1.0.0",
+    "capabilities": ["widget", "command"],
+    "restart": "on_failure",
+    "heartbeat_interval_ms": 10000
+  }
+}

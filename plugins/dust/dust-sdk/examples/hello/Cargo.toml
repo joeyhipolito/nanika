@@ -1,0 +1,18 @@
+[workspace]
+
+[package]
+name = "dust-hello"
+version = "0.1.0"
+edition = "2021"
+description = "Reference dust plugin — greeting widget with a counter."
+
+[[bin]]
+name = "dust-hello"
+path = "src/main.rs"
+
+[dependencies]
+# Protocol types (DustPlugin, Component, ActionResult, SubscribeError, etc.)
+# are re-exported by the SDK.
+dust-sdk = { path = "../.." }
+async-trait = "0.1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "fs", "time"] }

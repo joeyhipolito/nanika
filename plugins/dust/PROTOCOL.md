@@ -180,6 +180,183 @@ Rendered as CommonMark by the dashboard.
 ```
 Horizontal separator.
 
+### Component::Table
+
+Renders a tabular grid with named column headers and string rows.
+
+```json
+{
+  "type": "table",
+  "columns": [
+    { "header": "Name" },
+    { "header": "Status", "width": 10 }
+  ],
+  "rows": [
+    ["alpha", "ok"],
+    ["beta", "pending"]
+  ]
+}
+```
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `columns` | array | — | Ordered column definitions |
+| `columns[].header` | string | — | Column heading text |
+| `columns[].width` | number | null | Width hint (terminal columns or CSS units); omitted when absent |
+| `rows` | array | — | Array of rows; each row is an array of strings matching column order |
+
+**Rendering notes:**
+- Column count in each row must match `columns` length; mismatches are host-defined behavior.
+- `width` is a hint only — the dashboard may ignore it based on available space.
+- All cell values are strings; format numbers and dates before placing them in `rows`.
+
+**Builder:**
+```rust
+Component::Table {
+    columns: vec![
+        TableColumn::new("Name"),
+        TableColumn::new("Status").with_width(10),
+    ],
+    rows: vec![
+        vec!["alpha".into(), "ok".into()],
+        vec!["beta".into(), "pending".into()],
+    ],
+}
+```
+
+### Component::KeyValue
+
+Renders a vertical list of label/value pairs. Useful for metadata summaries and status panels.
+
+```json
+{
+  "type": "key_value",
+  "pairs": [
+    { "label": "Host", "value": "localhost" },
+    {
+      "label": "Status",
+      "value": "running",
+      "value_color": { "r": 0, "g": 255, "b": 0 }
+    }
+  ]
+}
+```
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `pairs` | array | — | Ordered list of label/value rows |
+| `pairs[].label` | string | — | Left-side key text |
+| `pairs[].value` | string | — | Right-side value text |
+| `pairs[].value_color` | object | null | RGB color applied to the value only; omitted when absent |
+
+**Rendering notes:**
+- Labels are rendered in a neutral style; `value_color` affects only the value text.
+- `value_color` is omitted from the wire when not set (zero overhead).
+
+**Builder:**
+```rust
+Component::KeyValue {
+    pairs: vec![
+        KVPair::new("Host", "localhost"),
+        KVPair::new("Status", "running").with_color(Color::new(0, 255, 0)),
+    ],
+}
+```
+
+### Component::Badge
+
+Renders a small inline label chip, optionally colored and styled with a visual variant.
+
+```json
+{
+  "type": "badge",
+  "label": "beta",
+  "color": { "r": 100, "g": 149, "b": 237 },
+  "variant": "outline"
+}
+```
+
+Minimal (default variant — `variant` field omitted on wire):
+```json
+{
+  "type": "badge",
+  "label": "new"
+}
+```
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `label` | string | — | Text displayed inside the badge |
+| `color` | object | null | RGB background/accent color; omitted when absent |
+| `variant` | string | `"default"` | Visual style: `"default"`, `"outline"`, `"filled"`, `"subtle"` |
+
+**Rendering notes:**
+- `variant` is omitted from the wire when it equals `"default"` (zero-byte overhead).
+- `color` is omitted when not set.
+- How `color` interacts with `variant` is host-defined (e.g., `filled` may use `color` as background, `outline` as border color).
+
+**Builder:**
+```rust
+// Default variant — no color
+Component::Badge {
+    label: "new".into(),
+    color: None,
+    variant: BadgeVariant::Default,
+}
+
+// Styled variant with color
+Component::Badge {
+    label: "beta".into(),
+    color: Some(Color::new(100, 149, 237)),
+    variant: BadgeVariant::Outline,
+}
+```
+
+### Component::Progress
+
+Renders a progress bar with an optional label and color.
+
+```json
+{
+  "type": "progress",
+  "value": 42.5,
+  "max": 100.0,
+  "label": "Loading…",
+  "color": { "r": 70, "g": 130, "b": 180 }
+}
+```
+
+Minimal (optional fields omitted):
+```json
+{
+  "type": "progress",
+  "value": 0.5,
+  "max": 1.0
+}
+```
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `value` | number (f64) | — | Current progress value; should be in `[0, max]` |
+| `max` | number (f64) | — | Maximum value defining 100% |
+| `label` | string | null | Optional text rendered alongside the bar; omitted when absent |
+| `color` | object | null | RGB fill color for the bar; omitted when absent |
+
+**Rendering notes:**
+- `label` and `color` are omitted from the wire when not set (zero overhead).
+- Values outside `[0, max]` are clamped or clipped by the host — keep `value` in range.
+- Use `f64` for fractional progress (e.g., `value: 0.5, max: 1.0` or `value: 42.5, max: 100.0`).
+
+**Builder:**
+```rust
+Component::Progress {
+    value: 42.5,
+    max: 100.0,
+    label: Some("Loading…".into()),
+    color: Some(Color::new(70, 130, 180)),
+}
+```
+
 ## Request/Response Structure
 
 ### Request

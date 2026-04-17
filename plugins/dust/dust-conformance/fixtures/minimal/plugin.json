@@ -1,0 +1,9 @@
+{
+  "id": "dust-fixture-minimal",
+  "dust": {
+    "binary": "../../../target/debug/dust-fixture-minimal",
+    "spawn_timeout_ms": 5000,
+    "shutdown_drain_ms": 2000,
+    "heartbeat_interval_ms": 30000
+  }
+}

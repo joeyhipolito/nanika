@@ -1,0 +1,15 @@
+{
+  "name": "python-stub",
+  "version": "0.1.0",
+  "description": "Minimal Python stub implementing the dust v1 handshake protocol.",
+  "build": "python3 -m py_compile plugin.py",
+  "tags": ["stub", "example", "python"],
+  "dust": {
+    "plugin_id": "python-stub",
+    "binary": "plugin.py",
+    "spawn_timeout_ms": 5000,
+    "capabilities": [
+      { "kind": "command", "prefix": "python-stub" }
+    ]
+  }
+}
