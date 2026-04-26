@@ -28,6 +28,14 @@
   /* Interaction */
   --selected-bg: rgba(255, 255, 255, 0.09);
   --hover-bg: rgba(255, 255, 255, 0.05);
+
+  /* Intaglio palette — used by AgentTurn + CodeDiff */
+  --intaglio-terracotta: #DA7757;
+  --intaglio-cream: #F2EAD7;
+  --intaglio-ink: #2C1810;
+  --diff-add-bg: rgba(218, 119, 87, 0.10);
+  --diff-remove-bg: rgba(229, 83, 75, 0.10);
+  --diff-gutter-fg: var(--text-secondary);
 }
 
 *,
@@ -85,4 +93,40 @@ input[type='search']::-webkit-search-results-decoration {
 
 ::-webkit-scrollbar-thumb:hover {
   background: rgba(255, 255, 255, 0.22);
+}
+
+/* Summoning transition — 120ms fade + 6px upward translate */
+.dust-wrapper {
+  width: 100%;
+  height: 100%;
+  opacity: 0;
+  transform: translateY(6px);
+  transition: opacity 120ms ease-out, transform 120ms ease-out;
+  pointer-events: none;
+}
+
+.dust-wrapper.visible {
+  opacity: 1;
+  transform: translateY(0);
+  pointer-events: auto;
+}
+
+/* Third column — slides in from right when expanded (⌘E) */
+.dust-third-col {
+  width: 0;
+  flex-shrink: 0;
+  overflow: hidden;
+  opacity: 0;
+  border-left: 1px solid transparent;
+  transition:
+    width 180ms ease-out,
+    opacity 150ms ease-out,
+    border-color 180ms ease-out;
+}
+
+.layout-expanded .dust-third-col {
+  width: 380px;
+  opacity: 1;
+  border-left-color: var(--border);
+  overflow: hidden; /* clip during transition; inner div handles scroll */
 }

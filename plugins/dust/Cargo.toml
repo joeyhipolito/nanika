@@ -1,4 +1,21 @@
 [workspace]
-members = ["dust-core", "dust-sdk", "dust-registry", "dust-conformance", "dust-conformance/fixtures/minimal"]
-exclude = ["dust-dashboard", "src-tauri", "plugins/hello-plugin", "plugins/dummy-plugin", "plugins/system-plugin", "plugins/dust-scheduler", "plugins/dust-health", "plugins/dust-tracker"]
+members = [
+    "dust-core",
+    "dust-sdk",
+    "dust-registry",
+    "dust-conformance",
+    "dust-conformance/fixtures/minimal",
+    "dust-dashboard",
+]
+exclude = ["src-tauri", "plugins/hello-plugin", "plugins/dummy-plugin", "plugins/system-plugin", "plugins/dust-scheduler", "plugins/dust-health", "plugins/dust-tracker"]
 resolver = "2"
+
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "fs", "sync", "time"] }
+thiserror = "1"
+reqwest = { version = "0.12", features = ["json", "stream"], default-features = false }
+eventsource-stream = "0.2"
+futures-util = "0.3"
+chrono = { version = "0.4", features = ["serde"] }

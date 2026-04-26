@@ -16,6 +16,7 @@ use ratatui::{backend::CrosstermBackend, Terminal};
 
 mod app;
 mod component_renderer;
+mod slash_grammar;
 mod ui;
 
 use app::App;
@@ -31,25 +32,20 @@ async fn main() -> Result<()> {
         original_hook(info);
     }));
 
+    // Initialise the registry BEFORE entering the alt screen so any startup
+    // diagnostics (plugin spawn failures, parse errors) land on the normal
+    // terminal instead of corrupting the TUI.
+    let registry = Registry::new()
+        .await
+        .map(Arc::new)
+        .context("initialise plugin registry")?;
+
     enable_raw_mode().context("enable raw mode")?;
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen, EnableMouseCapture)
         .context("enter alternate screen")?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend).context("create terminal")?;
-
-    let registry = match Registry::new().await {
-        Ok(r) => Arc::new(r),
-        Err(e) => {
-            let _ = disable_raw_mode();
-            let _ = execute!(
-                terminal.backend_mut(),
-                LeaveAlternateScreen,
-                DisableMouseCapture,
-            );
-            return Err(e).context("initialise plugin registry");
-        }
-    };
 
     let mut app = App::new(Arc::clone(&registry));
     app.refresh_results().await;
@@ -85,6 +81,11 @@ async fn run_app<B: ratatui::backend::Backend>(
             if let Event::Key(key) = ev {
                 app.handle_key(key).await;
             }
+        }
+
+        // Drain any plugin events received on the live subscription channel.
+        while let Some(event) = app.try_recv_event() {
+            app.handle_plugin_event(event).await;
         }
 
         // Periodically sync the results list with the registry (hot-plug).

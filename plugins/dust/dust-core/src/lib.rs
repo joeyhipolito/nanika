@@ -137,6 +137,51 @@ impl Default for BadgeVariant {
     }
 }
 
+// ── Hunk / DiffLine / DiffLineKind ───────────────────────────────────────────
+
+/// The three diff-line categories.
+///
+/// `serde(rename_all = "snake_case")` matches the host-wide convention and
+/// yields on-the-wire values `"context" | "add" | "remove"`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DiffLineKind {
+    Context,
+    Add,
+    Remove,
+}
+
+/// One line inside a [`Hunk`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DiffLine {
+    pub kind: DiffLineKind,
+    pub content: String,
+}
+
+/// A single `@@` block inside a [`Component::CodeDiff`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Hunk {
+    /// Stable per-render hunk id. Used as `item_id` in the accept-dispatch
+    /// round-trip. The emitting plugin chooses the format; the host treats it
+    /// as opaque bytes.
+    pub id: String,
+    /// 1-based line number in the pre-image; `0` means the file did not
+    /// previously exist.
+    pub old_start: u32,
+    /// Line count in the pre-image. `0` for a file-creation hunk.
+    pub old_count: u32,
+    /// 1-based line number in the post-image; `0` means the file will be
+    /// deleted.
+    pub new_start: u32,
+    /// Line count in the post-image. `0` for a file-deletion hunk.
+    pub new_count: u32,
+    /// Free-form human label shown next to the `@@ … @@` range (e.g. a
+    /// function name). Omitted from the wire format when `None`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub header: Option<String>,
+    pub lines: Vec<DiffLine>,
+}
+
 // ── Component ────────────────────────────────────────────────────────────────
 
 /// UI components that a plugin can render in the dashboard.
@@ -187,6 +232,101 @@ pub enum Component {
         #[serde(skip_serializing_if = "Option::is_none")]
         color: Option<Color>,
     },
+    /// A single chat turn from a user or assistant (chat plugin).
+    ///
+    /// When `streaming` is true the `content` field contains a partial message
+    /// that is still being appended to. Hosts should show a blinking caret at
+    /// the end of the content until streaming becomes false or the component
+    /// is replaced.
+    AgentTurn {
+        /// "user" or "assistant"
+        role: String,
+        /// Message text (may be partial while `streaming` is true).
+        content: String,
+        /// True while the turn is still being streamed from the model.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        streaming: bool,
+        /// Unix timestamp in milliseconds, if known.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        timestamp: Option<u64>,
+    },
+    /// A proposed file edit, rendered inline so the user can accept or reject
+    /// each hunk with a single keystroke (ratatui) or click (React).
+    ///
+    /// The emitting plugin owns the `hunks[i].id` values and the physical
+    /// write (via the `code_diff.accept_hunk` action — see
+    /// DESIGN-CODEDIFF.md §e).
+    CodeDiff {
+        /// Absolute path to the target file. MUST be inside `$HOME` —
+        /// validated at accept time by the emitting plugin, not at render
+        /// time.
+        path: String,
+        /// Display name shown in the file-header chip. Plugin-supplied so
+        /// the host does not need to know OS path rules.
+        basename: String,
+        /// Hint for syntax highlighting (e.g. `"rust"`, `"tsx"`).
+        #[serde(skip_serializing_if = "Option::is_none")]
+        language: Option<String>,
+        /// Rendered in order; an empty array is a protocol violation and
+        /// the host SHOULD render an error placeholder.
+        hunks: Vec<Hunk>,
+    },
+    /// A single tool call within an agentic turn (chat plugin).
+    ///
+    /// Emitted at each status transition: pending → running → ok/err.
+    /// Hosts use `tool_use_id` as a stable React key for in-place re-renders.
+    ToolCallBeat {
+        /// Stable Anthropic `toolu_…` id.
+        tool_use_id: String,
+        /// Tool name as declared, e.g. `"tracker.next"`.
+        name: String,
+        /// Input arguments; `None` while the input is still streaming.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        params: Option<serde_json::Value>,
+        /// Tool result; `None` while pending or running.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        result: Option<serde_json::Value>,
+        /// Current lifecycle state.
+        status: ToolCallStatus,
+        /// Unix milliseconds when the block started.
+        started_ms: u64,
+        /// Unix milliseconds when status left `Running`; `None` while running.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        finished_ms: Option<u64>,
+    },
+    /// A pointer to a file (and optional line) that the user can hover to
+    /// preview or ⌘⇧E to open in QuickEditor / their external editor.
+    ///
+    /// The host validates `path` against `$HOME` at preview and open time; the
+    /// emitting plugin does not need to pre-validate. Agents SHOULD emit
+    /// absolute paths — relative paths are rejected by `validate_path` at
+    /// open time.
+    FileRef {
+        /// Absolute path to the target file. MUST be inside `$HOME` when
+        /// opened. Emitting plugins need not pre-validate.
+        path: String,
+        /// Display name for the chip. When `None`, the host derives it from
+        /// `path` (`basename(path)`). Omitted from wire when `None`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        basename: Option<String>,
+        /// 1-based cursor line. Omitted from wire when `None`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        line: Option<u32>,
+    },
+}
+
+/// Lifecycle state for a [`Component::ToolCallBeat`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolCallStatus {
+    /// Input still streaming from the model.
+    Pending,
+    /// Dispatched to the owning plugin; waiting for its response.
+    Running,
+    /// Plugin returned success.
+    Ok,
+    /// Plugin returned an error or the call timed out.
+    Err,
 }
 
 fn is_default_text_style(s: &TextStyle) -> bool {
@@ -654,6 +794,295 @@ mod tests {
         let json = serde_json::to_string(&comp).unwrap();
         assert!(!json.contains("label"));
         assert!(!json.contains("color"));
+        let back: Component = serde_json::from_str(&json).unwrap();
+        assert_eq!(comp, back);
+    }
+
+    // ── AgentTurn ─────────────────────────────────────────────────────────────
+
+    #[test]
+    fn agent_turn_user_serde_roundtrip() {
+        let comp = Component::AgentTurn {
+            role: "user".into(),
+            content: "Hello there".into(),
+            streaming: false,
+            timestamp: Some(1_713_600_000_000),
+        };
+        let json = serde_json::to_string(&comp).unwrap();
+        let back: Component = serde_json::from_str(&json).unwrap();
+        assert_eq!(comp, back);
+        assert!(json.contains("\"type\":\"agent_turn\""));
+        assert!(json.contains("\"role\":\"user\""));
+        assert!(json.contains("\"timestamp\""));
+    }
+
+    #[test]
+    fn agent_turn_assistant_streaming_serde_roundtrip() {
+        let comp = Component::AgentTurn {
+            role: "assistant".into(),
+            content: "Thinking…".into(),
+            streaming: true,
+            timestamp: None,
+        };
+        let json = serde_json::to_string(&comp).unwrap();
+        let back: Component = serde_json::from_str(&json).unwrap();
+        assert_eq!(comp, back);
+        assert!(json.contains("\"streaming\":true"));
+    }
+
+    #[test]
+    fn agent_turn_omits_streaming_when_false() {
+        let comp = Component::AgentTurn {
+            role: "assistant".into(),
+            content: "Done.".into(),
+            streaming: false,
+            timestamp: None,
+        };
+        let json = serde_json::to_string(&comp).unwrap();
+        assert!(!json.contains("streaming"), "streaming:false should be omitted: {json}");
+        assert!(!json.contains("timestamp"), "absent timestamp should be omitted: {json}");
+        let back: Component = serde_json::from_str(&json).unwrap();
+        assert_eq!(comp, back);
+    }
+
+    #[test]
+    fn agent_turn_deserializes_from_fixture() {
+        // Manually-crafted JSON as a host would send it.
+        let json = r#"{"type":"agent_turn","role":"assistant","content":"Hello! How can I help?","streaming":false}"#;
+        let comp: Component = serde_json::from_str(json).unwrap();
+        match comp {
+            Component::AgentTurn { role, content, streaming, timestamp } => {
+                assert_eq!(role, "assistant");
+                assert_eq!(content, "Hello! How can I help?");
+                assert!(!streaming);
+                assert!(timestamp.is_none());
+            }
+            _ => panic!("expected AgentTurn"),
+        }
+    }
+
+    // ── CodeDiff ──────────────────────────────────────────────────────────────
+
+    fn fixture_code_diff_two_hunks() -> Component {
+        Component::CodeDiff {
+            path: "/Users/joey/nanika/plugins/dust/dust-core/src/lib.rs".into(),
+            basename: "lib.rs".into(),
+            language: Some("rust".into()),
+            hunks: vec![
+                Hunk {
+                    id: "h-0".into(),
+                    old_start: 142,
+                    old_count: 3,
+                    new_start: 142,
+                    new_count: 4,
+                    header: Some("pub enum Component".into()),
+                    lines: vec![
+                        DiffLine {
+                            kind: DiffLineKind::Context,
+                            content: "#[serde(tag = \"type\", rename_all = \"snake_case\")]".into(),
+                        },
+                        DiffLine {
+                            kind: DiffLineKind::Context,
+                            content: "pub enum Component {".into(),
+                        },
+                        DiffLine {
+                            kind: DiffLineKind::Remove,
+                            content: "    Text {".into(),
+                        },
+                        DiffLine {
+                            kind: DiffLineKind::Add,
+                            content: "    CodeDiff(CodeDiffBody),".into(),
+                        },
+                        DiffLine {
+                            kind: DiffLineKind::Add,
+                            content: "    Text {".into(),
+                        },
+                    ],
+                },
+                Hunk {
+                    id: "h-1".into(),
+                    old_start: 208,
+                    old_count: 0,
+                    new_start: 209,
+                    new_count: 2,
+                    header: None,
+                    lines: vec![
+                        DiffLine {
+                            kind: DiffLineKind::Context,
+                            content: "}".into(),
+                        },
+                        DiffLine {
+                            kind: DiffLineKind::Add,
+                            content: "".into(),
+                        },
+                        DiffLine {
+                            kind: DiffLineKind::Add,
+                            content: "// new trailing helper".into(),
+                        },
+                    ],
+                },
+            ],
+        }
+    }
+
+    #[test]
+    fn code_diff_serde_roundtrip() {
+        let comp = fixture_code_diff_two_hunks();
+        let json = serde_json::to_string(&comp).unwrap();
+        let back: Component = serde_json::from_str(&json).unwrap();
+        assert_eq!(comp, back);
+        assert!(json.contains("\"type\":\"code_diff\""));
+        assert!(json.contains("\"kind\":\"context\""));
+        assert!(json.contains("\"kind\":\"add\""));
+        assert!(json.contains("\"kind\":\"remove\""));
+    }
+
+    #[test]
+    fn code_diff_omits_language_when_none() {
+        let comp = Component::CodeDiff {
+            path: "/tmp/x.rs".into(),
+            basename: "x.rs".into(),
+            language: None,
+            hunks: vec![Hunk {
+                id: "h-0".into(),
+                old_start: 1,
+                old_count: 0,
+                new_start: 1,
+                new_count: 1,
+                header: None,
+                lines: vec![DiffLine {
+                    kind: DiffLineKind::Add,
+                    content: "hi".into(),
+                }],
+            }],
+        };
+        let json = serde_json::to_string(&comp).unwrap();
+        assert!(!json.contains("\"language\""), "language:None should be omitted: {json}");
+        assert!(!json.contains("\"header\""), "header:None should be omitted: {json}");
+    }
+
+    #[test]
+    fn code_diff_deserializes_from_design_fixture() {
+        // Copied verbatim from DESIGN-CODEDIFF.md §a.
+        let json = r##"{
+          "type": "code_diff",
+          "path": "/Users/joey/nanika/plugins/dust/dust-core/src/lib.rs",
+          "basename": "lib.rs",
+          "language": "rust",
+          "hunks": [
+            {
+              "id": "h-0",
+              "old_start": 142,
+              "old_count": 3,
+              "new_start": 142,
+              "new_count": 4,
+              "header": "pub enum Component",
+              "lines": [
+                { "kind": "context", "content": "#[serde(tag = \"type\", rename_all = \"snake_case\")]" },
+                { "kind": "context", "content": "pub enum Component {" },
+                { "kind": "remove",  "content": "    Text {" },
+                { "kind": "add",     "content": "    CodeDiff(CodeDiffBody)," },
+                { "kind": "add",     "content": "    Text {" }
+              ]
+            },
+            {
+              "id": "h-1",
+              "old_start": 208,
+              "old_count": 0,
+              "new_start": 209,
+              "new_count": 2,
+              "header": null,
+              "lines": [
+                { "kind": "context", "content": "}" },
+                { "kind": "add",     "content": "" },
+                { "kind": "add",     "content": "// new trailing helper" }
+              ]
+            }
+          ]
+        }"##;
+        let parsed: Component = serde_json::from_str(json).unwrap();
+        assert_eq!(parsed, fixture_code_diff_two_hunks());
+    }
+
+    #[test]
+    fn code_diff_rejects_unknown_kind() {
+        let json = r#"{
+            "type":"code_diff","path":"/tmp/x","basename":"x","hunks":[
+              {"id":"h-0","old_start":1,"old_count":1,"new_start":1,"new_count":1,
+               "lines":[{"kind":"sparkle","content":"?"}]}
+            ]}"#;
+        let result: Result<Component, _> = serde_json::from_str(json);
+        assert!(result.is_err(), "unknown DiffLineKind must not silently deserialize");
+    }
+
+    #[test]
+    fn unknown_component_type_falls_back_gracefully() {
+        // A future or older-host component type unknown to this version should
+        // fail deserialization (expected — the host guards with fallback logic).
+        // This test verifies the error path rather than silent data loss.
+        let json = r#"{"type":"sparkle_button","label":"Click me"}"#;
+        let result: Result<Component, _> = serde_json::from_str(json);
+        assert!(result.is_err(), "unknown type must not silently deserialize as a known variant");
+    }
+
+    #[test]
+    fn tool_call_beat_serde_roundtrip() {
+        let comp = Component::ToolCallBeat {
+            tool_use_id: "toolu_01ABC".into(),
+            name: "tracker.next".into(),
+            params: Some(serde_json::json!({})),
+            result: Some(serde_json::json!({"issue_id": "TRK-1"})),
+            status: ToolCallStatus::Ok,
+            started_ms: 1_000,
+            finished_ms: Some(1_247),
+        };
+        let json = serde_json::to_string(&comp).unwrap();
+        let back: Component = serde_json::from_str(&json).unwrap();
+        assert_eq!(comp, back);
+        assert!(json.contains("\"type\":\"tool_call_beat\""));
+        assert!(json.contains("\"status\":\"ok\""));
+    }
+
+    #[test]
+    fn tool_call_beat_running_omits_finished_ms() {
+        let comp = Component::ToolCallBeat {
+            tool_use_id: "toolu_02".into(),
+            name: "mock.echo".into(),
+            params: None,
+            result: None,
+            status: ToolCallStatus::Running,
+            started_ms: 500,
+            finished_ms: None,
+        };
+        let json = serde_json::to_string(&comp).unwrap();
+        assert!(!json.contains("finished_ms"), "finished_ms should be omitted when None");
+        assert!(!json.contains("\"params\""), "params should be omitted when None");
+    }
+
+    #[test]
+    fn file_ref_full_roundtrip() {
+        let comp = Component::FileRef {
+            path: "/Users/joey/nanika/plugins/dust/dust-core/src/lib.rs".into(),
+            basename: Some("lib.rs".into()),
+            line: Some(190),
+        };
+        let json = serde_json::to_string(&comp).unwrap();
+        let back: Component = serde_json::from_str(&json).unwrap();
+        assert_eq!(comp, back);
+        assert!(json.contains("\"type\":\"file_ref\""));
+        assert!(json.contains("\"line\":190"));
+    }
+
+    #[test]
+    fn file_ref_minimal_omits_optional_fields() {
+        let comp = Component::FileRef {
+            path: "/Users/joey/nanika/README.md".into(),
+            basename: None,
+            line: None,
+        };
+        let json = serde_json::to_string(&comp).unwrap();
+        assert!(!json.contains("basename"), "basename omitted when None");
+        assert!(!json.contains("line"), "line omitted when None");
         let back: Component = serde_json::from_str(&json).unwrap();
         assert_eq!(comp, back);
     }

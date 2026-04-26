@@ -76,6 +76,11 @@ const MAX_REGISTRY_CONNECTIONS_PER_PLUGIN: usize = 1;
 /// Capacity of the per-plugin event broadcast channel.
 const EVENT_BROADCAST_CAPACITY: usize = 2_048;
 
+// ── NEXT_CONN_ID ──────────────────────────────────────────────────────────────
+
+/// Monotonically-increasing counter for generating unique [`ConnectionId`]s.
+static NEXT_CONN_ID: AtomicU64 = AtomicU64::new(1);
+
 // ── ConnectionId ──────────────────────────────────────────────────────────────
 
 /// Opaque identifier for a subscriber connection.
@@ -187,6 +192,73 @@ impl std::fmt::Debug for SubscribeResult {
     }
 }
 
+// ── SubscriptionHandle ────────────────────────────────────────────────────────
+
+/// Combined result of [`Registry::connect_and_subscribe`].
+///
+/// Bundles the connection/subscription identifiers needed for cleanup with the
+/// replay snapshot and live broadcast receiver returned by
+/// [`Registry::subscribe_plugin_events`].
+pub struct SubscriptionHandle {
+    /// Plugin whose events are being streamed.
+    pub plugin_id: String,
+    /// Opaque connection slot identifier — needed to close the slot.
+    pub conn_id: ConnectionId,
+    /// Subscription identifier — needed for `events.unsubscribe`.
+    pub subscription_id: String,
+    /// All retained events with `sequence >= since_sequence` (REPLAY-04).
+    pub events: Vec<EventEnvelope>,
+    /// Sequence number the next live event will carry.
+    pub next_sequence: u64,
+    /// Live push channel — receive new events as the plugin emits them.
+    pub live_rx: tokio::sync::broadcast::Receiver<EventEnvelope>,
+}
+
+// ── EventStream ───────────────────────────────────────────────────────────────
+
+/// A live event stream returned by [`Registry::open_event_stream`].
+///
+/// Wraps the connection/subscription identifiers needed for cleanup alongside
+/// a pollable broadcast receiver.  Pass `conn_id` and `subscription_id` to
+/// [`Registry::disconnect_subscriber`] (or [`Registry::close_event_stream`])
+/// when done to release the subscriber slot.
+pub struct EventStream {
+    /// Plugin whose events are being streamed.
+    pub plugin_id: String,
+    /// Opaque connection slot identifier — needed to close the slot.
+    pub conn_id: ConnectionId,
+    /// Subscription identifier — needed for `events.unsubscribe`.
+    pub subscription_id: String,
+    live_rx: tokio::sync::broadcast::Receiver<EventEnvelope>,
+}
+
+impl EventStream {
+    /// Poll for the next live event.
+    ///
+    /// Lagged frames (broadcast channel overflow) are silently skipped; the ring
+    /// provides replay on reconnect.  Returns `None` when the sender is closed
+    /// (plugin dead or registry shutting down).
+    pub async fn next(&mut self) -> Option<EventEnvelope> {
+        loop {
+            match self.live_rx.recv().await {
+                Ok(event) => return Some(event),
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => return None,
+            }
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn new_for_test(live_rx: tokio::sync::broadcast::Receiver<EventEnvelope>) -> Self {
+        Self {
+            plugin_id: "test".into(),
+            conn_id: ConnectionId(0),
+            subscription_id: "test-sub".into(),
+            live_rx,
+        }
+    }
+}
+
 // ── Error ─────────────────────────────────────────────────────────────────────
 
 /// Errors returned by [`Registry`] operations.
@@ -224,6 +296,12 @@ pub enum RegistryError {
     /// connection per plugin; a second spawn attempt is rejected with this error.
     #[error("collision: plugin {0} is already active")]
     Collision(String),
+
+    /// The manifest exists and is valid JSON but has no `dust` block.
+    /// This is not an error — the plugin simply isn't dust-aware. Callers
+    /// in the initial scan / watcher should silently skip these.
+    #[error("no dust block in {0}")]
+    NoDustBlock(String),
 }
 
 impl RegistryError {
@@ -361,6 +439,9 @@ impl Registry {
                     Ok(handle) => {
                         let id = handle.manifest.name.clone();
                         plugins_initial.insert(id, handle);
+                    }
+                    Err(RegistryError::NoDustBlock(_)) => {
+                        // Plugin isn't dust-aware. Not an error — skip silently.
                     }
                     Err(e) => eprintln!(
                         "dust-registry: skipping {}: {e}",
@@ -511,11 +592,19 @@ impl Registry {
         plugin_id: &str,
         params: ActionParams,
     ) -> Result<ActionResult, RegistryError> {
-        let (socket_path, in_flight_arc) = self.socket_and_in_flight(plugin_id).await?;
+        eprintln!("[registry] dispatch_action: plugin={plugin_id} params={params:?}");
+        let (socket_path, in_flight_arc) = match self.socket_and_in_flight(plugin_id).await {
+            Ok(v) => v,
+            Err(e) => { eprintln!("[registry] dispatch: no socket for {plugin_id}: {e}"); return Err(e); }
+        };
+        eprintln!("[registry] dispatch: socket={}", socket_path.display());
         let _guard = acquire_in_flight(&in_flight_arc)?;
         let params_value = serde_json::to_value(&params)
             .map_err(|e| RegistryError::Ipc(format!("serialize params: {e}")))?;
-        let resp = ipc_call(&socket_path, "action", params_value).await?;
+        let resp = match ipc_call(&socket_path, "action", params_value).await {
+            Ok(r) => { eprintln!("[registry] dispatch: got response"); r },
+            Err(e) => { eprintln!("[registry] dispatch: ipc_call failed: {e}"); return Err(e); }
+        };
         check_response_error(&resp)?;
         let result = resp.result.unwrap_or(serde_json::Value::Null);
         serde_json::from_value(result)
@@ -581,6 +670,9 @@ impl Registry {
                 match parse_plugin_json(&manifest_path).await {
                     Ok((id, _dust)) => {
                         on_disk.insert(id, manifest_path);
+                    }
+                    Err(RegistryError::NoDustBlock(_)) => {
+                        // Not dust-aware; skip silently.
                     }
                     Err(e) => eprintln!(
                         "dust-registry: sync — parse failed for {}: {e}",
@@ -723,6 +815,80 @@ impl Registry {
         handle_unsubscribe_request(&handle.subscribers, conn_id, subscription_id)
     }
 
+    /// Open a subscriber connection and immediately subscribe in one call.
+    ///
+    /// Generates a fresh [`ConnectionId`], registers the slot, and calls
+    /// [`subscribe_plugin_events`].  On subscribe failure the slot is closed
+    /// before returning the error.
+    pub async fn connect_and_subscribe(
+        &self,
+        plugin_id: &str,
+        since_sequence: u64,
+    ) -> Result<SubscriptionHandle, RegistryError> {
+        let conn_id = ConnectionId(NEXT_CONN_ID.fetch_add(1, Ordering::Relaxed));
+        self.open_subscriber_connection(plugin_id, conn_id).await?;
+        match self.subscribe_plugin_events(plugin_id, conn_id, since_sequence).await {
+            Ok(result) => Ok(SubscriptionHandle {
+                plugin_id: plugin_id.to_string(),
+                conn_id,
+                subscription_id: result.subscription_id,
+                events: result.events,
+                next_sequence: result.next_sequence,
+                live_rx: result.live_rx,
+            }),
+            Err(e) => {
+                let _ = self.close_subscriber_connection(plugin_id, conn_id).await;
+                Err(e)
+            }
+        }
+    }
+
+    /// Unsubscribe and close a subscriber connection opened via
+    /// [`connect_and_subscribe`].
+    ///
+    /// The unsubscribe step is best-effort — if the subscription was already
+    /// cleaned up (e.g., plugin restarted), the connection slot is still
+    /// released.
+    pub async fn disconnect_subscriber(
+        &self,
+        plugin_id: &str,
+        conn_id: ConnectionId,
+        subscription_id: &str,
+    ) -> Result<(), RegistryError> {
+        let _ = self
+            .unsubscribe_plugin_events(plugin_id, conn_id, subscription_id)
+            .await;
+        self.close_subscriber_connection(plugin_id, conn_id).await
+    }
+
+    /// Open a live event stream for `plugin_id`, starting from sequence 0.
+    ///
+    /// Allocates a fresh subscriber slot and returns an [`EventStream`] ready
+    /// for polling with [`EventStream::next`].  The caller must eventually call
+    /// [`Registry::close_event_stream`] (or [`Registry::disconnect_subscriber`]
+    /// directly) to release the slot; failing to do so leaks a subscriber slot
+    /// against the 16-connection limit.
+    pub async fn open_event_stream(&self, plugin_id: &str) -> Result<EventStream, RegistryError> {
+        let handle = self.connect_and_subscribe(plugin_id, 0).await?;
+        Ok(EventStream {
+            plugin_id: handle.plugin_id,
+            conn_id: handle.conn_id,
+            subscription_id: handle.subscription_id,
+            live_rx: handle.live_rx,
+        })
+    }
+
+    /// Release the subscriber slot held by `stream`.
+    ///
+    /// Equivalent to calling [`Registry::disconnect_subscriber`] with the
+    /// identifiers embedded in the stream.  Best-effort — errors are ignored
+    /// so callers don't need to handle cleanup failures.
+    pub async fn close_event_stream(&self, stream: EventStream) {
+        let _ = self
+            .disconnect_subscriber(&stream.plugin_id, stream.conn_id, &stream.subscription_id)
+            .await;
+    }
+
     // ── Helpers ───────────────────────────────────────────────────────────────
 
     /// Return the socket path and in-flight counter for an active plugin.
@@ -781,6 +947,10 @@ async fn handle_manifest_event(
             let manifest_path = path;
             let (id, new_dust) = match parse_plugin_json(manifest_path).await {
                 Ok(v) => v,
+                Err(RegistryError::NoDustBlock(_)) => {
+                    // Manifest exists but isn't dust-aware. Ignore.
+                    return;
+                }
                 Err(e) => {
                     eprintln!(
                         "dust-registry: manifest_parse_failure for {}: {e}",
@@ -863,6 +1033,9 @@ async fn handle_manifest_event(
                         eprintln!("dust-registry: hot-plugged {name}");
                         handle
                     });
+                }
+                Err(RegistryError::NoDustBlock(_)) => {
+                    // Plugin isn't dust-aware. Skip silently.
                 }
                 Err(e) => eprintln!(
                     "dust-registry: hot-plug failed for {}: {e}",
@@ -956,10 +1129,22 @@ async fn spawn_plugin(
     if let Some(ref args) = dust.args {
         cmd.args(args);
     }
+    let log_path = std::env::var("HOME")
+        .ok()
+        .map(|h| std::path::PathBuf::from(h).join(".alluka/logs").join(format!("plugin-{plugin_id}.log")));
+    let stderr = match &log_path {
+        Some(p) => {
+            let _ = std::fs::create_dir_all(p.parent().unwrap());
+            std::fs::OpenOptions::new().create(true).append(true).open(p)
+                .map(std::process::Stdio::from)
+                .unwrap_or(std::process::Stdio::null())
+        }
+        None => std::process::Stdio::null(),
+    };
     let child = cmd
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
+        .stderr(stderr)
         .kill_on_drop(false)
         .spawn()
         .map_err(RegistryError::Io)?;
@@ -1468,12 +1653,7 @@ async fn parse_plugin_json(
 
     let dust_value = v
         .get("dust")
-        .ok_or_else(|| {
-            RegistryError::ManifestParse(format!(
-                "missing `dust` block in {}",
-                manifest_path.display()
-            ))
-        })?
+        .ok_or_else(|| RegistryError::NoDustBlock(manifest_path.display().to_string()))?
         .clone();
 
     let dust: DustManifestBlock = serde_json::from_value(dust_value).map_err(|e| {
@@ -1707,57 +1887,44 @@ async fn ipc_call(
     method: &str,
     params: serde_json::Value,
 ) -> Result<ResponseEnvelope, RegistryError> {
-    let mut stream = UnixStream::connect(socket_path)
+    let stream = UnixStream::connect(socket_path)
         .await
         .map_err(|e| RegistryError::Ipc(format!("connect to {}: {e}", socket_path.display())))?;
+    let (mut read_half, mut write_half) = stream.into_split();
+
+    // Per §13, every new connection — including subscriber connections opened
+    // for one-shot RPCs — must complete ready/host_info before sending a
+    // request envelope. Subscriber connections don't count against the
+    // consumer budget (the lifecycle connection already claimed it), so
+    // advertise 0 here.
+    tokio::time::timeout(HANDSHAKE_TIMEOUT, read_ready_event(&mut read_half))
+        .await
+        .map_err(|_| RegistryError::Ipc("handshake: ready event timed out".into()))??;
+    send_host_info(&mut write_half, 0).await?;
 
     let envelope = Envelope::Request(RequestEnvelope {
         id: next_id(),
         method: method.into(),
         params,
     });
+    write_envelope_to_half(&mut write_half, &envelope).await?;
 
-    let payload = serde_json::to_vec(&envelope)
-        .map_err(|e| RegistryError::Ipc(format!("serialize request: {e}")))?;
-
-    let len = u32::try_from(payload.len())
-        .map(u32::to_be_bytes)
-        .map_err(|_| RegistryError::Ipc("request payload too large".into()))?;
-
-    stream
-        .write_all(&len)
-        .await
-        .map_err(|e| RegistryError::Ipc(format!("write length prefix: {e}")))?;
-    stream
-        .write_all(&payload)
-        .await
-        .map_err(|e| RegistryError::Ipc(format!("write payload: {e}")))?;
-    stream
-        .flush()
-        .await
-        .map_err(|e| RegistryError::Ipc(format!("flush: {e}")))?;
-
-    let mut len_buf = [0u8; 4];
-    stream
-        .read_exact(&mut len_buf)
-        .await
-        .map_err(|e| RegistryError::Ipc(format!("read response length: {e}")))?;
-
-    let resp_len = u32::from_be_bytes(len_buf) as usize;
-    let mut resp_buf = vec![0u8; resp_len];
-    stream
-        .read_exact(&mut resp_buf)
-        .await
-        .map_err(|e| RegistryError::Ipc(format!("read response body: {e}")))?;
-
-    let envelope: Envelope = serde_json::from_slice(&resp_buf)
-        .map_err(|e| RegistryError::Ipc(format!("parse response: {e}")))?;
-
-    match envelope {
-        Envelope::Response(r) => Ok(r),
-        _ => Err(RegistryError::Ipc(
-            "expected response envelope from plugin".into(),
-        )),
+    // Plugins may push events/heartbeats onto a fresh subscriber connection
+    // between the handshake and the response. Skip those rather than
+    // mistaking them for the response.
+    loop {
+        let envelope = read_envelope_half(&mut read_half)
+            .await?
+            .ok_or_else(|| RegistryError::Ipc("connection closed before response".into()))?;
+        match envelope {
+            Envelope::Response(r) => return Ok(r),
+            Envelope::Heartbeat(_) | Envelope::Event(_) => continue,
+            Envelope::Request(_) | Envelope::Shutdown(_) => {
+                return Err(RegistryError::Ipc(
+                    "expected response envelope from plugin".into(),
+                ));
+            }
+        }
     }
 }
 
@@ -2834,6 +3001,73 @@ mod tests {
             .open_connection(ConnectionId(MAX_SUBSCRIBERS as u64 + 1))
             .unwrap_err();
         assert_eq!(err, -33005, "17th connection must return -33005");
+    }
+
+    // ── EventStream::next ─────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn event_stream_next_returns_broadcast_events() {
+        let (_, tx, _) = make_test_components();
+        let rx = tx.subscribe();
+        let mut stream = EventStream::new_for_test(rx);
+
+        let event = make_event(1);
+        tx.send(event.clone()).unwrap();
+
+        let received = tokio::time::timeout(
+            std::time::Duration::from_millis(200),
+            stream.next(),
+        )
+        .await
+        .expect("timed out waiting for event")
+        .expect("stream closed unexpectedly");
+
+        assert_eq!(received.sequence, Some(1));
+    }
+
+    #[tokio::test]
+    async fn event_stream_next_returns_none_when_sender_closed() {
+        let (_, tx, _) = make_test_components();
+        let rx = tx.subscribe();
+        let mut stream = EventStream::new_for_test(rx);
+
+        drop(tx);
+
+        let result = tokio::time::timeout(
+            std::time::Duration::from_millis(200),
+            stream.next(),
+        )
+        .await
+        .expect("timed out waiting for close signal");
+
+        assert!(result.is_none(), "stream must return None when sender is dropped");
+    }
+
+    #[tokio::test]
+    async fn event_stream_next_skips_lagged_frames_and_continues() {
+        // Use a tiny channel so we can trigger lag without sending 2048 messages.
+        let (tx, rx) = tokio::sync::broadcast::channel::<EventEnvelope>(4);
+        let mut stream = EventStream::new_for_test(rx);
+
+        // Overflow the channel: 5 sends into capacity-4 drops the first.
+        for i in 1..=5u64 {
+            let _ = tx.send(make_event(i));
+        }
+
+        // next() must skip the Lagged error and return the oldest surviving event.
+        let received = tokio::time::timeout(
+            std::time::Duration::from_millis(200),
+            stream.next(),
+        )
+        .await
+        .expect("timed out after lag recovery")
+        .expect("stream closed unexpectedly");
+
+        // The oldest surviving event is seq=2 (seq=1 was evicted).
+        assert!(
+            received.sequence.unwrap() >= 2,
+            "must receive at least the oldest surviving event after lag"
+        );
     }
 
     // ── Close connection releases subscription ────────────────────────────────
