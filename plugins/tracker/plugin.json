@@ -6,7 +6,11 @@
   "binary": "tracker",
   "build": "cargo build --release",
   "install": "ln -sf $(pwd)/target/release/tracker ~/.alluka/bin/tracker",
-  "tags": ["issue-tracking", "task-management", "project-management"],
+  "tags": [
+    "issue-tracking",
+    "task-management",
+    "project-management"
+  ],
   "repository": {
     "type": "git",
     "url": "https://github.com/joeyhipolito/nanika",
@@ -14,13 +18,23 @@
   },
   "dust": {
     "binary": "target/debug/tracker",
-    "args": ["dust-serve"],
+    "args": [
+      "dust-serve"
+    ],
     "protocol_version": "1.0.0",
-    "capabilities": ["widget", "command", "events"],
+    "capabilities": [
+      "widget",
+      "command",
+      "events"
+    ],
     "restart": "on_failure"
   },
   "api_version": 1,
-  "provides": ["status", "items", "actions"],
+  "provides": [
+    "status",
+    "items",
+    "actions"
+  ],
   "actions": {
     "status": "tracker query status --json",
     "items": "tracker query items --json",
@@ -47,31 +61,57 @@
     "commands": {
       "create": {
         "description": "Create a new issue",
-        "args": ["<title>", "--priority <P0|P1|P2|P3>", "--parent <issue-id>", "--labels <csv>", "--assignee <name>"]
+        "args": [
+          "<title>",
+          "--priority <P0|P1|P2|P3>",
+          "--parent <issue-id>",
+          "--labels <csv>",
+          "--assignee <name>"
+        ]
       },
       "show": {
         "description": "Show a single issue with full details",
-        "args": ["<issue-id>"]
+        "args": [
+          "<issue-id>"
+        ]
       },
       "list": {
         "description": "List issues with optional filters",
-        "args": ["--status <open|in-progress|done|cancelled>", "--priority <P0|P1|P2|P3>"]
+        "args": [
+          "--status <open|in-progress|done|cancelled>",
+          "--priority <P0|P1|P2|P3>"
+        ]
       },
       "update": {
         "description": "Update issue fields",
-        "args": ["<issue-id>", "--status <status>", "--priority <priority>", "--assignee <name>"]
+        "args": [
+          "<issue-id>",
+          "--status <status>",
+          "--priority <priority>",
+          "--assignee <name>"
+        ]
       },
       "delete": {
         "description": "Delete an issue",
-        "args": ["<issue-id>"]
+        "args": [
+          "<issue-id>"
+        ]
       },
       "link": {
         "description": "Link two issues",
-        "args": ["<from-id>", "<to-id>", "--type <blocks|relates_to|supersedes|duplicates>"]
+        "args": [
+          "<from-id>",
+          "<to-id>",
+          "--type <blocks|relates_to|supersedes|duplicates>"
+        ]
       },
       "unlink": {
         "description": "Remove a link between issues",
-        "args": ["<from-id>", "<to-id>", "--type <type>"]
+        "args": [
+          "<from-id>",
+          "<to-id>",
+          "--type <type>"
+        ]
       },
       "ready": {
         "description": "List open issues with no blocking dependencies"
@@ -84,11 +124,17 @@
       },
       "search": {
         "description": "Search issues by title or description",
-        "args": ["<query>"]
+        "args": [
+          "<query>"
+        ]
       },
       "comment": {
         "description": "Add a comment to an issue",
-        "args": ["<issue-id>", "<body>", "--author <name>"]
+        "args": [
+          "<issue-id>",
+          "<body>",
+          "--author <name>"
+        ]
       }
     }
   }

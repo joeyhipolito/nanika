@@ -3,6 +3,10 @@ name = "tracker"
 version = "0.1.0"
 edition = "2021"
 
+[lib]
+name = "tracker"
+path = "src/lib.rs"
+
 [[bin]]
 name = "tracker"
 path = "src/main.rs"
@@ -20,3 +24,6 @@ dust-sdk = { path = "../../plugins/dust/dust-sdk" }
 dust-core = { path = "../../plugins/dust/dust-core" }
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 async-trait = "0.1"
+
+[dev-dependencies]
+tempfile = "3"
