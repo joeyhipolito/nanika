@@ -37,10 +37,16 @@ output_requires:
 - Run /simplify after review: once the review is written and fixes are applied, invoke the `/simplify` skill to review all changed files before considering the task complete
 
 ## Output Contract
+- Write the review artifact to `<worker_dir>/review.md` — literal filename `review.md`, no slugged prefix (`review-<slug>.md`) or suffix (`<slug>-review.md`), no alternate extensions, and no writes to `shared/artifacts/`
+- The file MUST open with `---` on line 1 — no verdict label, no blank line, and no commentary before the YAML frontmatter block. Put the overall verdict inside the body under `## Summary`
 - Must include a Summary paragraph covering what the change does and overall assessment
-- Must include a Blockers section (even if empty)
-- Must include a Warnings section (even if empty)
-- Every finding must include file:line reference, description of the problem, and a specific fix suggestion
+- Must include a Blockers section (even if empty): `### Blockers`
+- Must include a Warnings section (even if empty): `### Warnings`
+- Every Blockers/Warnings item must use one of these formats:
+  - `- **[file:line]** Description` (bracket format)
+  - `- **`file:line`** Description` (backtick format)
+- Blockers may span multiple lines for extended explanation including specific fix suggestions (Fix:, Why:, etc.)
+- Each blocker must include a specific fix suggestion — not just what's wrong, but how to fix it
 - At least one acknowledgment of something done well must be included
 - Output follows the Code Review format: Summary, Blockers, Warnings, Suggestions, What's Good
 
