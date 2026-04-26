@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/joeyhipolito/orchestrator-cli/internal/core"
-	"github.com/joeyhipolito/orchestrator-cli/internal/sdk"
+	"github.com/joeyhipolito/nanika/shared/sdk"
 )
 
 // ---------------------------------------------------------------------------

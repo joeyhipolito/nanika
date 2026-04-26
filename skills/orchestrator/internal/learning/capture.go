@@ -11,7 +11,7 @@ import (
 	"time"
 
 	"github.com/joeyhipolito/orchestrator-cli/internal/event"
-	"github.com/joeyhipolito/orchestrator-cli/internal/sdk"
+	"github.com/joeyhipolito/nanika/shared/sdk"
 )
 
 // maxContentLen caps the length of a captured learning to prevent storing
@@ -70,13 +70,15 @@ func CaptureFromText(text, workerName, domain, workspaceID string) []Learning {
 				seen[hash] = true
 
 				l := Learning{
-					ID:          generateID(),
-					Type:        marker.Type,
-					Content:     content,
-					Domain:      domain,
-					WorkerName:  workerName,
-					WorkspaceID: workspaceID,
-					CreatedAt:   time.Now(),
+					ID:           generateID(),
+					Type:         marker.Type,
+					Marker:       marker.Marker,
+					Content:      content,
+					Domain:       domain,
+					WorkerName:   workerName,
+					WorkspaceID:  workspaceID,
+					CreatedAt:    time.Now(),
+					QualityScore: HeuristicScore(marker.Type),
 				}
 				result = append(result, l)
 
@@ -206,14 +208,15 @@ Worker output:
 			seen[hash] = true
 
 			result = append(result, Learning{
-				ID:          generateID(),
-				Type:        ltype,
-				Content:     content,
-				Context:     "focus-captured",
-				Domain:      domain,
-				WorkerName:  workerName,
-				WorkspaceID: workspaceID,
-				CreatedAt:   time.Now(),
+				ID:           generateID(),
+				Type:         ltype,
+				Content:      content,
+				Context:      "focus-captured",
+				Domain:       domain,
+				WorkerName:   workerName,
+				WorkspaceID:  workspaceID,
+				CreatedAt:    time.Now(),
+				QualityScore: HeuristicScore(ltype),
 			})
 			break
 		}

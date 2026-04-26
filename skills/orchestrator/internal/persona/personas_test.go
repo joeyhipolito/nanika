@@ -21,8 +21,18 @@ func TestLoad(t *testing.T) {
 		t.Fatal("Load() produced empty catalog")
 	}
 
-	if len(all) != 10 {
-		t.Errorf("expected 10 personas, got %d", len(all))
+	dirEntries, err := os.ReadDir(personasDir())
+	if err != nil {
+		t.Fatalf("could not read personas dir to derive expected count: %v", err)
+	}
+	wantCount := 0
+	for _, e := range dirEntries {
+		if !e.IsDir() && filepath.Ext(e.Name()) == ".md" {
+			wantCount++
+		}
+	}
+	if len(all) != wantCount {
+		t.Errorf("expected %d personas (matching disk count), got %d", wantCount, len(all))
 		for name := range all {
 			t.Logf("  loaded: %s", name)
 		}
@@ -1499,3 +1509,4 @@ func TestLLMRoutingAccuracyBenchmark(t *testing.T) {
 	t.Logf("Score: %d/%d (%.1f%%)", correct, total, accuracy)
 	t.Logf("=========================================")
 }
+

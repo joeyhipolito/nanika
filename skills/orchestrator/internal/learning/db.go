@@ -3,6 +3,7 @@ package learning
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -15,6 +16,10 @@ import (
 	_ "modernc.org/sqlite"
 )
 
+// ErrEmbedderRequired is returned by Insert when an embedder is configured but
+// fails to produce a non-empty embedding vector for the supplied learning.
+var ErrEmbedderRequired = errors.New("learning: embedder required")
+
 // minRelevanceScore is the minimum combined relevance score for a learning
 // to be included in FindRelevant results. Applied to both per-embedding
 // similarity checks during scoring and to the final sorted candidates.
@@ -24,6 +29,15 @@ const minRelevanceScore = 0.25
 // Increment this constant alongside any future schema migration that requires
 // a new binary to read the database.
 const maxSupportedVersion = 1
+
+// mmrLambda trades relevance vs. diversity in FindTopByQuality's MMR re-rank.
+// Higher values favor relevance; lower values favor diversity.
+const mmrLambda = 0.7
+
+// maxPerType caps how many learnings of the same LearningType may appear in
+// FindTopByQuality results. Prevents any single type from dominating cold-start
+// injection — see TRK-512.
+const maxPerType = 5
 
 // DB wraps a SQLite database for learnings storage.
 type DB struct {
@@ -170,13 +184,25 @@ func (d *DB) initSchema() error {
 }
 
 // Insert stores a learning with dedup.
+//
+// Write-path guard: when an embedder is supplied, the resulting row must have
+// a non-nil embedding before it lands in the table. If embedding generation
+// fails or the call returns an empty vector, Insert returns ErrEmbedderRequired
+// (wrapped) and writes nothing — this prevents the silent NULL-embedding rows
+// that the backfill subcommand exists to repair. Callers without an embedder
+// (e.g. docs ingestion without a configured API key) may pass embedder = nil;
+// that legacy path is preserved and stores a row with NULL embedding.
 func (d *DB) Insert(ctx context.Context, l Learning, embedder *Embedder) error {
 	// Generate embedding if available
 	if embedder != nil && l.Embedding == nil {
 		emb, err := embedder.Embed(ctx, l.Content)
-		if err == nil {
-			l.Embedding = emb
+		if err != nil {
+			return fmt.Errorf("learning: embedding failed for %s (%s): %w", l.ID, l.Type, errors.Join(ErrEmbedderRequired, err))
 		}
+		l.Embedding = emb
+	}
+	if embedder != nil && len(l.Embedding) == 0 {
+		return fmt.Errorf("learning: refusing to insert %s (%s) with nil embedding (embedder configured): %w", l.ID, l.Type, ErrEmbedderRequired)
 	}
 
 	// Dedup: check cosine similarity against existing
@@ -375,7 +401,8 @@ func (d *DB) hybridSearch(domain, query string, queryEmb []float32, limit int, f
 		embRows, err := d.db.Query(`
 			SELECT id, embedding FROM learnings
 			WHERE domain = ? AND archived = 0 AND embedding IS NOT NULL
-				AND (injection_count < 3 OR compliance_rate >= 0.15)
+				AND (injection_count < 20 OR compliance_rate >= 0.15)
+				AND NOT (injection_count > 100 AND compliance_rate < 0.25)
 		`, domain)
 		if err == nil {
 			for embRows.Next() {
@@ -418,7 +445,7 @@ func (d *DB) hybridSearch(domain, query string, queryEmb []float32, limit int, f
 	const candidateCols = `id, type, content, context, domain, worker_name, workspace_id,
 		tags, seen_count, used_count, quality_score, created_at, last_used_at, embedding,
 		injection_count, compliance_rate`
-	const candidateFilter = `archived = 0 AND (injection_count < 3 OR compliance_rate >= 0.15)`
+	const candidateFilter = `archived = 0 AND (injection_count < 20 OR compliance_rate >= 0.15) AND NOT (injection_count > 100 AND compliance_rate < 0.25)`
 
 	placeholders := strings.Repeat("?,", len(allIDs))
 	placeholders = placeholders[:len(placeholders)-1]
@@ -523,14 +550,26 @@ func computeRelevance(id string, normFTS, cosines map[string]float64) float64 {
 	}
 }
 
-// FindTopByQuality returns the top-K learnings ranked by quality_score × recency_weight,
-// for cold-start injection when no query context is available.
-// Applies the same compliance filter as FindRelevant (injection_count < 3 OR compliance_rate >= 0.15).
+// FindTopByQuality returns the top-K learnings for cold-start injection when
+// no query context is available. The pipeline is:
+//
+//  1. SQL fetches 2×limit candidates ordered by quality_score × recency_tier.
+//  2. A per-type cap of maxPerType prevents any LearningType from dominating.
+//  3. MMR re-ranking (lambda = mmrLambda) balances relevance against topical
+//     diversity using embedding cosine similarity — ties to duplicates get
+//     penalized so distinct topics surface.
+//  4. Final slice is truncated to limit.
+//
+// Applies the same compliance filter as FindRelevant
+// (injection_count < 20 OR compliance_rate >= 0.15).
 func (d *DB) FindTopByQuality(domain string, limit int) ([]Learning, error) {
 	if limit <= 0 {
 		limit = 20
 	}
 
+	// Fetch 2×limit candidates to give the per-type cap and MMR re-rank
+	// headroom to drop near-duplicates and low-diversity picks without
+	// starving the final slice.
 	// Recency tiers mirror recencyWeight() — thresholds must be kept in sync.
 	rows, err := d.db.Query(`
 		SELECT id, type, content, context, domain, worker_name, workspace_id,
@@ -538,7 +577,8 @@ func (d *DB) FindTopByQuality(domain string, limit int) ([]Learning, error) {
 		       injection_count, compliance_rate
 		FROM learnings
 		WHERE domain = ? AND archived = 0
-		  AND (injection_count < 3 OR compliance_rate >= 0.15)
+		  AND (injection_count < 20 OR compliance_rate >= 0.15)
+		  AND NOT (injection_count > 100 AND compliance_rate < 0.25)
 		ORDER BY quality_score * CASE
 		    WHEN (julianday('now') - julianday(created_at)) < 30  THEN 1.0
 		    WHEN (julianday('now') - julianday(created_at)) < 90  THEN 0.8
@@ -546,21 +586,108 @@ func (d *DB) FindTopByQuality(domain string, limit int) ([]Learning, error) {
 		    ELSE 0.4
 		END DESC
 		LIMIT ?
-	`, domain, limit)
+	`, domain, 2*limit) // fetch 2 * limit to feed per-type cap + MMR
 	if err != nil {
 		return nil, fmt.Errorf("querying top by quality: %w", err)
 	}
 	defer rows.Close()
 
-	var result []Learning
+	var candidates []Learning
 	for rows.Next() {
 		l, err := scanLearning(rows)
 		if err != nil {
 			continue
 		}
-		result = append(result, l)
+		candidates = append(candidates, l)
 	}
-	return result, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterating top by quality: %w", err)
+	}
+
+	capped := applyPerTypeCap(candidates, maxPerType)
+	return mmrRerank(capped, limit), nil
+}
+
+// applyPerTypeCap returns a stable-ordered subset of candidates with at most
+// perType entries per LearningType. Input order (quality-desc from SQL) is
+// preserved so the per-type survivors are the highest-quality within each type.
+func applyPerTypeCap(candidates []Learning, perType int) []Learning {
+	if perType <= 0 || len(candidates) == 0 {
+		return candidates
+	}
+	counts := make(map[LearningType]int, len(candidates))
+	out := make([]Learning, 0, len(candidates))
+	for _, l := range candidates {
+		if counts[l.Type] >= perType {
+			continue
+		}
+		counts[l.Type]++
+		out = append(out, l)
+	}
+	return out
+}
+
+// mmrRerank applies Maximal Marginal Relevance re-ranking to pool, returning
+// up to limit items. Relevance is quality_score × recency_weight; diversity is
+// 1 - max(cosine similarity to any already-selected item). When a candidate
+// has no embedding, its diversity cost falls back to 0 so legacy rows still
+// participate in ranking.
+//
+// The algorithm is O(limit × len(pool)) which is fine for Nanika's scale
+// (pool ≤ 2×limit, limit typically ≤ 30).
+func mmrRerank(pool []Learning, limit int) []Learning {
+	if limit <= 0 || len(pool) == 0 {
+		return nil
+	}
+	if len(pool) <= limit {
+		return pool
+	}
+
+	rel := make([]float64, len(pool))
+	for i, l := range pool {
+		rel[i] = l.QualityScore * recencyWeight(l.CreatedAt)
+	}
+
+	selected := make([]Learning, 0, limit)
+	used := make([]bool, len(pool))
+	for len(selected) < limit {
+		bestIdx := -1
+		var bestScore float64
+		for i, cand := range pool {
+			if used[i] {
+				continue
+			}
+			var maxSim float64
+			if len(cand.Embedding) > 0 {
+				for _, s := range selected {
+					if len(s.Embedding) == 0 {
+						continue
+					}
+					sim := cosineSimilarity(cand.Embedding, s.Embedding)
+					if sim > maxSim {
+						maxSim = sim
+					}
+				}
+			}
+			score := mmrLambda*rel[i] - (1.0-mmrLambda)*maxSim
+			if bestIdx == -1 || score > bestScore {
+				bestIdx = i
+				bestScore = score
+			}
+		}
+		if bestIdx == -1 {
+			break
+		}
+		used[bestIdx] = true
+		selected = append(selected, pool[bestIdx])
+	}
+	return selected
+}
+
+// cosineSimilarity is a thin package-internal alias over CosineSimilarity,
+// used by the MMR diversity re-ranker in FindTopByQuality.
+func cosineSimilarity(a, b []float32) float64 {
+	return CosineSimilarity(a, b)
 }
 
 // Stats returns database statistics.
@@ -626,6 +753,92 @@ func formatNullableTime(t *time.Time) interface{} {
 		return nil
 	}
 	return t.UTC().Format(time.RFC3339)
+}
+
+// BackfillCandidate is one (id, content) pair selected for embedding backfill.
+type BackfillCandidate struct {
+	ID      string
+	Content string
+}
+
+// BackfillStats summarizes the rows selected for embedding backfill.
+type BackfillStats struct {
+	Rows       int
+	TotalChars int
+}
+
+// CountEmbeddingBackfill returns row count + total content bytes for rows
+// where embedding IS NULL, optionally filtered by maxAge (only consider rows
+// created within the window). When includeArchived is false, archived = 1
+// rows are skipped. A zero maxAge means no age filter.
+func (d *DB) CountEmbeddingBackfill(ctx context.Context, maxAge time.Duration, includeArchived bool) (BackfillStats, error) {
+	q := `SELECT COUNT(*), COALESCE(SUM(LENGTH(content)), 0) FROM learnings WHERE embedding IS NULL`
+	var args []any
+	if !includeArchived {
+		q += ` AND archived = 0`
+	}
+	if maxAge > 0 {
+		q += ` AND created_at >= ?`
+		args = append(args, time.Now().Add(-maxAge).UTC().Format(time.RFC3339))
+	}
+	var s BackfillStats
+	if err := d.db.QueryRowContext(ctx, q, args...).Scan(&s.Rows, &s.TotalChars); err != nil {
+		return BackfillStats{}, fmt.Errorf("count embedding backfill: %w", err)
+	}
+	return s, nil
+}
+
+// SelectEmbeddingBackfill returns up to limit rows that need an embedding,
+// ordered by created_at ascending so resumed runs are deterministic.
+// limit <= 0 returns every matching row.
+func (d *DB) SelectEmbeddingBackfill(ctx context.Context, maxAge time.Duration, includeArchived bool, limit int) ([]BackfillCandidate, error) {
+	q := `SELECT id, content FROM learnings WHERE embedding IS NULL`
+	var args []any
+	if !includeArchived {
+		q += ` AND archived = 0`
+	}
+	if maxAge > 0 {
+		q += ` AND created_at >= ?`
+		args = append(args, time.Now().Add(-maxAge).UTC().Format(time.RFC3339))
+	}
+	q += ` ORDER BY created_at ASC`
+	if limit > 0 {
+		q += ` LIMIT ?`
+		args = append(args, limit)
+	}
+	rows, err := d.db.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, fmt.Errorf("select embedding backfill: %w", err)
+	}
+	defer rows.Close()
+
+	var out []BackfillCandidate
+	for rows.Next() {
+		var c BackfillCandidate
+		if err := rows.Scan(&c.ID, &c.Content); err != nil {
+			return nil, fmt.Errorf("scan backfill candidate: %w", err)
+		}
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+
+// SetEmbedding writes a vector to the learnings row identified by id, but
+// only when the existing embedding column is still NULL. Returns true when
+// a row was actually updated. The IS NULL guard makes the backfill safe to
+// rerun and safe under concurrent embedding by another process.
+func (d *DB) SetEmbedding(ctx context.Context, id string, emb []float32) (bool, error) {
+	if len(emb) == 0 {
+		return false, fmt.Errorf("set embedding for %s: refusing to write empty vector", id)
+	}
+	res, err := d.db.ExecContext(ctx,
+		`UPDATE learnings SET embedding = ? WHERE id = ? AND embedding IS NULL`,
+		EncodeEmbedding(emb), id)
+	if err != nil {
+		return false, fmt.Errorf("set embedding for %s: %w", id, err)
+	}
+	n, _ := res.RowsAffected()
+	return n > 0, nil
 }
 
 // CleanupOptions controls learning database pruning behavior.
@@ -738,6 +951,56 @@ func (d *DB) decayScores() {
 		WHERE created_at < datetime('now', '-30 days')
 		AND quality_score > 0.05
 	`)
+}
+
+// UpdateQualityScores recomputes quality_score for all non-archived learnings
+// using the three-factor formula: base-tier × recency-decay × (1+injection boost) × compliance multiplier.
+func (d *DB) UpdateQualityScores(ctx context.Context) (int, error) {
+	res, err := d.db.ExecContext(ctx, `
+		UPDATE learnings SET quality_score =
+		  -- Base tier by type (from archived pre-v2 scoring formula)
+		  (CASE type
+		    WHEN 'insight'    THEN 1.0
+		    WHEN 'decision'   THEN 0.8
+		    WHEN 'pattern'    THEN 0.7
+		    WHEN 'error'      THEN 0.6
+		    WHEN 'source'     THEN 0.4
+		    WHEN 'preference' THEN 0.3
+		    WHEN 'behavior'   THEN 0.3
+		    ELSE 0.5
+		  END)
+		  *
+		  -- Recency decay (step-function; SQL-portable across sqlite versions)
+		  (CASE
+		    WHEN julianday('now') - julianday(created_at) <= 7   THEN 1.0
+		    WHEN julianday('now') - julianday(created_at) <= 30  THEN 0.9
+		    WHEN julianday('now') - julianday(created_at) <= 90  THEN 0.75
+		    WHEN julianday('now') - julianday(created_at) <= 180 THEN 0.6
+		    WHEN julianday('now') - julianday(created_at) <= 365 THEN 0.4
+		    ELSE 0.25
+		  END)
+		  *
+		  -- Injection boost (log-capped — prevents legacy cohort from reinforcing incumbency)
+		  (1 + CASE
+		    WHEN injection_count = 0  THEN 0
+		    WHEN injection_count <= 2 THEN 0.2
+		    WHEN injection_count <= 5 THEN 0.3
+		    WHEN injection_count <= 10 THEN 0.4
+		    ELSE 0.5
+		  END)
+		  *
+		  -- Compliance multiplier (neutral 0.75 when no compliance data yet)
+		  (CASE
+		    WHEN compliance_count = 0 THEN 0.75
+		    ELSE (0.5 + 0.5 * compliance_rate)
+		  END)
+		WHERE archived = 0
+	`)
+	if err != nil {
+		return 0, fmt.Errorf("update quality scores: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	return int(n), nil
 }
 
 // computeFocusBoost returns 0.0-1.0 based on keyword overlap between
@@ -868,6 +1131,12 @@ func (d *DB) ArchiveDeadWeight(ctx context.Context, opts ArchiveOptions) ([]Arch
 				AND created_at < datetime('now', '-30 days')` + domainFilter,
 			args: domainArg,
 		},
+		{
+			reason: "stale_injected",
+			query: `SELECT id FROM learnings WHERE archived = 0
+				AND injection_count > 100 AND compliance_rate < 0.25` + domainFilter,
+			args: domainArg,
+		},
 	}
 
 	seen := make(map[string]bool)
@@ -919,7 +1188,7 @@ func (d *DB) ArchiveDeadWeight(ctx context.Context, opts ArchiveOptions) ([]Arch
 func (d *DB) RecordInjections(ctx context.Context, ids []string) error {
 	for _, id := range ids {
 		if _, err := d.db.ExecContext(ctx,
-			"UPDATE learnings SET injection_count = injection_count + 1 WHERE id = ?", id); err != nil {
+			"UPDATE learnings SET injection_count = injection_count + 1, last_used_at = datetime('now') WHERE id = ?", id); err != nil {
 			return fmt.Errorf("recording injection for %s: %w", id, err)
 		}
 	}

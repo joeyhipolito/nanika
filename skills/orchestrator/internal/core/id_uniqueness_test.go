@@ -16,7 +16,7 @@ import (
 
 	"github.com/joeyhipolito/orchestrator-cli/internal/core"
 	"github.com/joeyhipolito/orchestrator-cli/internal/event"
-	"github.com/joeyhipolito/orchestrator-cli/internal/sdk"
+	"github.com/joeyhipolito/nanika/shared/sdk"
 )
 
 // idEntry pairs a constant's string value with its source (package + name).
@@ -31,7 +31,7 @@ type idEntry struct {
 // that legitimately share it.
 //
 // V-23 scope: read-model unification with two on-disk authoring trees retained.
-// See internal/sdk/DESIGN.md for the full rationale.
+// See shared/sdk/DESIGN.md for the full rationale.
 var sdkWireFormatAllowlist = map[string][]string{
 	"text":     {"sdk.BlockTypeText", "sdk.KindText"},
 	"tool_use": {"sdk.BlockTypeToolUse", "sdk.KindToolUse"},
@@ -97,6 +97,9 @@ func TestIDConstantUniqueness(t *testing.T) {
 		{string(event.PersonaContractViolation), "event.PersonaContractViolation"},
 		{string(event.SystemError), "event.SystemError"},
 		{string(event.SystemCheckpointSaved), "event.SystemCheckpointSaved"},
+		{string(event.ZettelWritten), "event.ZettelWritten"},
+		{string(event.ZettelSkipped), "event.ZettelSkipped"},
+		{string(event.ZettelWriteFailed), "event.ZettelWriteFailed"},
 
 		// sdk: content block types (wire-format — allowlisted overlaps)
 		{sdk.BlockTypeText, "sdk.BlockTypeText"},

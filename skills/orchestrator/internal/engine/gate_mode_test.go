@@ -13,7 +13,7 @@ import (
 
 	"github.com/joeyhipolito/orchestrator-cli/internal/core"
 	"github.com/joeyhipolito/orchestrator-cli/internal/event"
-	"github.com/joeyhipolito/orchestrator-cli/internal/sdk"
+	"github.com/joeyhipolito/nanika/shared/sdk"
 )
 
 // shortErrorExecutor returns output that is short and contains an error phrase,

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/joeyhipolito/orchestrator-cli/internal/learning"
@@ -64,10 +65,11 @@ func SyncLearningsToPersonas(ctx context.Context) (int, error) {
 // normalized content) are skipped. Returns the count of successfully promoted learnings.
 func mergeLearnersToPersonaMemory(ctx context.Context, db *learning.DB, personaName string, learnings []learning.Learning) (int, error) {
 	// Load existing entries from persona's MEMORY.md
-	memPath, err := canonicalMemoryPath(personaName)
+	home, err := os.UserHomeDir()
 	if err != nil {
 		return 0, fmt.Errorf("get canonical path for %q: %w", personaName, err)
 	}
+	memPath := filepath.Join(home, "nanika", "personas", personaName, "MEMORY.md")
 
 	// Load existing entries
 	var existing []*MemoryEntry

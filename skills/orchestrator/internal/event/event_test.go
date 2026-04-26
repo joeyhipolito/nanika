@@ -20,17 +20,18 @@ var allEventTypes = []event.EventType{
 	event.PhaseStarted, event.PhaseCompleted, event.PhaseFailed, event.PhaseSkipped, event.PhaseRetrying,
 	event.WorkerSpawned, event.WorkerOutput, event.WorkerCompleted, event.WorkerFailed,
 	event.DecomposeStarted, event.DecomposeCompleted, event.DecomposeFallback,
-	event.LearningExtracted, event.LearningStored,
+	event.LearningExtracted, event.LearningStored, event.LearningInjected,
 	event.DAGDependencyResolved, event.DAGPhaseDispatched,
 	event.RoleHandoff,
 	event.ContractValidated, event.ContractViolated,
 	event.PersonaContractViolation,
 	event.SystemError, event.SystemCheckpointSaved,
+	event.ZettelWritten, event.ZettelSkipped, event.ZettelWriteFailed,
 }
 
 func TestAllEventTypesCount(t *testing.T) {
-	if len(allEventTypes) != 26 {
-		t.Fatalf("expected 26 event types, got %d — add new constants to allEventTypes", len(allEventTypes))
+	if len(allEventTypes) != 30 {
+		t.Fatalf("expected 30 event types, got %d — add new constants to allEventTypes", len(allEventTypes))
 	}
 }
 

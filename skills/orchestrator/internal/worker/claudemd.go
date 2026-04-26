@@ -191,6 +191,13 @@ func BuildCLAUDEmd(bundle core.ContextBundle) string {
 		b.WriteString("\n\n")
 	}
 
+	// Persona memory from ~/nanika/personas/<persona>/MEMORY.md
+	if bundle.PersonaMemory != "" {
+		b.WriteString("## Persona Memory\n\n")
+		b.WriteString(bundle.PersonaMemory)
+		b.WriteString("\n\n")
+	}
+
 	// Phase-specific skill details (inlined from SKILL.md)
 	if len(bundle.Skills) > 0 {
 		b.WriteString("## Primary Tools for This Phase\n\n")
@@ -246,6 +253,16 @@ func BuildCLAUDEmd(bundle core.ContextBundle) string {
 		b.WriteString("\n")
 	}
 	b.WriteString("\n")
+
+	// Output compression rule card (barok) — terminal-phase, allow-listed personas only.
+	// Returns "" when ineligible, non-terminal, or NANIKA_NO_BAROK=1.
+	// SkipBarokInjection is set by the engine on a validator-failure retry so
+	// the regenerated artifact is produced without compression.
+	if !bundle.SkipBarokInjection {
+		if section := InjectBarok(bundle.PersonaName, bundle.IsTerminal); section != "" {
+			b.WriteString(section)
+		}
+	}
 
 	// Artifact output instructions (recency effect — fresh when writing)
 	b.WriteString("## Output\n\n")

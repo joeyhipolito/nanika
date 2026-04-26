@@ -4,12 +4,26 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
+	"regexp"
 	"strings"
 
 	"github.com/joeyhipolito/orchestrator-cli/internal/core"
 	"github.com/joeyhipolito/orchestrator-cli/internal/event"
 	"github.com/joeyhipolito/orchestrator-cli/internal/persona"
 )
+
+var reviewMdCaseInsensitivePattern = regexp.MustCompile(`(?i)(^|[-_])review\.md$`)
+
+// legacyVerdictLinePattern matches a bare verdict label on the first line of an
+// artifact — e.g. "FAIL: blockers found" or "PASS" — that predates the rule
+// requiring artifacts to open with YAML frontmatter ("---" on line 1). A single
+// matching line is stripped before parsing so old artifacts still load cleanly.
+//
+// The pattern requires the word to be followed by optional whitespace+colon or
+// end-of-string so compound words like "fail-safe" and "pass-through" are not
+// stripped: `\b` alone matches at punctuation boundaries including "-".
+var legacyVerdictLinePattern = regexp.MustCompile(`(?i)^(fail|pass)(\s*$|\s*:)`)
 
 // ReviewFindings holds structured output parsed from a staff-code-reviewer phase.
 // The raw review text is not stored here — it reaches the fix phase automatically
@@ -40,6 +54,11 @@ func ParseReviewFindings(output string) ReviewFindings {
 		return f
 	}
 
+	// Legacy compatibility: strip a single leading verdict line (e.g. "FAIL: …"
+	// or "PASS") that predates the YAML-frontmatter-first rule. Only the very
+	// first non-empty line is candidates; subsequent lines are untouched.
+	output = stripLegacyVerdictLine(output)
+
 	lines := strings.Split(output, "\n")
 	f.Blockers = parseSection(lines, "### Blockers")
 	f.Warnings = parseSection(lines, "### Warnings")
@@ -56,6 +75,56 @@ func ParseReviewFindingsFromArtifact(artifactPath string) (ReviewFindings, error
 		return ReviewFindings{}, err
 	}
 	return ParseReviewFindings(string(data)), nil
+}
+
+// findReviewMdCaseInsensitive attempts to locate a review artifact in the given
+// directory. It accepts both the canonical "review.md" and custom-slugged variants
+// like "prompt-tune-greeting-review.md" or "review-re-review.md" by matching
+// the pattern (?i)(^|[-_])review\.md$. When multiple matches exist the
+// most-recently-modified file wins.
+func findReviewMdCaseInsensitive(dir string) string {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return ""
+	}
+
+	var bestPath string
+	var bestMtime int64
+	for _, entry := range entries {
+		if entry.IsDir() || !reviewMdCaseInsensitivePattern.MatchString(entry.Name()) {
+			continue
+		}
+		full := filepath.Join(dir, entry.Name())
+		fi, err := entry.Info()
+		if err != nil {
+			continue
+		}
+		mtime := fi.ModTime().UnixNano()
+		if bestPath == "" || mtime > bestMtime {
+			bestPath = full
+			bestMtime = mtime
+		}
+	}
+	return bestPath
+}
+
+// hasReviewHeaders reports whether text contains both "### Blockers" and
+// "### Warnings" as line-start headers. Used to distinguish a well-formed
+// review artifact (even when both sections are empty) from unstructured prose.
+func hasReviewHeaders(text string) bool {
+	hasBlockers, hasWarnings := false, false
+	for _, line := range strings.Split(text, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "### Blockers" {
+			hasBlockers = true
+		} else if trimmed == "### Warnings" {
+			hasWarnings = true
+		}
+		if hasBlockers && hasWarnings {
+			return true
+		}
+	}
+	return false
 }
 
 // reviewOutputLooksMalformed reports whether the reviewer output is non-empty,
@@ -81,7 +150,7 @@ func reviewOutputLooksMalformed(output string, findings ReviewFindings) bool {
 }
 
 // parseSection scans lines for a header matching sectionHeader, then collects
-// "- **[" prefixed items until the next "###" header or end of slice.
+// items prefixed with "- **[" or "- **`" until the next "###" header or end of slice.
 // Each item may span multiple lines (e.g., "Fix:" continuations).
 func parseSection(lines []string, sectionHeader string) []ReviewItem {
 	var items []ReviewItem
@@ -115,7 +184,8 @@ func parseSection(lines []string, sectionHeader string) []ReviewItem {
 			continue
 		}
 
-		if strings.HasPrefix(trimmed, "- **[") {
+		// Match both "- **[" (bracket) and "- **`" (backtick) formats.
+		if strings.HasPrefix(trimmed, "- **[") || strings.HasPrefix(trimmed, "- **`") {
 			flush()
 			loc, desc := parseItemLine(trimmed)
 			current = &ReviewItem{Location: loc, Description: desc}
@@ -134,13 +204,15 @@ func parseSection(lines []string, sectionHeader string) []ReviewItem {
 // parseItemLine extracts the location and description from a line like:
 //
 //   - **[file.go:42]** Description text.
+//   - **`file.go:42`** Description text.
 //
-// Returns ("", trimmed) when the bracket notation is absent.
+// Supports both [location] (bracket) and `location` (backtick) formats.
+// Returns ("", trimmed) when the location notation is absent.
 func parseItemLine(line string) (location, description string) {
 	// Strip leading "- "
 	line = strings.TrimPrefix(line, "- ")
 
-	// Extract **[location]** prefix if present.
+	// Extract **[location]** prefix if present (bracket format).
 	if strings.HasPrefix(line, "**[") {
 		end := strings.Index(line, "]**")
 		if end > 0 {
@@ -149,8 +221,38 @@ func parseItemLine(line string) (location, description string) {
 			return
 		}
 	}
+
+	// Extract **`location`** prefix if present (backtick format).
+	if strings.HasPrefix(line, "**`") {
+		end := strings.Index(line, "`**")
+		if end > 0 {
+			location = line[3:end]
+			description = strings.TrimSpace(line[end+3:])
+			return
+		}
+	}
+
 	description = line
 	return
+}
+
+// stripLegacyVerdictLine removes a single leading line from s when that line
+// matches legacyVerdictLinePattern (case-insensitive FAIL/PASS prefix). Only
+// the first non-empty line is checked; everything else is returned unchanged.
+func stripLegacyVerdictLine(s string) string {
+	idx := strings.IndexByte(s, '\n')
+	if idx < 0 {
+		// Single-line input: strip entirely if it matches, otherwise keep.
+		if legacyVerdictLinePattern.MatchString(strings.TrimSpace(s)) {
+			return ""
+		}
+		return s
+	}
+	firstLine := strings.TrimSpace(s[:idx])
+	if legacyVerdictLinePattern.MatchString(firstLine) {
+		return s[idx+1:]
+	}
+	return s
 }
 
 // IsReviewGate reports whether p should trigger the autonomous review loop.
@@ -193,6 +295,11 @@ func isLoopableReviewPersona(name string) bool {
 
 // defaultMaxReviewLoops is the loop bound used when Phase.MaxReviewLoops == 0.
 const defaultMaxReviewLoops = 2
+
+// defaultMaxParseRetries is the maximum number of times a review phase can be
+// retried when the output is malformed (missing ### Blockers / ### Warnings).
+const defaultMaxParseRetries = 1
+
 const maxFixObjectiveSummaryLen = 1200
 
 // injectFixPhase creates a fix phase and appends it to e.plan.Phases.
@@ -299,8 +406,15 @@ func flattenReviewItems(items []ReviewItem) []string {
 // sections). The retry depends on the same phases as the original review so the
 // reviewer sees the same implementation output without any fix being applied.
 //
-// Returns nil when the loop bound is already exhausted (ReviewIteration >= max).
+// Returns nil when:
+//   - The parse-failure counter is already at its max (fail-closed), OR
+//   - The loop bound is already exhausted (ReviewIteration >= max).
 func (e *Engine) injectRetryReviewPhase(review *core.Phase) *core.Phase {
+	// Fail-closed when parse retry cap is reached.
+	if review.ParseRetryCount >= defaultMaxParseRetries {
+		return nil
+	}
+
 	maxLoops := review.MaxReviewLoops
 	if maxLoops <= 0 {
 		maxLoops = defaultMaxReviewLoops
@@ -310,12 +424,12 @@ func (e *Engine) injectRetryReviewPhase(review *core.Phase) *core.Phase {
 	}
 
 	retry := &core.Phase{
-		ID: fmt.Sprintf("phase-%d", len(e.plan.Phases)+1),
+		ID:   fmt.Sprintf("phase-%d", len(e.plan.Phases)+1),
 		Name: "re-review",
 		Objective: fmt.Sprintf(
 			"Re-attempt the code review for phase %q. The previous review output was malformed "+
 				"(missing ### Blockers / ### Warnings sections). Produce properly structured output "+
-				"with ### Blockers and ### Warnings sections, listing each finding as a '- **[location]** description' item.",
+				"with ### Blockers and ### Warnings sections, listing each finding as either \"- **[location]** description\" (bracket form) or \"- **`location`** description\" (backtick form).",
 			review.Name,
 		),
 		Persona:                review.Persona,
@@ -325,9 +439,10 @@ func (e *Engine) injectRetryReviewPhase(review *core.Phase) *core.Phase {
 		Status:                 core.StatusPending,
 		Role:                   core.RoleReviewer,
 		PersonaSelectionMethod: core.SelectionRequiredReview,
-		ReviewIteration:        review.ReviewIteration + 1,
+		ReviewIteration:        review.ReviewIteration,
 		MaxReviewLoops:         review.MaxReviewLoops,
 		OriginPhaseID:          review.ID,
+		ParseRetryCount:        review.ParseRetryCount + 1,
 	}
 
 	e.plan.Phases = append(e.plan.Phases, retry)

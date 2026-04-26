@@ -19,7 +19,7 @@ import (
 	"github.com/joeyhipolito/orchestrator-cli/internal/core"
 	"github.com/joeyhipolito/orchestrator-cli/internal/event"
 	gitpkg "github.com/joeyhipolito/orchestrator-cli/internal/git"
-	"github.com/joeyhipolito/orchestrator-cli/internal/sdk"
+	"github.com/joeyhipolito/nanika/shared/sdk"
 )
 
 // initTestRepo creates a git repo with an initial commit in dir.

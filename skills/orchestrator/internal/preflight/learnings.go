@@ -54,6 +54,10 @@ func (s *learningsSection) Fetch(_ context.Context) (Block, error) {
 
 	var sb strings.Builder
 	for _, l := range learnings {
+		// NOTE: TRK-522b follow-up — learning.Score is intentionally omitted
+		// from the rendered brief. Once the Score field is plumbed through
+		// FindTopByQuality and round-trips cleanly, include it here (e.g.
+		// "[type · score=0.87] body") so downstream auditors can rank.
 		fmt.Fprintf(&sb, "- **[%s]** %s\n", l.Type, l.Content)
 	}
 

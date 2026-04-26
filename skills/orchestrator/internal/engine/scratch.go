@@ -4,10 +4,10 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strings"
 
 	"github.com/joeyhipolito/orchestrator-cli/internal/core"
+	"github.com/joeyhipolito/orchestrator-cli/internal/scratch"
 )
 
 // maxScratchBytes is the maximum size of scratch notes injected into a
@@ -15,27 +15,13 @@ import (
 // bloat across long dependency chains.
 const maxScratchBytes = 4096
 
-// scratchBlockRE matches <!-- scratch --> ... <!-- /scratch --> blocks in
-// phase output. The content between the markers is captured as group 1.
-// DOTALL: the (?s) flag makes . match newlines.
-var scratchBlockRE = regexp.MustCompile(`(?s)<!--\s*scratch\s*-->\s*(.*?)\s*<!--\s*/scratch\s*-->`)
-
 // ExtractScratchBlock returns the concatenated content of all
 // <!-- scratch --> ... <!-- /scratch --> blocks found in output.
 // Returns "" when no blocks are present.
+// Delegates to the scratch leaf package so worker tests can import the same
+// implementation without creating an engine→worker→engine import cycle.
 func ExtractScratchBlock(output string) string {
-	matches := scratchBlockRE.FindAllStringSubmatch(output, -1)
-	if len(matches) == 0 {
-		return ""
-	}
-	var parts []string
-	for _, m := range matches {
-		content := strings.TrimSpace(m[1])
-		if content != "" {
-			parts = append(parts, content)
-		}
-	}
-	return strings.Join(parts, "\n\n")
+	return scratch.ExtractBlock(output)
 }
 
 // extractScratch extracts scratch blocks from phase output and writes them

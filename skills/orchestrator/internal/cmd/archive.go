@@ -25,6 +25,8 @@ Dry-run by default — pass --apply to write changes.`,
 	}
 	archiveCmd.Flags().Bool("apply", false, "actually archive (default is dry-run)")
 	archiveCmd.Flags().String("domain", "", "restrict to a specific domain (default: all domains)")
+	archiveCmd.Flags().String("db", "", "")
+	_ = archiveCmd.Flags().MarkHidden("db")
 
 	rootCmd.AddCommand(archiveCmd)
 }
@@ -32,8 +34,9 @@ Dry-run by default — pass --apply to write changes.`,
 func runArchive(cmd *cobra.Command, args []string) error {
 	apply, _ := cmd.Flags().GetBool("apply")
 	dom, _ := cmd.Flags().GetString("domain")
+	dbPath, _ := cmd.Flags().GetString("db")
 
-	db, err := learning.OpenDB("")
+	db, err := learning.OpenDB(dbPath)
 	if err != nil {
 		return fmt.Errorf("open learning DB: %w", err)
 	}
@@ -42,6 +45,16 @@ func runArchive(cmd *cobra.Command, args []string) error {
 	opts := learning.ArchiveOptions{
 		DryRun: !apply,
 		Domain: dom,
+	}
+
+	if apply {
+		n, err := db.UpdateQualityScores(cmd.Context())
+		if err != nil {
+			return fmt.Errorf("recompute quality scores: %w", err)
+		}
+		fmt.Printf("recomputed %d quality scores\n", n)
+	} else {
+		fmt.Println("dry-run: would recompute quality scores")
 	}
 
 	candidates, err := db.ArchiveDeadWeight(cmd.Context(), opts)

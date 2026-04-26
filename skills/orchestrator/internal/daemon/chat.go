@@ -11,7 +11,7 @@ import (
 	"time"
 
 	"github.com/joeyhipolito/orchestrator-cli/internal/event"
-	"github.com/joeyhipolito/orchestrator-cli/internal/sdk"
+	"github.com/joeyhipolito/nanika/shared/sdk"
 )
 
 // chatSession tracks one in-flight chat query.

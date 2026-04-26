@@ -1,8 +1,46 @@
 package learning
 
 import (
+	"regexp"
 	"strings"
 )
+
+// Loose inner charset catches timestamp-suffixed, hex-suffixed, and legacy
+// hash IDs. Length bound avoids matching non-id bracketed content.
+var citedPattern = regexp.MustCompile(`\[([a-zA-Z0-9-]{4,32})\]`)
+
+// injectionLinePattern identifies the rendered injection line so self-citations
+// from workers quoting it back are stripped before scanning. Bracket-bounded
+// character class avoids greedy matches swallowing later prose citations.
+var injectionLinePattern = regexp.MustCompile(`^- \[[^\]]+ · [^\]]+\]`)
+
+// ParseCitedLearnings extracts short-IDs the worker cited as `[short-id]` in
+// free prose. Injection-block lines (`- [type · short-id] content`) are
+// stripped first so they don't self-cite. Returns deduplicated matches in
+// first-seen order (case-sensitive).
+func ParseCitedLearnings(output string) []string {
+	var filtered strings.Builder
+	for _, line := range strings.Split(output, "\n") {
+		if injectionLinePattern.MatchString(line) {
+			continue
+		}
+		filtered.WriteString(line)
+		filtered.WriteByte('\n')
+	}
+
+	matches := citedPattern.FindAllStringSubmatch(filtered.String(), -1)
+	seen := make(map[string]bool, len(matches))
+	result := make([]string, 0, len(matches))
+	for _, m := range matches {
+		id := m[1]
+		if seen[id] {
+			continue
+		}
+		seen[id] = true
+		result = append(result, id)
+	}
+	return result
+}
 
 // stopWords are common English words excluded from compliance keyword matching.
 // We only want distinctive domain words, not connectives and articles.
@@ -26,10 +64,26 @@ var stopWords = map[string]bool{
 // is short). This is intentionally conservative to avoid false positives.
 //
 // Returns a map of learning ID → followed.
+//
+// Citation boost: if the worker cited a learning's ShortID explicitly via
+// [short-id] in its output, that learning is marked followed regardless of
+// keyword overlap. Citations are additive — they can flip false→true but
+// never true→false.
 func ComplianceScan(injected []Learning, workerOutputs string) map[string]bool {
 	lowerOutput := strings.ToLower(workerOutputs)
+
+	cited := ParseCitedLearnings(workerOutputs)
+	citedSet := make(map[string]bool, len(cited))
+	for _, id := range cited {
+		citedSet[id] = true
+	}
+
 	result := make(map[string]bool, len(injected))
 	for _, l := range injected {
+		if citedSet[l.ShortID()] {
+			result[l.ID] = true
+			continue
+		}
 		result[l.ID] = learningFollowed(l.Content, lowerOutput)
 	}
 	return result

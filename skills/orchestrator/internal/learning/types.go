@@ -2,6 +2,7 @@
 package learning
 
 import (
+	"strings"
 	"time"
 )
 
@@ -25,6 +26,7 @@ type Learning struct {
 	Domain       string                 `json:"domain"`
 	WorkerName   string                 `json:"worker_name"`
 	WorkspaceID  string                 `json:"workspace_id"`
+	Marker       string                 `json:"marker,omitempty"` // original marker prefix, e.g. "FINDING:"
 	Tags         []string               `json:"tags,omitempty"`
 	CreatedAt    time.Time              `json:"created_at"`
 	SeenCount    int                    `json:"seen_count,omitempty"`
@@ -37,6 +39,26 @@ type Learning struct {
 	InjectionCount  int     `json:"injection_count,omitempty"`
 	ComplianceCount int     `json:"compliance_count,omitempty"`
 	ComplianceRate  float64 `json:"compliance_rate,omitempty"`
+}
+
+// ShortID returns a short, human-friendly identifier for citation. Takes
+// the last 8 characters of the ID's suffix after the first underscore (or
+// the whole ID if no underscore, or if the suffix is shorter than 8). Used
+// in the worker-facing injection format and in ParseCitedLearnings.
+//
+// The last 8 are chosen (not the first 8) so that IDs of the form
+// `learn_<UnixNano>` don't collide: the leading digits of a nanosecond
+// timestamp are shared for any two IDs created within ~100s, while the
+// trailing digits change on every-nanosecond tick.
+func (l Learning) ShortID() string {
+	id := l.ID
+	if _, after, ok := strings.Cut(id, "_"); ok {
+		id = after
+	}
+	if len(id) > 8 {
+		id = id[len(id)-8:]
+	}
+	return id
 }
 
 // MarkerConfig defines a pattern to extract from worker output

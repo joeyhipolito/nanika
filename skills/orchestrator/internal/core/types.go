@@ -86,30 +86,47 @@ type Phase struct {
 	SessionID              string   `json:"session_id,omitempty"`               // Claude session ID from last worker run
 	PersonaSelectionMethod string   `json:"persona_selection_method,omitempty"` // "llm" or "keyword"
 	// Cost attribution (accumulated across retries; populated from Claude CLI ResultMessage)
-	Model               string  `json:"model,omitempty"`                // resolved model ID (e.g. "claude-sonnet-4-6")
-	TokensIn            int     `json:"tokens_in,omitempty"`            // total input tokens across all attempts (raw + cache_creation + cache_read)
-	TokensOut           int     `json:"tokens_out,omitempty"`           // total output tokens across all attempts
+	Model               string  `json:"model,omitempty"`                 // resolved model ID (e.g. "claude-sonnet-4-6")
+	TokensIn            int     `json:"tokens_in,omitempty"`             // total input tokens across all attempts (raw + cache_creation + cache_read)
+	TokensOut           int     `json:"tokens_out,omitempty"`            // total output tokens across all attempts
 	TokensCacheCreation int     `json:"tokens_cache_creation,omitempty"` // cache creation tokens across all attempts
 	TokensCacheRead     int     `json:"tokens_cache_read,omitempty"`     // cache read tokens across all attempts
-	CostUSD             float64 `json:"cost_usd,omitempty"`             // total cost in USD across all attempts
+	CostUSD             float64 `json:"cost_usd,omitempty"`              // total cost in USD across all attempts
 
 	// Review loop tracking (populated by engine/review_loop.go)
-	ReviewIteration int      `json:"review_iteration,omitempty"` // 0 = first review pass, 1 = after first fix
-	OriginPhaseID   string   `json:"origin_phase_id,omitempty"`  // for fix phases: the impl phase being fixed
-	MaxReviewLoops  int      `json:"max_review_loops,omitempty"` // 0 = use engine default (1)
-	ReviewBlockers  []string `json:"review_blockers,omitempty"`  // latest parsed blocker findings for this review phase
-	ReviewWarnings  []string `json:"review_warnings,omitempty"`  // latest parsed non-blocking findings for this review phase
+	ReviewIteration int      `json:"review_iteration,omitempty"`  // 0 = first review pass, 1 = after first fix
+	OriginPhaseID   string   `json:"origin_phase_id,omitempty"`   // for fix phases: the impl phase being fixed
+	MaxReviewLoops  int      `json:"max_review_loops,omitempty"`  // 0 = use engine default (1)
+	ParseRetryCount int      `json:"parse_retry_count,omitempty"` // number of times review output was malformed; when >= defaultMaxParseRetries, fail-closed
+	ReviewBlockers  []string `json:"review_blockers,omitempty"`   // latest parsed blocker findings for this review phase
+	ReviewWarnings  []string `json:"review_warnings,omitempty"`   // latest parsed non-blocking findings for this review phase
 
 	// ChangedFiles holds the list of files modified by this phase relative to
 	// the base branch. Populated by the engine after successful completion when
 	// the phase ran in a git worktree. Used for cross-phase overlap detection.
 	ChangedFiles []string `json:"changed_files,omitempty"`
 
+	// OutputBytes is the total on-disk size of this phase's artifacts after
+	// MergeArtifactsWithMeta succeeds. Populated exactly once in
+	// engine.handleArtifactMerge. Zero when the phase produced no artifacts
+	// or when merge failed. Used for Barok V2 compression-density rollup.
+	OutputBytes int `json:"output_bytes,omitempty"`
+
 	// Worker is the persistent worker name assigned to this phase (e.g. "alpha").
 	// Empty means no persistent worker was used. Populated by the engine when
 	// shouldAssignPersistentWorker selects the phase for persistent execution.
 	// Persisted in checkpoints so resume runs can attribute costs correctly.
 	Worker string `json:"worker,omitempty"`
+
+	// Barok output-compression telemetry. Populated by the artifact-collection
+	// path when InjectBarok was emitted into the worker CLAUDE.md and, on
+	// rejection, when ValidateBarok triggered a single retry without compression.
+	// See skills/orchestrator/internal/worker/barok.go + barok_validator.go.
+	BarokApplied           int    `json:"barok_applied,omitempty"`              // 1 when InjectBarok returned non-empty
+	BarokRetry             int    `json:"barok_retry,omitempty"`                // 1 when validator rejected and a retry ran
+	BarokValidatorMs       int    `json:"barok_validator_ms,omitempty"`         // summed wall-clock ms inside ValidateArtifactStructure on the initial pass
+	BarokRetryValidatorMs  int    `json:"barok_retry_validator_ms,omitempty"`   // summed wall-clock ms inside ValidateArtifactStructure on the retry pass (0 when no retry)
+	BarokFirstRunSessionID string `json:"barok_first_run_session_id,omitempty"` // Claude session ID of the initial run when a barok retry fires; preserved so first-run forensics survive phase.SessionID being overwritten by the retry
 }
 
 // FileOverlap records a file that was modified by more than one parallel phase.
@@ -197,6 +214,21 @@ type ContextBundle struct {
 	// persistent worker's memory store. Empty when no persistent worker is
 	// assigned or the worker has no relevant memory entries.
 	WorkerMemory string
+	// PersonaMemory is the content of ~/nanika/personas/<persona>/MEMORY.md.
+	// Empty when the file does not exist or is empty.
+	PersonaMemory string
+	// IsTerminal reports whether this phase has zero downstream dependents in
+	// the mission DAG. Computed by the engine prior to spawn from the phase
+	// index. Used by barok output-compression injection: only terminal phases
+	// receive the compression rule card so compressed output never re-enters a
+	// dependent worker phase's prompt prefix.
+	IsTerminal bool
+	// SkipBarokInjection suppresses the barok output-compression rule card even
+	// when the phase is terminal and the persona is on the barok allow-list.
+	// Set by the engine on a barok-validator retry so the regenerated artifact
+	// is produced without compression. Defaults to false — only the validator
+	// retry path flips this flag.
+	SkipBarokInjection bool
 }
 
 // Skill represents an inlined skill reference.
@@ -208,14 +240,14 @@ type Skill struct {
 
 // WorkerConfig holds configuration for spawning a worker.
 type WorkerConfig struct {
-	Name            string // e.g., "architect-01"
-	WorkerDir       string // full path to worker's artifact directory (always under workspace)
-	TargetDir       string // CWD for worker execution; empty → use WorkerDir
-	Model           string // resolved model ID
-	EffortLevel     string // Claude Code effort level: low, medium, high
-	MaxTurns        int    // max agentic turns; 0 means use engine default (50)
+	Name            string        // e.g., "architect-01"
+	WorkerDir       string        // full path to worker's artifact directory (always under workspace)
+	TargetDir       string        // CWD for worker execution; empty → use WorkerDir
+	Model           string        // resolved model ID
+	EffortLevel     string        // Claude Code effort level: low, medium, high
+	MaxTurns        int           // max agentic turns; 0 means use engine default (50)
 	StallTimeout    time.Duration // watchdog stall timeout; 0 means use global default
-	ResumeSessionID string // if set, passed to AgentOptions to resume a prior Claude session
+	ResumeSessionID string        // if set, passed to AgentOptions to resume a prior Claude session
 	Bundle          ContextBundle
 	HookScript      string // generated stop.sh content
 }
@@ -242,20 +274,20 @@ const (
 
 // OrchestratorConfig holds runtime configuration.
 type OrchestratorConfig struct {
-	MaxConcurrent    int           // max parallel workers (default 3)
-	Timeout          time.Duration // per-phase timeout (default 15min)
-	Verbose          bool
-	DryRun           bool
-	ForcedModel      string        // override model for all phases
-	ForceSequential  bool          // force sequential execution
-	Force            bool          // bypass quota gate (--force flag)
-	Domain           string        // dev/personal/work/creative/academic
-	MaxTurns         int           // max agentic turns per worker (default 50)
-	DisableLearnings    bool          // skip learning retrieval and injection
-	GateMode            GateMode      // warn (fail-forward) or block (fail phase); default block
-	NoPersistentWorker  bool          // disable persistent worker assignment for all phases
+	MaxConcurrent      int           // max parallel workers (default 3)
+	Timeout            time.Duration // per-phase timeout (default 15min)
+	Verbose            bool
+	DryRun             bool
+	ForcedModel        string   // override model for all phases
+	ForceSequential    bool     // force sequential execution
+	Force              bool     // bypass quota gate (--force flag)
+	Domain             string   // dev/personal/work/creative/academic
+	MaxTurns           int      // max agentic turns per worker (default 50)
+	DisableLearnings   bool     // skip learning retrieval and injection
+	GateMode           GateMode // warn (fail-forward) or block (fail phase); default block
+	NoPersistentWorker bool     // disable persistent worker assignment for all phases
 	// StallTimeout is the global watchdog stall timeout applied to all phases
 	// that do not specify their own TIMEOUT: field. Overrides ORCHESTRATOR_STALL_TIMEOUT.
 	// Zero means fall back to ORCHESTRATOR_STALL_TIMEOUT or the 5-minute default.
-	StallTimeout     time.Duration
+	StallTimeout time.Duration
 }

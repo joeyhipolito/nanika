@@ -21,7 +21,7 @@ import (
 	"github.com/joeyhipolito/orchestrator-cli/internal/core"
 	"github.com/joeyhipolito/orchestrator-cli/internal/event"
 	metricsdb "github.com/joeyhipolito/orchestrator-cli/internal/metrics"
-	"github.com/joeyhipolito/orchestrator-cli/internal/sdk"
+	"github.com/joeyhipolito/nanika/shared/sdk"
 )
 
 func TestMetricsIntegration(t *testing.T) {

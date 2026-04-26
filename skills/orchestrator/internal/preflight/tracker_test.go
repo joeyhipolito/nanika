@@ -212,3 +212,145 @@ func TestTrackerSection_ContextCancelled(t *testing.T) {
 	// What must NOT happen is a panic.
 	_, _ = sec.Fetch(ctx)
 }
+
+func insertIssueWithSeqID(t *testing.T, dbPath, id, title, status, priority, assignee string, seqID *int) {
+	t.Helper()
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open db for insert: %v", err)
+	}
+	defer db.Close()
+	_, err = db.Exec(
+		`INSERT INTO issues (id, title, status, priority, assignee, seq_id, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`,
+		id, title, status, priority, assignee, seqID,
+	)
+	if err != nil {
+		t.Fatalf("insert issue %s: %v", id, err)
+	}
+}
+
+func TestTrackerBlock_DisplayIdUsesSeqId(t *testing.T) {
+	path := newTestTrackerDB(t)
+	t.Setenv("TRACKER_DB", path)
+
+	seq := 42
+	insertIssueWithSeqID(t, path, "trk-ABCD", "Seq ID issue", "open", "P0", "", &seq)
+
+	sec := &trackerSection{}
+	blk, err := sec.Fetch(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if !strings.Contains(blk.Body, "[TRK-42]") {
+		t.Errorf("expected [TRK-42] in body, got: %q", blk.Body)
+	}
+	if strings.Contains(blk.Body, "[trk-ABCD]") {
+		t.Errorf("hash ID should not appear when seq_id is set, got: %q", blk.Body)
+	}
+}
+
+func TestTrackerBlock_DisplayIdFallsBackToHash(t *testing.T) {
+	path := newTestTrackerDB(t)
+	t.Setenv("TRACKER_DB", path)
+
+	insertIssueWithSeqID(t, path, "trk-XYZ1", "No seq ID issue", "open", "P0", "", nil)
+
+	sec := &trackerSection{}
+	blk, err := sec.Fetch(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if !strings.Contains(blk.Body, "[trk-XYZ1]") {
+		t.Errorf("expected hash ID [trk-XYZ1] in body when seq_id is NULL, got: %q", blk.Body)
+	}
+}
+
+func TestTrackerBlock_LimitOverride(t *testing.T) {
+	path := newTestTrackerDB(t)
+	t.Setenv("TRACKER_DB", path)
+	t.Setenv("NANIKA_PREFLIGHT_TRACKER_LIMIT", "15")
+
+	for i := 0; i < 30; i++ {
+		id := fmt.Sprintf("trk-l%03d", i)
+		seq := i + 100
+		insertIssueWithSeqID(t, path, id, "Issue "+id, "open", "P0", "", &seq)
+	}
+
+	sec := &trackerSection{}
+	blk, err := sec.Fetch(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	lines := strings.Split(strings.TrimSpace(blk.Body), "\n")
+	// Count non-truncation lines
+	issueLines := 0
+	hasTruncation := false
+	for _, l := range lines {
+		if strings.Contains(l, "showing") && strings.Contains(l, "NANIKA_PREFLIGHT_TRACKER_LIMIT") {
+			hasTruncation = true
+		} else if strings.HasPrefix(l, "- [") {
+			issueLines++
+		}
+	}
+
+	if issueLines != 15 {
+		t.Errorf("expected 15 issue lines, got %d", issueLines)
+	}
+	if !hasTruncation {
+		t.Errorf("expected truncation notice in body, got: %q", blk.Body)
+	}
+}
+
+func TestTrackerBlock_NoTruncationWhenWithinLimit(t *testing.T) {
+	path := newTestTrackerDB(t)
+	t.Setenv("TRACKER_DB", path)
+
+	for i := 0; i < 5; i++ {
+		id := fmt.Sprintf("trk-nt%03d", i)
+		seq := i + 200
+		insertIssueWithSeqID(t, path, id, "Issue "+id, "open", "P1", "", &seq)
+	}
+
+	sec := &trackerSection{}
+	blk, err := sec.Fetch(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if strings.Contains(blk.Body, "showing") {
+		t.Errorf("expected no truncation notice for 5 rows within limit, got: %q", blk.Body)
+	}
+}
+
+func TestTrackerBlock_DefaultLimit25(t *testing.T) {
+	path := newTestTrackerDB(t)
+	t.Setenv("TRACKER_DB", path)
+
+	for i := 0; i < 30; i++ {
+		id := fmt.Sprintf("trk-d%03d", i)
+		seq := i + 300
+		insertIssueWithSeqID(t, path, id, "Issue "+id, "open", "P0", "", &seq)
+	}
+
+	sec := &trackerSection{}
+	blk, err := sec.Fetch(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	lines := strings.Split(strings.TrimSpace(blk.Body), "\n")
+	issueLines := 0
+	for _, l := range lines {
+		if strings.HasPrefix(l, "- [TRK-") {
+			issueLines++
+		}
+	}
+
+	if issueLines != 25 {
+		t.Errorf("expected 25 issue lines with default limit, got %d", issueLines)
+	}
+}

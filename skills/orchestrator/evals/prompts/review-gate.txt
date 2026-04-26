@@ -31,6 +31,18 @@ or `FunctionName` when the finding applies to an entire function.
 
 Do not implement any fixes. Report findings only.
 
+## Classification Rules
+
+These are NEVER blockers — put them in Warnings or omit entirely:
+- Missing or incomplete godoc/comments on any symbol
+- Naming conventions (parameter names, variable names, casing)
+- Style rewrites (if-chains vs switch, else branches, formatting)
+- Memory lifecycle design trade-offs: no TTL eviction loop, expired entries accumulating, no eviction on read, zero/negative TTL not validated — these are caller-contract decisions or design choices, not correctness failures
+- Minor optimizations where the simpler form is idiomatic (e.g. append without pre-allocation)
+
+If the code has no correctness, security, or data-loss issues: both sections get `(none)`.
+Do not manufacture findings. An empty review is a valid and correct review.
+
 ## Code to Review
 
 {{code}}

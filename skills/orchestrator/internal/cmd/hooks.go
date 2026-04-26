@@ -240,11 +240,33 @@ func runPreflight(cmd *cobra.Command, args []string) error {
 	} else {
 		// Text mode: compose with capacity constraints and use the
 		// pre-rendered markdown to avoid redundant rendering.
-		_, dropped, rendered := brief.ComposeWithCapacity(maxBytes)
+		adjusted, dropped, rendered := brief.ComposeWithCapacity(maxBytes)
 		if len(dropped) > 0 {
+			// NOTE: TRK-522b follow-up — drop reason is left empty because
+			// ComposeWithCapacity does not yet distinguish "byte budget
+			// exceeded" from other future causes. Once per-section reasons
+			// are plumbed through, populate AuditEntry.DropReason here.
 			fmt.Fprintf(os.Stderr, "preflight: dropped sections to fit capacity: %s\n", strings.Join(dropped, ", "))
 		}
 		out = rendered
+
+		if os.Getenv("NANIKA_NO_INJECT") != "1" && len(rendered) > 0 {
+			included := make([]string, 0, len(adjusted.Blocks))
+			for _, blk := range adjusted.Blocks {
+				if strings.TrimSpace(blk.Body) == "" {
+					continue
+				}
+				included = append(included, blk.Name)
+			}
+			preflight.WriteAudit(preflight.AuditEntry{
+				Timestamp:        time.Now().UTC(),
+				SectionsIncluded: included,
+				SectionsDropped:  dropped,
+				RenderedBytes:    len(rendered),
+				MaxBytes:         maxBytes,
+				Format:           "text",
+			})
+		}
 	}
 
 	if out != "" {

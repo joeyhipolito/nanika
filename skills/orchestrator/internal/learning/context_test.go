@@ -72,8 +72,8 @@ func TestInjectContext_FormatsTypeInBold(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if !strings.Contains(content, "**[pattern]**") {
-		t.Errorf("expected bold type label in output, got: %q", content)
+	if !strings.Contains(content, "[pattern · ") {
+		t.Errorf("expected type label with short ID in output, got: %q", content)
 	}
 }
 

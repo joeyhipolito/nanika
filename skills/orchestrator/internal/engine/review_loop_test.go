@@ -7,10 +7,11 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/joeyhipolito/orchestrator-cli/internal/core"
 	"github.com/joeyhipolito/orchestrator-cli/internal/event"
-	"github.com/joeyhipolito/orchestrator-cli/internal/sdk"
+	"github.com/joeyhipolito/nanika/shared/sdk"
 )
 
 // ---------------------------------------------------------------------------
@@ -112,6 +113,59 @@ func TestParseReviewFindings_MultilineBlocker(t *testing.T) {
 	}
 	if !strings.Contains(desc, "Fix:") {
 		t.Errorf("description missing Fix continuation: %q", desc)
+	}
+}
+
+// TestParseReviewFindings_NoneIndicatorPattern verifies that the "(none)" sentinel
+// used in clean-code eval rubrics does not accidentally parse as a finding.
+// This covers the failure scenario from review-findings.yaml Tests 4 and 5 where
+// the LLM correctly emits "(none)" for empty sections.
+func TestParseReviewFindings_NoneIndicatorPattern(t *testing.T) {
+	input := `
+### Blockers
+
+_(none)_
+
+### Warnings
+
+_(none)_
+`
+	f := ParseReviewFindings(input)
+	if !f.Passed() {
+		t.Fatal("expected Passed()==true when both sections contain only '(none)' markers")
+	}
+	if len(f.Blockers) != 0 {
+		t.Errorf("expected 0 blockers for (none) section, got %d: %v", len(f.Blockers), f.Blockers)
+	}
+	if len(f.Warnings) != 0 {
+		t.Errorf("expected 0 warnings for (none) section, got %d: %v", len(f.Warnings), f.Warnings)
+	}
+}
+
+// TestParseReviewFindings_WarningsOnlyIsPass verifies that a review reporting only
+// memory-lifecycle or style concerns (no security/correctness blockers) is Passed().
+// This is the exact outcome expected after the rubric fix for review-findings.yaml
+// Test 4 (cache.go): the model correctly puts expired-entry concerns in Warnings,
+// not Blockers, and the gate must not block on warnings-only output.
+func TestParseReviewFindings_WarningsOnlyIsPass(t *testing.T) {
+	input := `### Blockers
+
+_(none)_
+
+### Warnings
+
+- **[cache.go]** Expired entries are never evicted — unbounded memory growth over time.
+- **[cache.go:New]** ttl <= 0 is not validated; zero TTL makes all entries instantly expired.
+`
+	f := ParseReviewFindings(input)
+	if !f.Passed() {
+		t.Fatal("expected Passed()==true when only Warnings are present (no Blockers)")
+	}
+	if len(f.Blockers) != 0 {
+		t.Errorf("expected 0 blockers, got %d", len(f.Blockers))
+	}
+	if len(f.Warnings) != 2 {
+		t.Errorf("expected 2 warnings, got %d: %v", len(f.Warnings), f.Warnings)
 	}
 }
 
@@ -1953,5 +2007,304 @@ func TestHandleReviewLoop_Regression_4160cbf8_PhasePassFive(t *testing.T) {
 	}
 	if len(reviewPhase.ReviewBlockers) != 5 {
 		t.Errorf("ReviewBlockers count = %d, want 5 (from the review.md fixture)", len(reviewPhase.ReviewBlockers))
+	}
+}
+
+// ---------------------------------------------------------------------------
+// New tests for backtick format, case-insensitive lookup, and parse retries
+// ---------------------------------------------------------------------------
+
+// (a) TestParseItemLine_BacktickFormat verifies the backtick format is parsed correctly.
+func TestParseItemLine_BacktickFormat(t *testing.T) {
+	loc, desc := parseItemLine("- **`engine.go:150`** Race condition in map access.")
+	if loc != "engine.go:150" {
+		t.Errorf("location = %q, want %q", loc, "engine.go:150")
+	}
+	if desc != "Race condition in map access." {
+		t.Errorf("description = %q, want %q", desc, "Race condition in map access.")
+	}
+}
+
+// (b) TestParseReviewFindings_MixedFormats verifies both bracket and backtick formats can coexist.
+func TestParseReviewFindings_MixedFormats(t *testing.T) {
+	input := "### Blockers\n" +
+		"- **[store.go:42]** Missing error check on db.Query.\n" +
+		"- **`handler.go:88`** Nil pointer dereference.\n" +
+		"\n" +
+		"### Warnings\n" +
+		"- **[util.go:10]** Exported function missing godoc.\n" +
+		"- **`main.go:5`** Unused import.\n"
+	f := ParseReviewFindings(input)
+	if f.Passed() {
+		t.Fatal("expected Passed()==false, got true")
+	}
+	if len(f.Blockers) != 2 {
+		t.Fatalf("expected 2 blockers, got %d", len(f.Blockers))
+	}
+	if len(f.Warnings) != 2 {
+		t.Fatalf("expected 2 warnings, got %d", len(f.Warnings))
+	}
+	// Verify the backtick blocker was parsed.
+	if f.Blockers[1].Location != "handler.go:88" {
+		t.Errorf("blocker[1].Location = %q, want handler.go:88", f.Blockers[1].Location)
+	}
+	// Verify the backtick warning was parsed.
+	if f.Warnings[1].Location != "main.go:5" {
+		t.Errorf("warning[1].Location = %q, want main.go:5", f.Warnings[1].Location)
+	}
+}
+
+// (c) TestFindReviewMdCaseInsensitive_ExactMatch verifies lowercase "review.md" is found.
+func TestFindReviewMdCaseInsensitive_ExactMatch(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "review.md")
+	if err := os.WriteFile(path, []byte("### Blockers\n"), 0o600); err != nil {
+		t.Fatalf("setup: WriteFile: %v", err)
+	}
+
+	found := findReviewMdCaseInsensitive(dir)
+	if found != path {
+		t.Errorf("found = %q, want %q", found, path)
+	}
+}
+
+// (d) TestFindReviewMdCaseInsensitive_CaseInsensitive verifies case variations are found.
+// This test is skipped on case-insensitive filesystems (e.g., macOS) where it cannot
+// exercise the regex slow path, since the fast path will succeed for all case variations.
+func TestFindReviewMdCaseInsensitive_CaseInsensitive(t *testing.T) {
+	if !isCaseSensitiveFS(t) {
+		t.Skip("filesystem is case-insensitive; skipping test that requires case-sensitive FS to exercise regex slow path")
+	}
+
+	dir := t.TempDir()
+
+	// Test Review.md (mixed case). This only exercises the regex slow path
+	// on case-sensitive filesystems where the fast path will fail.
+	filePath := filepath.Join(dir, "Review.md")
+	if err := os.WriteFile(filePath, []byte("### Blockers\n"), 0o600); err != nil {
+		t.Fatalf("setup: WriteFile: %v", err)
+	}
+
+	found := findReviewMdCaseInsensitive(dir)
+	if found == "" {
+		t.Error("expected to find a review file matching case-insensitive pattern")
+	}
+
+	// Verify the pattern was matched (basename should match case-insensitively).
+	basename := filepath.Base(found)
+	if !strings.EqualFold(basename, "review.md") {
+		t.Errorf("found basename = %q, doesn't match review.md case-insensitively", basename)
+	}
+}
+
+// isCaseSensitiveFS detects whether the filesystem is case-sensitive by attempting
+// to create a file with one case and then stat it with a different case. Uses
+// t.TempDir() to avoid races with concurrent test runs sharing TMPDIR.
+func isCaseSensitiveFS(t *testing.T) bool {
+	t.Helper()
+	dir := t.TempDir()
+	testFile := filepath.Join(dir, "probe_lower")
+	testFileUpper := filepath.Join(dir, "PROBE_LOWER")
+
+	if err := os.WriteFile(testFile, []byte("probe"), 0o600); err != nil {
+		return true
+	}
+
+	_, err := os.Stat(testFileUpper)
+	return err != nil
+}
+
+// (e) TestInjectRetryReviewPhase_TracksParseRetries verifies ParseRetryCount is incremented
+// and ReviewIteration is preserved (parse retries do not consume an iteration slot).
+func TestInjectRetryReviewPhase_TracksParseRetries(t *testing.T) {
+	implPhase := &core.Phase{ID: "phase-1", Persona: "senior-backend-engineer", Status: core.StatusCompleted}
+	reviewPhase := &core.Phase{
+		ID:                     "phase-2",
+		Name:                   "review",
+		Persona:                "staff-code-reviewer",
+		PersonaSelectionMethod: core.SelectionRequiredReview,
+		Dependencies:           []string{"phase-1"},
+		MaxReviewLoops:         2,
+		ReviewIteration:        0, // initial iteration
+		ParseRetryCount:        0, // initial state
+	}
+
+	e := newTestEngine()
+	e.plan.Phases = []*core.Phase{implPhase, reviewPhase}
+	e.phases["phase-1"] = implPhase
+	e.phases["phase-2"] = reviewPhase
+
+	retry := e.injectRetryReviewPhase(reviewPhase)
+	if retry == nil {
+		t.Fatal("expected retry phase on first parse failure")
+	}
+	if retry.ParseRetryCount != 1 {
+		t.Errorf("retry.ParseRetryCount = %d, want 1", retry.ParseRetryCount)
+	}
+	if retry.ReviewIteration != reviewPhase.ReviewIteration {
+		t.Errorf("retry.ReviewIteration = %d, want %d (parse retries must not consume iteration slot)", retry.ReviewIteration, reviewPhase.ReviewIteration)
+	}
+}
+
+// (f) TestInjectRetryReviewPhase_FailsClosedAtMaxRetries verifies the cap is enforced.
+func TestInjectRetryReviewPhase_FailsClosedAtMaxRetries(t *testing.T) {
+	implPhase := &core.Phase{ID: "phase-1", Persona: "senior-backend-engineer", Status: core.StatusCompleted}
+	reviewPhase := &core.Phase{
+		ID:                     "phase-2",
+		Name:                   "review",
+		Persona:                "staff-code-reviewer",
+		PersonaSelectionMethod: core.SelectionRequiredReview,
+		Dependencies:           []string{"phase-1"},
+		MaxReviewLoops:         2,
+		ParseRetryCount:        1, // already at cap (defaultMaxParseRetries = 1)
+	}
+
+	e := newTestEngine()
+	e.plan.Phases = []*core.Phase{implPhase, reviewPhase}
+	e.phases["phase-1"] = implPhase
+	e.phases["phase-2"] = reviewPhase
+
+	retry := e.injectRetryReviewPhase(reviewPhase)
+	if retry != nil {
+		t.Fatal("expected nil when ParseRetryCount is at cap (fail-closed)")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// findReviewMdCaseInsensitive — custom-slug and mtime-preference tests
+// ---------------------------------------------------------------------------
+
+// TestFindReviewMdCaseInsensitive_CustomSlug verifies that custom-slugged review
+// artifacts like "prompt-tune-greeting-review.md" and "review-re-review.md" are
+// matched by the updated pattern (^|[-_])review\.md$.
+func TestFindReviewMdCaseInsensitive_CustomSlug(t *testing.T) {
+	tests := []struct {
+		name     string
+		filename string
+	}{
+		{"hyphen prefix slug", "prompt-tune-greeting-review.md"},
+		{"review-prefixed slug", "review-re-review.md"},
+		{"canonical lowercase", "review.md"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			path := filepath.Join(dir, tt.filename)
+			if err := os.WriteFile(path, []byte("### Blockers\n\n_(none)_\n\n### Warnings\n\n_(none)_\n"), 0o600); err != nil {
+				t.Fatalf("setup: WriteFile: %v", err)
+			}
+			found := findReviewMdCaseInsensitive(dir)
+			if found != path {
+				t.Errorf("found = %q, want %q", found, path)
+			}
+		})
+	}
+
+	// Negative: files that should NOT match (false-positive guard).
+	t.Run("CLAUDE.md is not matched", func(t *testing.T) {
+		dir := t.TempDir()
+		if err := os.WriteFile(filepath.Join(dir, "CLAUDE.md"), []byte("# Instructions\n"), 0o600); err != nil {
+			t.Fatalf("setup: WriteFile: %v", err)
+		}
+		if found := findReviewMdCaseInsensitive(dir); found != "" {
+			t.Errorf("CLAUDE.md must not match; found = %q", found)
+		}
+	})
+	t.Run("summary.md is not matched", func(t *testing.T) {
+		dir := t.TempDir()
+		if err := os.WriteFile(filepath.Join(dir, "summary.md"), []byte("# Summary\n"), 0o600); err != nil {
+			t.Fatalf("setup: WriteFile: %v", err)
+		}
+		if found := findReviewMdCaseInsensitive(dir); found != "" {
+			t.Errorf("summary.md must not match; found = %q", found)
+		}
+	})
+}
+
+// TestFindReviewMdCaseInsensitive_PicksMostRecent verifies that when two matching
+// review artifacts exist in the same directory, the one with the newer mtime is
+// returned.
+func TestFindReviewMdCaseInsensitive_PicksMostRecent(t *testing.T) {
+	dir := t.TempDir()
+
+	older := filepath.Join(dir, "review.md")
+	newer := filepath.Join(dir, "phase-2-review.md")
+
+	if err := os.WriteFile(older, []byte("### Blockers\n- **[old.go:1]** Old finding.\n\n### Warnings\n\n_(none)_\n"), 0o600); err != nil {
+		t.Fatalf("setup older: %v", err)
+	}
+	if err := os.WriteFile(newer, []byte("### Blockers\n\n_(none)_\n\n### Warnings\n\n_(none)_\n"), 0o600); err != nil {
+		t.Fatalf("setup newer: %v", err)
+	}
+
+	// Explicitly set mtimes so the test is deterministic regardless of filesystem speed.
+	base := time.Now()
+	if err := os.Chtimes(older, base, base); err != nil {
+		t.Fatalf("chtimes older: %v", err)
+	}
+	if err := os.Chtimes(newer, base.Add(time.Second), base.Add(time.Second)); err != nil {
+		t.Fatalf("chtimes newer: %v", err)
+	}
+
+	found := findReviewMdCaseInsensitive(dir)
+	if found != newer {
+		t.Errorf("found = %q, want the newer file %q", found, newer)
+	}
+}
+
+// TestHandleReviewLoop_EmptySectionsArtifactIsApproval verifies that a review.md
+// containing both ### Blockers and ### Warnings headers with _(none)_ bodies is
+// treated as a clean approval. No fix phase must be injected and no retry phase
+// must be injected — the gate passes.
+func TestHandleReviewLoop_EmptySectionsArtifactIsApproval(t *testing.T) {
+	ws := t.TempDir()
+
+	implPhase := &core.Phase{
+		ID:      "phase-1",
+		Persona: "senior-backend-engineer",
+		Status:  core.StatusCompleted,
+	}
+	reviewPhase := &core.Phase{
+		ID:                     "phase-2",
+		Name:                   "review",
+		Persona:                "staff-code-reviewer",
+		PersonaSelectionMethod: core.SelectionRequiredReview,
+		Dependencies:           []string{"phase-1"},
+		MaxReviewLoops:         2,
+	}
+
+	workerDir := filepath.Join(ws, "workers", "staff-code-reviewer-phase-2")
+	if err := os.MkdirAll(workerDir, 0o755); err != nil {
+		t.Fatalf("setup: MkdirAll: %v", err)
+	}
+	// Well-formed clean approval: both sections present, neither has findings.
+	approval := "# Code Review\n\n## Summary\n\nLooks good.\n\n### Blockers\n\n_(none)_\n\n### Warnings\n\n_(none)_\n"
+	if err := os.WriteFile(filepath.Join(workerDir, "review.md"), []byte(approval), 0o600); err != nil {
+		t.Fatalf("setup: WriteFile: %v", err)
+	}
+
+	e := &Engine{
+		plan:    &core.Plan{Phases: []*core.Phase{implPhase, reviewPhase}},
+		phases:  map[string]*core.Phase{"phase-1": implPhase, "phase-2": reviewPhase},
+		emitter: &captureEmitter{},
+		config:  &core.OrchestratorConfig{},
+		workspace: &core.Workspace{
+			ID:   "test-ws",
+			Path: ws,
+		},
+	}
+
+	// Stdout is empty prose — the structured info is entirely in review.md.
+	fix := e.handleReviewLoop(context.Background(), reviewPhase, "Implementation looks clean.")
+	if fix != nil {
+		t.Fatalf("expected no fix phase for a clean approval artifact, got fix with objective: %q", fix.Objective)
+	}
+	// No retry phases should have been injected either.
+	if len(e.plan.Phases) != 2 {
+		t.Errorf("expected plan to still have 2 phases (no injected retry), got %d", len(e.plan.Phases))
+	}
+	// The gate must have registered a pass.
+	if len(reviewPhase.ReviewBlockers) != 0 {
+		t.Errorf("ReviewBlockers = %v, want empty for clean approval", reviewPhase.ReviewBlockers)
 	}
 }

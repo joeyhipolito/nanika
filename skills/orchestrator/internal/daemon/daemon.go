@@ -13,14 +13,17 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
 	"syscall"
 
+	"github.com/joeyhipolito/orchestrator-cli/internal/engine"
 	"github.com/joeyhipolito/orchestrator-cli/internal/event"
 	"github.com/joeyhipolito/orchestrator-cli/internal/notify"
 	clinotify "github.com/joeyhipolito/orchestrator-cli/internal/notify/cli"
@@ -201,6 +204,47 @@ func (d *Daemon) Start(ctx context.Context) error {
 			notifier.Consume(ctx, subCh)
 		}()
 		fmt.Fprintln(os.Stderr, "daemon: discord notifier active")
+	}
+
+	// Optional ZettelHook — writes mission Zettels on MissionCompleted events.
+	// Warn-not-fail: daemon startup continues even if obsidian binary is absent.
+	if binPath, lookErr := exec.LookPath("obsidian"); lookErr != nil {
+		slog.Warn("daemon: obsidian binary not found; ZettelHook disabled", "err", lookErr)
+	} else {
+		droppedDir := filepath.Join(os.Getenv("HOME"), ".alluka", "dropped", "zettel")
+		if mkErr := os.MkdirAll(droppedDir, 0700); mkErr != nil {
+			slog.Warn("daemon: could not create zettel dropped dir", "path", droppedDir, "err", mkErr)
+		}
+		emitter := event.NewBusEmitter(d.bus)
+		zettelHook := engine.NewZettelHook(binPath, droppedDir, emitter)
+		subID, subCh := d.bus.Subscribe()
+		defer d.bus.Unsubscribe(subID)
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			// Select on ctx.Done() so the goroutine exits on shutdown without
+			// waiting for subCh to close (which only happens after Start returns).
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case ev, ok := <-subCh:
+					if !ok {
+						return
+					}
+					if ev.Type != event.MissionCompleted {
+						continue
+					}
+					// Skip the CLI call if ctx is already cancelled to avoid
+					// a ZettelWriteFailed emission storm during teardown.
+					if ctx.Err() != nil {
+						return
+					}
+					zettelHook.OnMissionComplete(ctx, ev)
+				}
+			}
+		}()
+		fmt.Fprintln(os.Stderr, "daemon: zettel hook active")
 	}
 
 	// HTTP API server goroutine.

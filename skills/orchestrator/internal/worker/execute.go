@@ -12,7 +12,7 @@ import (
 
 	"github.com/joeyhipolito/orchestrator-cli/internal/core"
 	"github.com/joeyhipolito/orchestrator-cli/internal/event"
-	"github.com/joeyhipolito/orchestrator-cli/internal/sdk"
+	"github.com/joeyhipolito/nanika/shared/sdk"
 )
 
 // buildWorkerPrompt constructs a composite prompt from prior context and objective.
@@ -125,13 +125,6 @@ func Execute(ctx context.Context, config *core.WorkerConfig, emitter event.Emitt
 		}
 	}
 
-	// Seed persona memory into worker's Claude auto-memory directory.
-	if err := seedMemory(config.Bundle.PersonaName, config.WorkerDir, config.Bundle.Objective); err != nil {
-		if verbose {
-			fmt.Printf("[%s] warning: memory seed failed: %v\n", config.Name, err)
-		}
-	}
-
 	// When TargetDir is set the worker executes inside the target repo;
 	// WorkerDir is the artifact output directory written to by CLAUDE.md instructions.
 	cwd := config.WorkerDir
@@ -140,6 +133,13 @@ func Execute(ctx context.Context, config *core.WorkerConfig, emitter event.Emitt
 		cwd = config.TargetDir
 		// Surface the worker's CLAUDE.md to the subprocess even though cwd is the target repo.
 		addDirs = []string{config.WorkerDir}
+	}
+
+	// Seed persona memory into worker's Claude auto-memory directory.
+	if err := seedMemory(config.Bundle.PersonaName, config.WorkerDir, cwd, config.Bundle.Objective); err != nil {
+		if verbose {
+			fmt.Printf("[%s] warning: memory seed failed: %v\n", config.Name, err)
+		}
 	}
 
 	// Clean up deny-rule settings.local.json from target repo after execution
@@ -205,13 +205,6 @@ func Execute(ctx context.Context, config *core.WorkerConfig, emitter event.Emitt
 
 	if verbose {
 		fmt.Printf("[%s] completed in %s (%d chars output)\n", config.Name, duration.Round(time.Second), len(output))
-	}
-
-	// Merge any new memories back into the canonical persona file.
-	if err := mergeMemoryBack(config.Bundle.PersonaName, config.WorkerDir); err != nil {
-		if verbose {
-			fmt.Printf("[%s] warning: memory merge failed: %v\n", config.Name, err)
-		}
 	}
 
 	// Write output to worker dir for artifact collection

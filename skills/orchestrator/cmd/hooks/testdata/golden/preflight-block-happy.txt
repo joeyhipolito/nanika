@@ -1,0 +1,5 @@
+today: daily/2026-04-20.md — "Shipping the vault narrative layer"
+mocs (48h):
+- mocs/alpha.md — "Alpha MOC"
+- mocs/gamma.md — "Gamma MOC"
+- mocs/beta.md — "Beta MOC"

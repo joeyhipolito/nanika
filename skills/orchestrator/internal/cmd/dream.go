@@ -64,7 +64,6 @@ convert to learnings with heuristic quality scoring, and store via DB.Insert
 with cosine dedup. No LLM calls — worker memories are already structured.
 
 Worker memory files are read-only: this command never modifies memory.md.
-Growth management is handled by the existing enforceMemoryCeiling pipeline.
 
 Three dedup layers prevent duplicates:
   1. File-level sha256: skip unchanged memory files entirely.

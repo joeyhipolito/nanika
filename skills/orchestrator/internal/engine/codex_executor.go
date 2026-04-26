@@ -14,7 +14,7 @@ import (
 	"github.com/joeyhipolito/orchestrator-cli/internal/core"
 	"github.com/joeyhipolito/orchestrator-cli/internal/event"
 	"github.com/joeyhipolito/orchestrator-cli/internal/git"
-	"github.com/joeyhipolito/orchestrator-cli/internal/sdk"
+	"github.com/joeyhipolito/nanika/shared/sdk"
 )
 
 // CodexExecutor runs phases via the OpenAI Codex CLI (codex exec).
@@ -61,7 +61,12 @@ func (e *CodexExecutor) Describe() core.RuntimeDescriptor {
 //	codex exec --dangerously-bypass-approvals-and-sandbox --json
 //	           --skip-git-repo-check [-m model] [-C cwd] <objective>
 //
-// For reviewer phases (RoleReviewer), it invokes:
+// For reviewer phases with RuntimeCodex (RoleReviewer + RuntimeCodex), it also
+// invokes the codex exec path via buildArgs — not codex review — so that the
+// Codex CLI runs in its standard agentic mode for review objectives.
+//
+// For reviewer phases without RuntimeCodex (RoleReviewer + any other runtime),
+// it invokes:
 //
 //	codex review --dangerously-bypass-approvals-and-sandbox --json
 //	             --skip-git-repo-check --base <branch> [-m model] [-C cwd] <objective>
@@ -74,9 +79,6 @@ func (e *CodexExecutor) Describe() core.RuntimeDescriptor {
 // The executor streams the JSONL event log from stdout, emitting
 // WorkerOutput events for each text chunk and capturing the thread_id
 // returned by the "thread.started" event as the session ID.
-//
-// For review phases, the output is parsed into ReviewFindings format
-// (### Blockers and ### Warnings sections) expected by the review loop.
 func (e *CodexExecutor) Execute(
 	ctx context.Context,
 	config *core.WorkerConfig,
@@ -100,8 +102,10 @@ func (e *CodexExecutor) Execute(
 		cwd = config.TargetDir
 	}
 
-	// Dispatch to review path for RoleReviewer phases.
-	if config.Bundle.Role == core.RoleReviewer {
+	// RoleReviewer + RuntimeCodex: use the standard codex exec path so the CLI
+	// runs in agentic mode for review objectives (not codex review).
+	// All other RoleReviewer combinations use the codex review path.
+	if config.Bundle.Role == core.RoleReviewer && config.Bundle.Runtime != core.RuntimeCodex {
 		return e.executeReview(ctx, config, cwd, emitter, verbose, start)
 	}
 
@@ -282,7 +286,23 @@ func (e *CodexExecutor) executeReview(
 		return "", "", nil, fmt.Errorf("get current branch for review: %w", err)
 	}
 
-	args := e.buildReviewArgs(config, cwd, baseBranch)
+	reviewBaseFlags := []string{
+		"--dangerously-bypass-approvals-and-sandbox",
+		"--json",
+		"--skip-git-repo-check",
+	}
+	args := append([]string{"review"}, reviewBaseFlags...)
+	args = append(args, "--base", baseBranch)
+	if config.Model != "" {
+		args = append(args, "-m", config.Model)
+	}
+	if config.EffortLevel != "" {
+		args = append(args, "-c", "model_reasoning_effort="+config.EffortLevel)
+	}
+	if cwd != "" {
+		args = append(args, "-C", cwd)
+	}
+	args = append(args, config.Bundle.Objective)
 	cmd := exec.CommandContext(ctx, e.BinaryPath, args...)
 	cmd.Dir = cwd
 	cmd.Env = codexEnv()
@@ -451,30 +471,6 @@ func (e *CodexExecutor) buildArgs(config *core.WorkerConfig, cwd string) []strin
 	// codex exec [-m model] [-c model_reasoning_effort=<level>] [-C <cwd>] <objective>
 	// -C sets the working root inside codex (redundant with cmd.Dir but explicit).
 	args := append([]string{"exec"}, baseFlags...)
-	if config.Model != "" {
-		args = append(args, "-m", config.Model)
-	}
-	if config.EffortLevel != "" {
-		args = append(args, "-c", "model_reasoning_effort="+config.EffortLevel)
-	}
-	if cwd != "" {
-		args = append(args, "-C", cwd)
-	}
-	args = append(args, config.Bundle.Objective)
-	return args
-}
-
-// buildReviewArgs constructs the codex review argument list.
-// codex review --base <branch> [-m model] [-C <cwd>] <objective>
-func (e *CodexExecutor) buildReviewArgs(config *core.WorkerConfig, cwd string, baseBranch string) []string {
-	baseFlags := []string{
-		"--dangerously-bypass-approvals-and-sandbox",
-		"--json",
-		"--skip-git-repo-check",
-	}
-
-	args := append([]string{"review"}, baseFlags...)
-	args = append(args, "--base", baseBranch)
 	if config.Model != "" {
 		args = append(args, "-m", config.Model)
 	}

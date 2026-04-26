@@ -22,13 +22,14 @@ func capturePhaseOutput(workerDir, workerName, domain, wsID string) {
 	}
 	defer db.Close()
 
-	capturePhaseOutputTo(context.Background(), db, workerDir, workerName, domain, wsID)
+	embedder := learning.NewEmbedder(learning.LoadAPIKey())
+	capturePhaseOutputTo(context.Background(), db, embedder, workerDir, workerName, domain, wsID)
 }
 
-// capturePhaseOutputTo is the testable core: it uses the provided DB instead of
-// opening a new connection. Errors from individual inserts are logged; the function
-// continues to the next learning rather than aborting.
-func capturePhaseOutputTo(ctx context.Context, db *learning.DB, workerDir, workerName, domain, wsID string) {
+// capturePhaseOutputTo is the testable core: it uses the provided DB and
+// embedder instead of opening new connections. Errors from individual inserts
+// are logged; the function continues to the next learning rather than aborting.
+func capturePhaseOutputTo(ctx context.Context, db *learning.DB, embedder *learning.Embedder, workerDir, workerName, domain, wsID string) {
 	text := readMarkdownFiles(workerDir)
 	if text == "" {
 		return
@@ -36,7 +37,7 @@ func capturePhaseOutputTo(ctx context.Context, db *learning.DB, workerDir, worke
 
 	captured := learning.CaptureFromText(text, workerName, domain, wsID)
 	for _, l := range captured {
-		if insErr := db.Insert(ctx, l, nil); insErr != nil {
+		if insErr := db.Insert(ctx, l, embedder); insErr != nil {
 			slog.Error("learning capture: insert", "worker", workerName, "id", l.ID, "error", insErr)
 		}
 	}

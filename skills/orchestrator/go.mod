@@ -4,6 +4,7 @@ go 1.25.4
 
 require (
 	github.com/fsnotify/fsnotify v1.9.0
+	github.com/joeyhipolito/nanika/shared/sdk v0.0.0-00010101000000-000000000000
 	github.com/joeyhipolito/nen v0.0.0
 	github.com/spf13/cobra v1.9.1
 	github.com/spf13/pflag v1.0.6
@@ -11,7 +12,10 @@ require (
 	modernc.org/sqlite v1.48.0
 )
 
-replace github.com/joeyhipolito/nen => ../../plugins/nen
+replace (
+	github.com/joeyhipolito/nanika/shared/sdk => ../../shared/sdk
+	github.com/joeyhipolito/nen => ../../plugins/nen
+)
 
 require (
 	github.com/dlclark/regexp2 v1.11.4 // indirect

@@ -2,6 +2,9 @@ package worker
 
 import (
 	"context"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -129,7 +132,7 @@ func TestCapturePhaseOutputTo_ExtractsAndInsertsLearnings(t *testing.T) {
 	}
 	defer db.Close()
 
-	capturePhaseOutputTo(context.Background(), db, dir, "test-worker", "dev", "ws-test")
+	capturePhaseOutputTo(context.Background(), db, nil, dir, "test-worker", "dev", "ws-test")
 
 	// Verify at least one learning was stored.
 	stored, err := db.FindTopByQuality("dev", 20)
@@ -165,7 +168,7 @@ func TestCapturePhaseOutputTo_EmptyDirIsNoOp(t *testing.T) {
 	defer db.Close()
 
 	// Must not panic or error on an empty directory.
-	capturePhaseOutputTo(context.Background(), db, dir, "worker", "dev", "ws-1")
+	capturePhaseOutputTo(context.Background(), db, nil, dir, "worker", "dev", "ws-1")
 
 	total, _, statsErr := db.Stats()
 	if statsErr != nil {
@@ -191,7 +194,7 @@ func TestCapturePhaseOutputTo_NoMarkersIsNoOp(t *testing.T) {
 	}
 	defer db.Close()
 
-	capturePhaseOutputTo(context.Background(), db, dir, "worker", "dev", "ws-2")
+	capturePhaseOutputTo(context.Background(), db, nil, dir, "worker", "dev", "ws-2")
 
 	total, _, statsErr := db.Stats()
 	if statsErr != nil {
@@ -205,6 +208,54 @@ func TestCapturePhaseOutputTo_NoMarkersIsNoOp(t *testing.T) {
 // ---------------------------------------------------------------------------
 // Goroutine lifecycle: capturePhaseOutput terminates within a reasonable window
 // ---------------------------------------------------------------------------
+
+// TestCapturePhaseOutputTo_StoresEmbeddingWhenEmbedderConfigured verifies that
+// when a working embedder is wired through capturePhaseOutputTo, the stored
+// learning row carries a non-nil embedding blob.
+func TestCapturePhaseOutputTo_StoresEmbeddingWhenEmbedderConfigured(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		vals := make([]string, 8)
+		for i := range vals {
+			vals[i] = fmt.Sprintf("0.%d", i+1)
+		}
+		fmt.Fprintf(w, `{"embedding":{"values":[%s]}}`, strings.Join(vals, ","))
+	}))
+	defer srv.Close()
+
+	embedder := learning.NewEmbedderWithBaseURL("test-key", srv.URL)
+	if embedder == nil {
+		t.Fatal("NewEmbedderWithBaseURL returned nil")
+	}
+
+	dir := t.TempDir()
+	dbPath := filepath.Join(t.TempDir(), "embed_test.db")
+	if err := os.WriteFile(filepath.Join(dir, "output.md"), []byte(
+		"LEARNING: Embedder wiring is verified end-to-end in this test.\n",
+	), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	db, err := learning.OpenDB(dbPath)
+	if err != nil {
+		t.Fatalf("open test db: %v", err)
+	}
+	defer db.Close()
+
+	capturePhaseOutputTo(context.Background(), db, embedder, dir, "embed-test-worker", "dev", "ws-embed")
+
+	stored, err := db.FindTopByQuality("dev", 20)
+	if err != nil {
+		t.Fatalf("FindTopByQuality: %v", err)
+	}
+	if len(stored) == 0 {
+		t.Fatal("no rows stored; expected at least one learning to be inserted")
+	}
+	for _, l := range stored {
+		if len(l.Embedding) == 0 {
+			t.Errorf("learning %s has nil embedding; embedder was wired in", l.ID)
+		}
+	}
+}
 
 func TestCapturePhaseOutput_GoroutineTerminates(t *testing.T) {
 	dir := t.TempDir()

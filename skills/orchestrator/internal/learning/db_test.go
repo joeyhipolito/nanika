@@ -3,7 +3,10 @@ package learning
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -378,20 +381,20 @@ func TestArchiveDeadWeight(t *testing.T) {
 
 		// Active learning — should appear in search results
 		insertLearning(t, db, Learning{
-			ID:      "active-search",
-			Type:    TypePattern,
-			Content: word + " active learning content",
-			Domain:  domain,
-			SeenCount: 3,
+			ID:           "active-search",
+			Type:         TypePattern,
+			Content:      word + " active learning content",
+			Domain:       domain,
+			SeenCount:    3,
 			QualityScore: 0.9,
 		})
 		// Archived learning — same content/query match but must be excluded
 		insertLearning(t, db, Learning{
-			ID:      "archived-search",
-			Type:    TypePattern,
-			Content: word + " archived learning content",
-			Domain:  domain,
-			SeenCount: 3,
+			ID:           "archived-search",
+			Type:         TypePattern,
+			Content:      word + " archived learning content",
+			Domain:       domain,
+			SeenCount:    3,
 			QualityScore: 0.9,
 		})
 		setArchived(t, db, "archived-search", 1)
@@ -411,6 +414,95 @@ func TestArchiveDeadWeight(t *testing.T) {
 		}
 		if ids["archived-search"] {
 			t.Error("archived-search (archived=1) must not appear in hybridSearch results")
+		}
+	})
+
+	t.Run("StaleInjectedQuadrant: injection_count>100 and compliance_rate<0.25 archived", func(t *testing.T) {
+		db := newTestDB(t)
+		// Match: injection_count > 100 AND compliance_rate < 0.25
+		insertLearning(t, db, Learning{
+			ID:             "si-match",
+			Type:           TypeInsight,
+			Content:        "stale injected match",
+			Domain:         "dev",
+			InjectionCount: 150,
+			ComplianceRate: 0.10,
+			QualityScore:   0.8,
+			SeenCount:      5,
+			CreatedAt:      time.Now(),
+		})
+		// injection_count > 100 but compliance_rate >= 0.25 — should NOT match
+		insertLearning(t, db, Learning{
+			ID:             "si-good-rate",
+			Type:           TypeInsight,
+			Content:        "high injection but good compliance",
+			Domain:         "dev",
+			InjectionCount: 150,
+			ComplianceRate: 0.25,
+			QualityScore:   0.8,
+			SeenCount:      5,
+			CreatedAt:      time.Now(),
+		})
+		// injection_count <= 100 — should NOT match stale_injected (boundary: > 100 is false at 100)
+		// compliance_rate set >= 0.10 to avoid criterion 2 (injection>=5, rate<0.10)
+		insertLearning(t, db, Learning{
+			ID:             "si-low-count",
+			Type:           TypeInsight,
+			Content:        "low injection count",
+			Domain:         "dev",
+			InjectionCount: 100,
+			ComplianceRate: 0.15,
+			QualityScore:   0.8,
+			SeenCount:      5,
+			CreatedAt:      time.Now(),
+		})
+
+		candidates, err := db.ArchiveDeadWeight(ctx, ArchiveOptions{DryRun: true})
+		if err != nil {
+			t.Fatalf("ArchiveDeadWeight: %v", err)
+		}
+		ids := archiveCandidateIDs(candidates)
+		if !ids["si-match"] {
+			t.Error("si-match (injection=150, rate=0.10) should be a stale_injected candidate")
+		}
+		if ids["si-good-rate"] {
+			t.Error("si-good-rate (compliance_rate=0.25) should not be archived")
+		}
+		if ids["si-low-count"] {
+			t.Error("si-low-count (injection_count=100) should not be archived")
+		}
+		// Verify the reason is "stale_injected"
+		for _, c := range candidates {
+			if c.ID == "si-match" && c.Reason != "stale_injected" {
+				t.Errorf("si-match reason = %q; want stale_injected", c.Reason)
+			}
+		}
+	})
+
+	t.Run("DryRunNoMutation: stale_injected candidate not written when DryRun=true", func(t *testing.T) {
+		db := newTestDB(t)
+		insertLearning(t, db, Learning{
+			ID:             "si-dryrun",
+			Type:           TypeInsight,
+			Content:        "stale injected dry run target",
+			Domain:         "dev",
+			InjectionCount: 200,
+			ComplianceRate: 0.05,
+			QualityScore:   0.8,
+			SeenCount:      5,
+			CreatedAt:      time.Now(),
+		})
+
+		candidates, err := db.ArchiveDeadWeight(ctx, ArchiveOptions{DryRun: true})
+		if err != nil {
+			t.Fatalf("ArchiveDeadWeight dry-run: %v", err)
+		}
+		ids := archiveCandidateIDs(candidates)
+		if !ids["si-dryrun"] {
+			t.Fatal("si-dryrun should be returned as candidate in dry-run")
+		}
+		if got := getArchivedFlag(t, db, "si-dryrun"); got != 0 {
+			t.Errorf("dry-run must not mutate DB: archived = %d; want 0", got)
 		}
 	})
 
@@ -505,9 +597,9 @@ func archiveCandidateIDs(candidates []ArchiveCandidate) map[string]bool {
 
 func TestComplianceGate(t *testing.T) {
 	// The compliance gate in hybridSearch SQL:
-	//   AND (injection_count < 3 OR compliance_rate >= 0.15)
+	//   AND (injection_count < 20 OR compliance_rate >= 0.15)
 	//
-	// Learnings with injection_count >= 3 AND compliance_rate < 0.15 are excluded.
+	// Learnings with injection_count >= 20 AND compliance_rate < 0.15 are excluded.
 	// The test uses FTS to drive scoring (no embeddings needed).
 	const domain = "dev"
 	const queryTerm = "xylophone" // distinctive term guaranteed to match only our test rows
@@ -524,42 +616,42 @@ func TestComplianceGate(t *testing.T) {
 			injections:     2,
 			complianceRate: 0.05,
 			wantIncluded:   true,
-			description:    "injection_count=2 < 3, gate does not apply regardless of rate",
+			description:    "injection_count=2 < 20, gate does not apply regardless of rate",
 		},
 		{
-			name:           "exactly 3 injections, rate below 0.15: excluded",
-			injections:     3,
+			name:           "exactly 20 injections, rate below 0.15: excluded",
+			injections:     20,
 			complianceRate: 0.10,
 			wantIncluded:   false,
-			description:    "injection_count=3 and rate=0.10 < 0.15 → excluded",
+			description:    "injection_count=20 and rate=0.10 < 0.15 → excluded",
 		},
 		{
-			name:           "exactly 3 injections, rate exactly 0.15: included",
-			injections:     3,
+			name:           "exactly 20 injections, rate exactly 0.15: included",
+			injections:     20,
 			complianceRate: 0.15,
 			wantIncluded:   true,
-			description:    "injection_count=3 but rate=0.15 >= 0.15 → included",
+			description:    "injection_count=20 but rate=0.15 >= 0.15 → included",
 		},
 		{
 			name:           "high injections, rate above threshold: included",
-			injections:     10,
+			injections:     25,
 			complianceRate: 0.50,
 			wantIncluded:   true,
-			description:    "injection_count=10 but rate=0.50 >= 0.15 → included",
+			description:    "injection_count=25 but rate=0.50 >= 0.15 → included",
 		},
 		{
 			name:           "high injections, rate below threshold: excluded",
-			injections:     10,
+			injections:     25,
 			complianceRate: 0.05,
 			wantIncluded:   false,
-			description:    "injection_count=10 and rate=0.05 < 0.15 → excluded",
+			description:    "injection_count=25 and rate=0.05 < 0.15 → excluded",
 		},
 		{
 			name:           "zero injections: always included",
 			injections:     0,
 			complianceRate: 0.0,
 			wantIncluded:   true,
-			description:    "injection_count=0 < 3, gate does not apply",
+			description:    "injection_count=0 < 20, gate does not apply",
 		},
 	}
 
@@ -887,7 +979,7 @@ func TestHybridScoringOrdering(t *testing.T) {
 		Domain:       "dev",
 		SeenCount:    3,
 		QualityScore: 0.5,
-		Embedding:    []float32{1, 0, 0}, // cosine with queryEmb = 1.0
+		Embedding:    []float32{1, 0, 0},                    // cosine with queryEmb = 1.0
 		CreatedAt:    time.Now().Add(-200 * 24 * time.Hour), // older than 180d → recency 0.4
 	})
 
@@ -901,7 +993,7 @@ func TestHybridScoringOrdering(t *testing.T) {
 		SeenCount:    3,
 		QualityScore: 1.0,
 		Embedding:    []float32{0.1, 0.995, 0}, // cosine with queryEmb ≈ 0.1
-		CreatedAt:    time.Now(),                // brand new → recency 1.0
+		CreatedAt:    time.Now(),               // brand new → recency 1.0
 	})
 
 	// Drive scoring via embedding only — no FTS query term so ordering depends
@@ -1004,10 +1096,13 @@ func TestFindTopByQuality_EmptyDB(t *testing.T) {
 func TestFindTopByQuality_RanksByQualityTimesRecency(t *testing.T) {
 	db := newTestDB(t)
 
+	// Distinct types so the per-type cap (maxPerType=2) does not drop rows —
+	// this test targets relevance ordering, not the diversity filter.
+
 	// high quality but old — should rank below high-quality recent
 	insertLearning(t, db, Learning{
 		ID:           "old-high",
-		Type:         TypeInsight,
+		Type:         TypePattern,
 		Content:      "Old but high quality learning.",
 		Domain:       "dev",
 		QualityScore: 0.9,
@@ -1016,7 +1111,7 @@ func TestFindTopByQuality_RanksByQualityTimesRecency(t *testing.T) {
 	// moderate quality, recent — should rank below old-high (0.7*1.0=0.7 vs 0.9*0.4=0.36)
 	insertLearning(t, db, Learning{
 		ID:           "recent-mid",
-		Type:         TypeInsight,
+		Type:         TypeDecision,
 		Content:      "Recent but mid quality learning.",
 		Domain:       "dev",
 		QualityScore: 0.7,
@@ -1084,10 +1179,13 @@ func TestFindTopByQuality_RespectsDomain(t *testing.T) {
 
 func TestFindTopByQuality_RespectsLimit(t *testing.T) {
 	db := newTestDB(t)
+	// Cycle across the 5 learning types so the per-type cap (2) does not
+	// shrink the candidate pool below the requested limit.
+	types := []LearningType{TypeInsight, TypePattern, TypeError, TypeSource, TypeDecision}
 	for i := 0; i < 10; i++ {
 		insertLearning(t, db, Learning{
 			ID:           fmt.Sprintf("learn-%02d", i),
-			Type:         TypeInsight,
+			Type:         types[i%len(types)],
 			Content:      fmt.Sprintf("Learning number %d.", i),
 			Domain:       "dev",
 			QualityScore: 0.8,
@@ -1181,14 +1279,14 @@ func TestFindTopByQuality_RespectsComplianceFilter(t *testing.T) {
 		ComplianceRate: 0.20,
 		CreatedAt:      time.Now(),
 	})
-	// Should NOT appear: injection_count >= 3 and compliance_rate < 0.15
+	// Should NOT appear: injection_count >= 20 and compliance_rate < 0.15
 	insertLearning(t, db, Learning{
 		ID:             "overinjected",
 		Type:           TypeInsight,
 		Content:        "Over-injected with poor compliance.",
 		Domain:         "dev",
 		QualityScore:   0.9,
-		InjectionCount: 5,
+		InjectionCount: 20,
 		ComplianceRate: 0.05,
 		CreatedAt:      time.Now(),
 	})
@@ -1202,12 +1300,668 @@ func TestFindTopByQuality_RespectsComplianceFilter(t *testing.T) {
 		ids[l.ID] = true
 	}
 	if !ids["low-inject"] {
-		t.Error("low-inject should appear (injection_count < 3)")
+		t.Error("low-inject should appear (injection_count < 20)")
 	}
 	if !ids["high-inject-good-compliance"] {
 		t.Error("high-inject-good-compliance should appear (compliance_rate >= 0.15)")
 	}
 	if ids["overinjected"] {
-		t.Error("overinjected should be filtered out (injection_count >= 3 and compliance_rate < 0.15)")
+		t.Error("overinjected should be filtered out (injection_count >= 20 and compliance_rate < 0.15)")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// FindTopByQuality — stale-injected filter (G5)
+// ---------------------------------------------------------------------------
+
+// TestFindTopByQuality_ExcludesStaleInjected verifies rows with injection_count > 100
+// and compliance_rate < 0.25 are excluded from FindTopByQuality results.
+func TestFindTopByQuality_ExcludesStaleInjected(t *testing.T) {
+	db := newTestDB(t)
+	insertLearning(t, db, Learning{
+		ID:             "stale-injected",
+		Type:           TypeInsight,
+		Content:        "Over-injected stale learning with low compliance.",
+		Domain:         "dev",
+		QualityScore:   0.9,
+		InjectionCount: 101,
+		ComplianceRate: 0.10,
+		CreatedAt:      time.Now(),
+	})
+
+	results, err := db.FindTopByQuality("dev", 10)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	for _, l := range results {
+		if l.ID == "stale-injected" {
+			t.Error("stale-injected (injection_count=101, compliance_rate=0.10) must be excluded")
+		}
+	}
+}
+
+// TestFindTopByQuality_IncludesHealthyRow verifies a row with high injection_count
+// but compliance_rate >= 0.25 is NOT excluded by the stale-injected filter.
+func TestFindTopByQuality_IncludesHealthyRow(t *testing.T) {
+	db := newTestDB(t)
+	insertLearning(t, db, Learning{
+		ID:             "healthy-high-inject",
+		Type:           TypeInsight,
+		Content:        "High injection count but healthy compliance.",
+		Domain:         "dev",
+		QualityScore:   0.8,
+		InjectionCount: 150,
+		ComplianceRate: 0.30,
+		CreatedAt:      time.Now(),
+	})
+
+	results, err := db.FindTopByQuality("dev", 10)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	found := false
+	for _, l := range results {
+		if l.ID == "healthy-high-inject" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("healthy-high-inject (injection_count=150, compliance_rate=0.30) should appear")
+	}
+}
+
+// TestFindTopByQuality_IncludesLowInjectRow verifies a row with low injection_count
+// regardless of compliance_rate is not caught by the stale-injected filter.
+func TestFindTopByQuality_IncludesLowInjectRow(t *testing.T) {
+	db := newTestDB(t)
+	insertLearning(t, db, Learning{
+		ID:             "low-inject-any-compliance",
+		Type:           TypeInsight,
+		Content:        "Low injection count, compliance does not matter for this filter.",
+		Domain:         "dev",
+		QualityScore:   0.8,
+		InjectionCount: 2,
+		ComplianceRate: 0.05,
+		CreatedAt:      time.Now(),
+	})
+
+	results, err := db.FindTopByQuality("dev", 10)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	found := false
+	for _, l := range results {
+		if l.ID == "low-inject-any-compliance" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("low-inject-any-compliance (injection_count=2) should appear (not stale-injected)")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// FindTopByQuality — per-type cap + MMR diversity (TRK-512)
+// ---------------------------------------------------------------------------
+
+// TestFindTopByQuality_PerTypeCap seeds many rows of three types and asserts
+// that no type appears more than maxPerType (=2) times in the result.
+func TestFindTopByQuality_PerTypeCap(t *testing.T) {
+	db := newTestDB(t)
+	now := time.Now()
+
+	// 4 insight + 3 pattern + 2 decision; decreasing quality so SQL order
+	// pulls them in mixed. With 2×limit=10 candidates fetched and cap=2 per
+	// type, the pool collapses to at most 2+2+2 = 6 entries.
+	spec := []struct {
+		t     LearningType
+		count int
+	}{
+		{TypeInsight, 4},
+		{TypePattern, 3},
+		{TypeDecision, 2},
+	}
+	q := 0.90
+	for _, s := range spec {
+		for i := 0; i < s.count; i++ {
+			insertLearning(t, db, Learning{
+				ID:           fmt.Sprintf("%s-%d", s.t, i),
+				Type:         s.t,
+				Content:      fmt.Sprintf("%s learning %d", s.t, i),
+				Domain:       "dev",
+				QualityScore: q,
+				CreatedAt:    now,
+			})
+			q -= 0.01
+		}
+	}
+
+	results, err := db.FindTopByQuality("dev", 5)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(results) > 5 {
+		t.Errorf("expected ≤ 5 results (limit), got %d", len(results))
+	}
+	counts := make(map[LearningType]int)
+	for _, l := range results {
+		counts[l.Type]++
+	}
+	for typ, c := range counts {
+		if c > maxPerType {
+			t.Errorf("type %s appears %d times, exceeds per-type cap %d", typ, c, maxPerType)
+		}
+	}
+}
+
+// TestFindTopByQuality_MMRDiversityOverQuality verifies that MMR prefers a
+// more topically diverse candidate over a higher-quality near-duplicate.
+func TestFindTopByQuality_MMRDiversityOverQuality(t *testing.T) {
+	db := newTestDB(t)
+	now := time.Now()
+
+	// 5 distinct types so per-type cap does not interfere.
+	// Embeddings: A/B/E cluster around axis X; C is orthogonal on Y; D on Z.
+	// Quality rank: A > B > C > D > E.
+	seed := []struct {
+		id  string
+		typ LearningType
+		q   float64
+		emb []float32
+	}{
+		{"A-top", TypeInsight, 0.95, []float32{1, 0, 0}},
+		{"B-dup", TypePattern, 0.90, []float32{1, 0, 0}},
+		{"C-div", TypeDecision, 0.80, []float32{0, 1, 0}},
+		{"D-alt", TypeSource, 0.70, []float32{0, 0, 1}},
+		{"E-dup", TypeError, 0.60, []float32{1, 0, 0}},
+	}
+	for _, s := range seed {
+		insertLearning(t, db, Learning{
+			ID:           s.id,
+			Type:         s.typ,
+			Content:      s.id + " content",
+			Domain:       "dev",
+			QualityScore: s.q,
+			CreatedAt:    now,
+			Embedding:    s.emb,
+		})
+	}
+
+	results, err := db.FindTopByQuality("dev", 2)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(results) != 2 {
+		t.Fatalf("expected 2 results, got %d", len(results))
+	}
+	if results[0].ID != "A-top" {
+		t.Errorf("first pick should be highest-quality A-top, got %s", results[0].ID)
+	}
+	// A raw quality-only ranker would pick B-dup second. MMR should choose
+	// C-div (orthogonal embedding) despite its lower quality.
+	if results[1].ID != "C-div" {
+		t.Errorf("second pick should be diverse C-div (MMR), got %s", results[1].ID)
+	}
+}
+
+// TestFindTopByQuality_NoEmbeddings_Fallback verifies the function tolerates
+// rows without embeddings: MMR diversity cost falls back to 0 and relevance
+// ordering determines the final slice.
+func TestFindTopByQuality_NoEmbeddings_Fallback(t *testing.T) {
+	db := newTestDB(t)
+	now := time.Now()
+
+	// 5 rows, 5 types, no embeddings, decreasing quality.
+	seed := []struct {
+		id  string
+		typ LearningType
+		q   float64
+	}{
+		{"n1", TypeInsight, 0.90},
+		{"n2", TypePattern, 0.80},
+		{"n3", TypeDecision, 0.70},
+		{"n4", TypeSource, 0.60},
+		{"n5", TypeError, 0.50},
+	}
+	for _, s := range seed {
+		insertLearning(t, db, Learning{
+			ID:           s.id,
+			Type:         s.typ,
+			Content:      s.id + " content",
+			Domain:       "dev",
+			QualityScore: s.q,
+			CreatedAt:    now,
+		})
+	}
+
+	results, err := db.FindTopByQuality("dev", 3)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(results) != 3 {
+		t.Fatalf("expected 3 results, got %d", len(results))
+	}
+	// Without embeddings, diversity cost is 0 for every candidate → MMR
+	// score reduces to lambda*relevance → pure quality order.
+	wantOrder := []string{"n1", "n2", "n3"}
+	for i, want := range wantOrder {
+		if results[i].ID != want {
+			t.Errorf("position %d: want %s, got %s", i, want, results[i].ID)
+		}
+	}
+}
+
+// TestFindTopByQuality_FewerCandidatesThanLimit verifies the function returns
+// the available candidates without panicking when the pool is smaller than
+// the requested limit.
+func TestFindTopByQuality_FewerCandidatesThanLimit(t *testing.T) {
+	db := newTestDB(t)
+	now := time.Now()
+
+	seed := []struct {
+		id  string
+		typ LearningType
+	}{
+		{"few-1", TypeInsight},
+		{"few-2", TypePattern},
+		{"few-3", TypeDecision},
+	}
+	for _, s := range seed {
+		insertLearning(t, db, Learning{
+			ID:           s.id,
+			Type:         s.typ,
+			Content:      s.id,
+			Domain:       "dev",
+			QualityScore: 0.8,
+			CreatedAt:    now,
+		})
+	}
+
+	results, err := db.FindTopByQuality("dev", 10)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(results) != 3 {
+		t.Errorf("expected 3 results (pool < limit), got %d", len(results))
+	}
+}
+
+// TestFindTopByQuality_LimitZero regression-guards the default: limit=0 must
+// expand to 20 internally (the legacy default) instead of returning nothing.
+func TestFindTopByQuality_LimitZero(t *testing.T) {
+	db := newTestDB(t)
+	now := time.Now()
+
+	// 22 rows across 11 distinct (type, sub-key) buckets so the per-type cap
+	// does not shrink the pool below the default limit of 20 — we cycle
+	// through 5 types (cap gives 2 per type = 10) plus we lean on MMR to
+	// cap at 20 regardless.
+	types := []LearningType{TypeInsight, TypePattern, TypeError, TypeSource, TypeDecision}
+	for i := 0; i < 22; i++ {
+		insertLearning(t, db, Learning{
+			ID:           fmt.Sprintf("lz-%02d", i),
+			Type:         types[i%len(types)],
+			Content:      fmt.Sprintf("limit-zero learning %d", i),
+			Domain:       "dev",
+			QualityScore: 0.8,
+			CreatedAt:    now,
+		})
+	}
+
+	results, err := db.FindTopByQuality("dev", 0)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(results) == 0 {
+		t.Fatal("expected non-empty results when limit=0 (should default to 20)")
+	}
+	if len(results) > 20 {
+		t.Errorf("expected ≤20 results when limit=0 (default), got %d", len(results))
+	}
+}
+
+// ---------------------------------------------------------------------------
+// TestUpdateQualityScores
+// ---------------------------------------------------------------------------
+
+func TestUpdateQualityScores_TierMapping(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+
+	insertLearning(t, db, Learning{ID: "ins", Type: TypeInsight, Content: "x", Domain: "dev", SeenCount: 1})
+	insertLearning(t, db, Learning{ID: "pat", Type: TypePattern, Content: "x", Domain: "dev", SeenCount: 1})
+	insertLearning(t, db, Learning{ID: "src", Type: TypeSource, Content: "x", Domain: "dev", SeenCount: 1})
+
+	n, err := db.UpdateQualityScores(ctx)
+	if err != nil {
+		t.Fatalf("UpdateQualityScores: %v", err)
+	}
+	if n != 3 {
+		t.Errorf("rows affected: got %d, want 3", n)
+	}
+
+	const epsilon = 0.001
+	cases := []struct {
+		id   string
+		want float64
+	}{
+		{"ins", 0.75},   // 1.0 * 1.0 * 1.0 * 0.75
+		{"pat", 0.525},  // 0.7 * 1.0 * 1.0 * 0.75
+		{"src", 0.30},   // 0.4 * 1.0 * 1.0 * 0.75
+	}
+	for _, c := range cases {
+		got := getQualityScore(t, db, c.id)
+		if got < c.want-epsilon || got > c.want+epsilon {
+			t.Errorf("id=%s quality_score: got %.4f, want %.4f", c.id, got, c.want)
+		}
+	}
+}
+
+func TestUpdateQualityScores_InjectionBoost(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+
+	insertLearning(t, db, Learning{ID: "ins", Type: TypeInsight, Content: "x", Domain: "dev", SeenCount: 1})
+
+	// Record 6 injections (bucket 6-10 → +0.4 boost)
+	ids := make([]string, 6)
+	for i := range ids {
+		ids[i] = "ins"
+	}
+	if err := db.RecordInjections(ctx, ids); err != nil {
+		t.Fatalf("RecordInjections: %v", err)
+	}
+
+	if _, err := db.UpdateQualityScores(ctx); err != nil {
+		t.Fatalf("UpdateQualityScores: %v", err)
+	}
+
+	// 1.0 * 1.0 * (1+0.4) * 0.75 = 1.05
+	const want = 1.05
+	const epsilon = 0.001
+	got := getQualityScore(t, db, "ins")
+	if got < want-epsilon || got > want+epsilon {
+		t.Errorf("quality_score: got %.4f, want %.4f", got, want)
+	}
+}
+
+func TestUpdateQualityScores_ComplianceMultiplier(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+
+	insertLearning(t, db, Learning{ID: "ins", Type: TypeInsight, Content: "x", Domain: "dev", SeenCount: 1})
+
+	// Record 10 injections (bucket >10 → +0.5; but we need ≤10 for +0.4 bucket; 10 is in bucket <=10)
+	ids := make([]string, 10)
+	for i := range ids {
+		ids[i] = "ins"
+	}
+	if err := db.RecordInjections(ctx, ids); err != nil {
+		t.Fatalf("RecordInjections: %v", err)
+	}
+	// Record 10 compliance-positive events (compliance_rate = 1.0)
+	for i := 0; i < 10; i++ {
+		if err := db.RecordCompliance(ctx, "ins", true); err != nil {
+			t.Fatalf("RecordCompliance: %v", err)
+		}
+	}
+
+	if _, err := db.UpdateQualityScores(ctx); err != nil {
+		t.Fatalf("UpdateQualityScores: %v", err)
+	}
+
+	// 1.0 * 1.0 * (1+0.4) * (0.5 + 0.5*1.0) = 1.0 * 1.0 * 1.4 * 1.0 = 1.40
+	const want = 1.40
+	const epsilon = 0.001
+	got := getQualityScore(t, db, "ins")
+	if got < want-epsilon || got > want+epsilon {
+		t.Errorf("quality_score: got %.4f, want %.4f", got, want)
+	}
+}
+
+func TestUpdateQualityScores_ExcludesArchived(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+
+	insertLearning(t, db, Learning{ID: "active", Type: TypeInsight, Content: "x", Domain: "dev", SeenCount: 1, QualityScore: 0.5})
+	insertLearning(t, db, Learning{ID: "archived", Type: TypeInsight, Content: "y", Domain: "dev", SeenCount: 1, QualityScore: 0.5})
+
+	// Mark second row as archived via direct SQL (same pattern used in setArchived helper)
+	if _, err := db.db.Exec("UPDATE learnings SET archived = 1 WHERE id = ?", "archived"); err != nil {
+		t.Fatalf("mark archived: %v", err)
+	}
+
+	n, err := db.UpdateQualityScores(ctx)
+	if err != nil {
+		t.Fatalf("UpdateQualityScores: %v", err)
+	}
+	if n != 1 {
+		t.Errorf("rows affected: got %d, want 1", n)
+	}
+
+	// Active row should be rescored (≠ 0.5)
+	active := getQualityScore(t, db, "active")
+	if active == 0.5 {
+		t.Error("active row quality_score was not updated")
+	}
+
+	// Archived row must stay at 0.5
+	archived := getQualityScore(t, db, "archived")
+	const epsilon = 0.001
+	if archived < 0.5-epsilon || archived > 0.5+epsilon {
+		t.Errorf("archived row quality_score changed: got %.4f, want 0.5", archived)
+	}
+}
+
+func TestUpdateQualityScores_EmptyDB(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+
+	n, err := db.UpdateQualityScores(ctx)
+	if err != nil {
+		t.Fatalf("UpdateQualityScores on empty DB: %v", err)
+	}
+	if n != 0 {
+		t.Errorf("rows affected: got %d, want 0", n)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// FindTopByQuality — threshold fix: highly-injected rows surface at limit=N
+// ---------------------------------------------------------------------------
+
+// TestFindTopByQuality_LimitRespectsHighlyInjectedRows verifies that rows with
+// injection_count=10 (previously excluded by the old threshold of 3) are returned
+// when limit=N and there are ≥N eligible candidates.
+func TestFindTopByQuality_LimitRespectsHighlyInjectedRows(t *testing.T) {
+	db := newTestDB(t)
+	types := []LearningType{TypeInsight, TypePattern, TypeError, TypeSource, TypeDecision}
+	const numCandidates = 10
+	const limit = 10
+	for i := 0; i < numCandidates; i++ {
+		insertLearning(t, db, Learning{
+			ID:             fmt.Sprintf("hi-inject-%02d", i),
+			Type:           types[i%len(types)],
+			Content:        fmt.Sprintf("Highly injected learning %d.", i),
+			Domain:         "dev",
+			QualityScore:   0.8,
+			InjectionCount: 10, // would have been filtered with old threshold of 3
+			ComplianceRate: 0.0,
+			CreatedAt:      time.Now(),
+		})
+	}
+
+	results, err := db.FindTopByQuality("dev", limit)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	want := min(limit, numCandidates)
+	if len(results) != want {
+		t.Errorf("FindTopByQuality(limit=%d) with %d candidates: got %d rows, want %d",
+			limit, numCandidates, len(results), want)
+	}
+}
+
+// TestFindTopByQuality_TypeSkewedPoolReturnsLimitedByLimit verifies that when
+// the candidate pool is dominated by a single type, FindTopByQuality still
+// returns exactly limit results (rather than being capped at the old
+// maxPerType=2 ceiling). With maxPerType=5 and a pool of 10 TypeInsight rows,
+// requesting limit=5 must yield 5 results.
+func TestFindTopByQuality_TypeSkewedPoolReturnsLimitedByLimit(t *testing.T) {
+	t.Run("single-type pool fills limit up to maxPerType", func(t *testing.T) {
+		db := newTestDB(t)
+		// Insert 10 rows of the same type. With maxPerType=5 the cap allows 5
+		// through; limit=5 so we expect exactly 5.
+		for i := 0; i < 10; i++ {
+			insertLearning(t, db, Learning{
+				ID:           fmt.Sprintf("skewed-%02d", i),
+				Type:         TypeInsight,
+				Content:      fmt.Sprintf("Skewed pool learning %d.", i),
+				Domain:       "dev",
+				QualityScore: 0.9 - float64(i)*0.01,
+				CreatedAt:    time.Now(),
+			})
+		}
+
+		results, err := db.FindTopByQuality("dev", 5)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(results) != 5 {
+			t.Errorf("expected 5 results (limit=5, maxPerType=5), got %d", len(results))
+		}
+		for _, l := range results {
+			if l.Type != TypeInsight {
+				t.Errorf("unexpected type %s in results", l.Type)
+			}
+		}
+	})
+
+	t.Run("per-type cap still applies within limit", func(t *testing.T) {
+		db := newTestDB(t)
+		// 10 TypeInsight + 1 TypePattern. With limit=6, per-type cap of 5 means
+		// at most 5 TypeInsight; the one TypePattern fills the 6th slot.
+		for i := 0; i < 10; i++ {
+			insertLearning(t, db, Learning{
+				ID:           fmt.Sprintf("cap-insight-%02d", i),
+				Type:         TypeInsight,
+				Content:      fmt.Sprintf("Cap insight learning %d.", i),
+				Domain:       "dev",
+				QualityScore: 0.9 - float64(i)*0.01,
+				CreatedAt:    time.Now(),
+			})
+		}
+		insertLearning(t, db, Learning{
+			ID:           "cap-pattern-0",
+			Type:         TypePattern,
+			Content:      "Cap pattern learning.",
+			Domain:       "dev",
+			QualityScore: 0.5,
+			CreatedAt:    time.Now(),
+		})
+
+		results, err := db.FindTopByQuality("dev", 6)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(results) != 6 {
+			t.Errorf("expected 6 results (limit=6), got %d", len(results))
+		}
+		counts := make(map[LearningType]int)
+		for _, l := range results {
+			counts[l.Type]++
+		}
+		if counts[TypeInsight] > maxPerType {
+			t.Errorf("TypeInsight appears %d times, exceeds per-type cap %d", counts[TypeInsight], maxPerType)
+		}
+	})
+}
+
+// ---------------------------------------------------------------------------
+// RecordInjections — last_used_at and injection_count write path
+// ---------------------------------------------------------------------------
+
+// TestRecordInjections_UpdatesLastUsedAtAndCount verifies that RecordInjections
+// writes last_used_at = datetime('now') and increments injection_count by 1.
+func TestRecordInjections_UpdatesLastUsedAtAndCount(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+
+	const initialCount = 5
+	insertLearning(t, db, Learning{
+		ID:             "inject-target",
+		Type:           TypeInsight,
+		Content:        "Target learning for injection recording.",
+		Domain:         "dev",
+		QualityScore:   0.8,
+		InjectionCount: initialCount,
+		CreatedAt:      time.Now(),
+	})
+
+	if err := db.RecordInjections(ctx, []string{"inject-target"}); err != nil {
+		t.Fatalf("RecordInjections: %v", err)
+	}
+
+	var lastUsedAt sql.NullString
+	var injCount int
+	err := db.db.QueryRow(
+		"SELECT last_used_at, injection_count FROM learnings WHERE id = ?", "inject-target",
+	).Scan(&lastUsedAt, &injCount)
+	if err != nil {
+		t.Fatalf("querying inject-target: %v", err)
+	}
+	if !lastUsedAt.Valid || lastUsedAt.String == "" {
+		t.Error("last_used_at must be non-NULL after RecordInjections")
+	}
+	if injCount != initialCount+1 {
+		t.Errorf("injection_count: got %d, want %d", injCount, initialCount+1)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// TestInsert_RequiresEmbedder
+// ---------------------------------------------------------------------------
+
+// TestInsert_RequiresEmbedder verifies that Insert returns ErrEmbedderRequired
+// (wrapped) when an embedder is configured but embedding generation yields an
+// empty vector — the strict guard preventing silent NULL-embedding rows.
+func TestInsert_RequiresEmbedder(t *testing.T) {
+	// Serve a 200 with empty values to trigger the empty-vector guard.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"embedding":{"values":[]}}`)
+	}))
+	defer srv.Close()
+
+	embedder := &Embedder{
+		apiKey:     "test-key",
+		model:      "gemini-embedding-001",
+		httpClient: srv.Client(),
+		baseURL:    srv.URL,
+	}
+
+	db := newTestDB(t)
+	l := Learning{
+		ID:        "requires-embedder-test",
+		Type:      TypeInsight,
+		Content:   "content that must be embedded before storage",
+		Domain:    "dev",
+		CreatedAt: time.Now(),
+	}
+
+	err := db.Insert(context.Background(), l, embedder)
+	if err == nil {
+		t.Fatal("Insert with empty-vector embedder must return an error; got nil")
+	}
+	if !errors.Is(err, ErrEmbedderRequired) {
+		t.Errorf("Insert error = %v; want errors.Is(err, ErrEmbedderRequired) == true", err)
+	}
+
+	// Row must not have been written.
+	var n int
+	if qErr := db.db.QueryRow("SELECT COUNT(*) FROM learnings WHERE id = ?", l.ID).Scan(&n); qErr != nil {
+		t.Fatalf("count query: %v", qErr)
+	}
+	if n != 0 {
+		t.Errorf("guarded row was written despite ErrEmbedderRequired (count=%d)", n)
 	}
 }

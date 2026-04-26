@@ -49,6 +49,14 @@ type PhaseMetric struct {
 	// WorkerName is the persistent worker that ran this phase (e.g. "alpha").
 	// Empty means the phase ran on an ephemeral worker.
 	WorkerName string `json:"worker_name,omitempty"`
+	// OutputBytes is the total on-disk size of the phase's merged artifacts,
+	// captured in engine.handleArtifactMerge. Used for Barok V2 density rollup.
+	OutputBytes int `json:"output_bytes,omitempty"`
+	// Barok output-compression telemetry, propagated to metrics DB phases table.
+	BarokApplied          int `json:"barok_applied,omitempty"`            // 1 when InjectBarok returned non-empty
+	BarokRetry            int `json:"barok_retry,omitempty"`              // 1 when validator rejected and a retry ran
+	BarokValidatorMs      int `json:"barok_validator_ms,omitempty"`       // summed wall-clock ms inside ValidateArtifactStructure on the initial pass
+	BarokRetryValidatorMs int `json:"barok_retry_validator_ms,omitempty"` // summed wall-clock ms inside ValidateArtifactStructure on the retry pass (0 when no retry)
 }
 
 // Error type constants used in PhaseMetric.ErrorType and stored in phases.error_type.
@@ -122,11 +130,11 @@ type MissionMetrics struct {
 	DecompSource       string        `json:"decomp_source,omitempty"` // "predecomposed", "decomp.llm", "decomp.keyword", "template"
 	Phases             []PhaseMetric `json:"phases,omitempty"`
 	// Mission-level cost rollups (sum of all phase costs)
-	TokensInTotal          int     `json:"tokens_in_total,omitempty"`
-	TokensOutTotal         int     `json:"tokens_out_total,omitempty"`
-	TokensCacheCreationTotal int   `json:"tokens_cache_creation_total,omitempty"`
-	TokensCacheReadTotal   int     `json:"tokens_cache_read_total,omitempty"`
-	CostUSDTotal           float64 `json:"cost_usd_total,omitempty"`
+	TokensInTotal            int     `json:"tokens_in_total,omitempty"`
+	TokensOutTotal           int     `json:"tokens_out_total,omitempty"`
+	TokensCacheCreationTotal int     `json:"tokens_cache_creation_total,omitempty"`
+	TokensCacheReadTotal     int     `json:"tokens_cache_read_total,omitempty"`
+	CostUSDTotal             float64 `json:"cost_usd_total,omitempty"`
 }
 
 // RecordMetrics appends a JSONL line to ~/.alluka/metrics.jsonl and writes to
@@ -381,28 +389,33 @@ func toMissionRecord(m MissionMetrics) metricsdb.MissionRecord {
 	phases := make([]metricsdb.PhaseRecord, len(m.Phases))
 	for i, p := range m.Phases {
 		phases[i] = metricsdb.PhaseRecord{
-			ID:                  p.ID,
-			Name:                p.Name,
-			Persona:             p.Persona,
-			Skills:              append([]string(nil), p.Skills...),
-			ParsedSkills:        append([]string(nil), p.ParsedSkills...),
-			SelectionMethod:     p.PersonaSelectionMethod,
-			DurationS:           p.DurationS,
-			Status:              p.Status,
-			Retries:             p.Retries,
-			GatePassed:          p.GatePassed,
-			OutputLen:           p.OutputLen,
-			LearningsRetrieved:  p.LearningsRetrieved,
-			ErrorType:           p.ErrorType,
-			ErrorMessage:        p.ErrorMessage,
-			Provider:            p.Provider,
-			Model:               p.Model,
-			TokensIn:            p.TokensIn,
-			TokensOut:           p.TokensOut,
-			TokensCacheCreation: p.TokensCacheCreation,
-			TokensCacheRead:     p.TokensCacheRead,
-			CostUSD:             p.CostUSD,
-			WorkerName:          p.WorkerName,
+			ID:                    p.ID,
+			Name:                  p.Name,
+			Persona:               p.Persona,
+			Skills:                append([]string(nil), p.Skills...),
+			ParsedSkills:          append([]string(nil), p.ParsedSkills...),
+			SelectionMethod:       p.PersonaSelectionMethod,
+			DurationS:             p.DurationS,
+			Status:                p.Status,
+			Retries:               p.Retries,
+			GatePassed:            p.GatePassed,
+			OutputLen:             p.OutputLen,
+			LearningsRetrieved:    p.LearningsRetrieved,
+			ErrorType:             p.ErrorType,
+			ErrorMessage:          p.ErrorMessage,
+			Provider:              p.Provider,
+			Model:                 p.Model,
+			TokensIn:              p.TokensIn,
+			TokensOut:             p.TokensOut,
+			TokensCacheCreation:   p.TokensCacheCreation,
+			TokensCacheRead:       p.TokensCacheRead,
+			CostUSD:               p.CostUSD,
+			WorkerName:            p.WorkerName,
+			OutputBytes:           p.OutputBytes,
+			BarokApplied:          p.BarokApplied,
+			BarokRetry:            p.BarokRetry,
+			BarokValidatorMs:      p.BarokValidatorMs,
+			BarokRetryValidatorMs: p.BarokRetryValidatorMs,
 		}
 	}
 	return metricsdb.MissionRecord{
@@ -553,26 +566,31 @@ func toPhaseRecord(p *core.Phase) metricsdb.PhaseRecord {
 	}
 
 	pr := metricsdb.PhaseRecord{
-		ID:                  phaseRuntimeID(p),
-		Name:                p.Name,
-		Persona:             p.Persona,
-		Skills:              append([]string(nil), p.Skills...),
-		ParsedSkills:        append([]string(nil), p.ParsedSkills...),
-		SelectionMethod:     p.PersonaSelectionMethod,
-		DurationS:           durS,
-		Status:              string(p.Status),
-		Retries:             p.Retries,
-		GatePassed:          p.GatePassed,
-		OutputLen:           p.OutputLen,
-		LearningsRetrieved:  p.LearningsRetrieved,
-		Provider:            providerForPhase(p),
-		Model:               p.Model,
-		TokensIn:            p.TokensIn,
-		TokensOut:           p.TokensOut,
-		TokensCacheCreation: p.TokensCacheCreation,
-		TokensCacheRead:     p.TokensCacheRead,
-		CostUSD:             p.CostUSD,
-		WorkerName:          p.Worker,
+		ID:                    phaseRuntimeID(p),
+		Name:                  p.Name,
+		Persona:               p.Persona,
+		Skills:                append([]string(nil), p.Skills...),
+		ParsedSkills:          append([]string(nil), p.ParsedSkills...),
+		SelectionMethod:       p.PersonaSelectionMethod,
+		DurationS:             durS,
+		Status:                string(p.Status),
+		Retries:               p.Retries,
+		GatePassed:            p.GatePassed,
+		OutputLen:             p.OutputLen,
+		LearningsRetrieved:    p.LearningsRetrieved,
+		Provider:              providerForPhase(p),
+		Model:                 p.Model,
+		TokensIn:              p.TokensIn,
+		TokensOut:             p.TokensOut,
+		TokensCacheCreation:   p.TokensCacheCreation,
+		TokensCacheRead:       p.TokensCacheRead,
+		CostUSD:               p.CostUSD,
+		WorkerName:            p.Worker,
+		OutputBytes:           p.OutputBytes,
+		BarokApplied:          p.BarokApplied,
+		BarokRetry:            p.BarokRetry,
+		BarokValidatorMs:      p.BarokValidatorMs,
+		BarokRetryValidatorMs: p.BarokRetryValidatorMs,
 	}
 	if p.Status == core.StatusFailed && p.Error != "" {
 		pr.ErrorType = ParseErrorType(p.Error)
@@ -655,6 +673,11 @@ func buildMetrics(ws *core.Workspace, plan *core.Plan, result *core.ExecutionRes
 			TokensCacheRead:        p.TokensCacheRead,
 			CostUSD:                p.CostUSD,
 			WorkerName:             p.Worker,
+			OutputBytes:            p.OutputBytes,
+			BarokApplied:           p.BarokApplied,
+			BarokRetry:             p.BarokRetry,
+			BarokValidatorMs:       p.BarokValidatorMs,
+			BarokRetryValidatorMs:  p.BarokRetryValidatorMs,
 		}
 		if p.Status == core.StatusFailed && p.Error != "" {
 			pm.ErrorType = ParseErrorType(p.Error)

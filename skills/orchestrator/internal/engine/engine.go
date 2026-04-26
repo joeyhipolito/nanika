@@ -7,18 +7,19 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/joeyhipolito/nen/zetsu"
 	"github.com/joeyhipolito/orchestrator-cli/internal/core"
 	"github.com/joeyhipolito/orchestrator-cli/internal/event"
 	"github.com/joeyhipolito/orchestrator-cli/internal/git"
 	"github.com/joeyhipolito/orchestrator-cli/internal/learning"
 	"github.com/joeyhipolito/orchestrator-cli/internal/persona"
-	"github.com/joeyhipolito/orchestrator-cli/internal/sdk"
+	"github.com/joeyhipolito/nanika/shared/sdk"
 	"github.com/joeyhipolito/orchestrator-cli/internal/worker"
-	"github.com/joeyhipolito/nen/zetsu"
 )
 
 // maxObjectiveBytes is the maximum allowed byte length for a phase OBJECTIVE.
@@ -184,7 +185,7 @@ func (e *Engine) Execute(ctx context.Context, plan *core.Plan) (*core.ExecutionR
 	case errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded):
 		e.emit(emitCtx, event.MissionCancelled, "", "", map[string]any{
 			"task":             plan.Task,
-			"duration":        time.Since(start).String(),
+			"duration":         time.Since(start).String(),
 			"duration_seconds": time.Since(start).Seconds(),
 		})
 	case err != nil || (result != nil && !result.Success):
@@ -196,23 +197,26 @@ func (e *Engine) Execute(ctx context.Context, plan *core.Plan) (*core.ExecutionR
 		}
 		e.emit(emitCtx, event.MissionFailed, "", "", map[string]any{
 			"task":             plan.Task,
-			"phase_count":     len(plan.Phases),
-			"error":           errMsg,
-			"duration":        time.Since(start).String(),
+			"phase_count":      len(plan.Phases),
+			"error":            errMsg,
+			"duration":         time.Since(start).String(),
 			"duration_seconds": time.Since(start).Seconds(),
 		})
 	default:
 		artifacts := 0
+		var artifactList []string
 		if result != nil {
 			artifacts = len(result.Artifacts)
+			artifactList = result.Artifacts
 		}
 		e.emit(emitCtx, event.MissionCompleted, "", "", map[string]any{
 			"task":             plan.Task,
-			"phase_count":     len(plan.Phases),
-			"execution_mode":  plan.ExecutionMode,
-			"duration":        time.Since(start).String(),
+			"phase_count":      len(plan.Phases),
+			"execution_mode":   plan.ExecutionMode,
+			"duration":         time.Since(start).String(),
 			"duration_seconds": time.Since(start).Seconds(),
-			"artifacts":       artifacts,
+			"artifacts":        artifacts,
+			"artifacts_list":   artifactList,
 		})
 	}
 
@@ -634,7 +638,7 @@ func (e *Engine) executePhase(ctx context.Context, phase *core.Phase, priorConte
 			phase.LearningsRetrieved = len(learnings)
 			var parts []string
 			for _, l := range learnings {
-				parts = append(parts, fmt.Sprintf("- [%s] %s", l.Type, truncateContent(l.Content, 500)))
+				parts = append(parts, fmt.Sprintf("- [%s · %s] %s", l.Type, l.ShortID(), truncateContent(l.Content, 500)))
 			}
 			learningsText = strings.Join(parts, "\n")
 
@@ -649,6 +653,17 @@ func (e *Engine) executePhase(ctx context.Context, phase *core.Phase, priorConte
 				ids[i] = l.ID
 			}
 			e.learningDB.RecordInjections(ctx, ids) //nolint:errcheck
+
+			// Emit one LearningInjected event per selected learning so SessionStart
+			// analysis and downstream auditors can reconstruct retrieval decisions.
+			for i, l := range learnings {
+				e.emit(ctx, event.LearningInjected, phaseID, "", map[string]any{
+					"learning_id":   l.ShortID(),
+					"learning_type": string(l.Type),
+					"rank":          i + 1,
+					"reason":        "find_relevant",
+				})
+			}
 		}
 	}
 
@@ -737,6 +752,7 @@ func (e *Engine) executePhase(ctx context.Context, phase *core.Phase, priorConte
 		PriorScratch:   priorScratch,
 		WorkerName:     workerName,
 		WorkerMemory:   workerMemory,
+		IsTerminal:     e.isTerminalPhase(phase),
 		// WorkerDir and ScratchDir are populated by worker.Spawn after the directory is created.
 	}
 
@@ -894,10 +910,15 @@ func (e *Engine) executePhase(ctx context.Context, phase *core.Phase, priorConte
 	// Track output length
 	phase.OutputLen = len(output)
 
-	// Create phase artifact directory and merge.
-	// Failures here are non-fatal: log and emit a warning so the operator is
-	// informed, but the phase is still considered complete.
-	e.handleArtifactMerge(ctx, phase, config)
+	// Create phase artifact directory and merge. Merge/write failures are
+	// non-fatal warnings, but a barok validator retry that cannot produce a
+	// structurally-sound artifact fails the phase via the existing error path.
+	if mergeErr := e.handleArtifactMerge(ctx, phase, config); mergeErr != nil {
+		e.emit(ctx, event.PhaseFailed, phaseID, config.Name, map[string]any{
+			"error": mergeErr.Error(),
+		})
+		return output, mergeErr
+	}
 
 	// Capture learnings from this phase's output in a background goroutine.
 	// extractMu ensures at most one extraction runs per mission (rate limiter),
@@ -962,6 +983,7 @@ func (e *Engine) executePhase(ctx context.Context, phase *core.Phase, priorConte
 					"content":       l.Content,
 					"phase":         phaseName,
 					"domain":        domain,
+					"marker":        l.Marker,
 				})
 			}
 
@@ -1140,6 +1162,29 @@ func (e *Engine) buildHandoffs(phase *core.Phase) []core.HandoffRecord {
 	return handoffs
 }
 
+// isTerminalPhase reports whether phase has zero downstream dependents in the
+// plan DAG, including auto-injected required-review gates. Per the barok design
+// (delta §2 / scope §9 DECISION 2 candidate b): a phase is terminal when no
+// other phase lists its ID in Dependencies. Output bytes generated by a
+// terminal phase never re-enter a dependent worker's prompt prefix, which is
+// the load-bearing invariant for cache-safe output compression.
+func (e *Engine) isTerminalPhase(phase *core.Phase) bool {
+	if phase == nil || e.plan == nil {
+		return false
+	}
+	for _, p := range e.plan.Phases {
+		if p == nil || p.ID == phase.ID {
+			continue
+		}
+		for _, depID := range p.Dependencies {
+			if depID == phase.ID {
+				return false
+			}
+		}
+	}
+	return true
+}
+
 func (e *Engine) depsCompleted(phase *core.Phase) bool {
 	for _, depID := range phase.Dependencies {
 		dep, ok := e.phases[depID]
@@ -1200,10 +1245,11 @@ func (e *Engine) collectAllArtifacts() []string {
 }
 
 // handleArtifactMerge creates the phase artifact directory and merges worker
-// output into it and the merged artifacts directory. Errors are non-fatal:
-// they are logged and emitted as system.error warning events so the operator
-// is informed without failing the phase.
-func (e *Engine) handleArtifactMerge(ctx context.Context, phase *core.Phase, config *core.WorkerConfig) {
+// output into it and the merged artifacts directory. Merge/write failures are
+// non-fatal warnings, but a barok validator retry that cannot produce a
+// structurally-sound artifact returns an error so the caller can fail the
+// phase via the normal error path.
+func (e *Engine) handleArtifactMerge(ctx context.Context, phase *core.Phase, config *core.WorkerConfig) error {
 	phaseArtifactDir, err := core.CreatePhaseArtifactDir(e.workspace.Path, phase.ID)
 	if err != nil {
 		fmt.Printf("[engine] artifact dir creation failed for phase %s: %v\n", phase.Name, err)
@@ -1211,7 +1257,7 @@ func (e *Engine) handleArtifactMerge(ctx context.Context, phase *core.Phase, con
 			"error":   fmt.Sprintf("creating artifact dir: %v", err),
 			"warning": true,
 		})
-		return
+		return nil
 	}
 
 	confidence := "medium"
@@ -1236,6 +1282,209 @@ func (e *Engine) handleArtifactMerge(ctx context.Context, phase *core.Phase, con
 			"warning": true,
 		})
 	}
+
+	// Capture total on-disk size of the merged artifacts for Barok V2
+	// compression-density rollup. Log-only: a walk/stat error here must NOT
+	// fail the phase or block the downstream barok validator. Captured from
+	// the initial merge only — the retry path (engine.retryBarokPhase) does
+	// not re-enter handleArtifactMerge, so OutputBytes reflects first-pass
+	// bytes and is honest for window comparison.
+	if artifacts, err := worker.CollectArtifacts(phaseArtifactDir); err == nil {
+		var total int64
+		for _, path := range artifacts {
+			if st, statErr := os.Stat(path); statErr == nil {
+				total += st.Size()
+			}
+		}
+		phase.OutputBytes = int(total)
+	}
+
+	// Barok validator: terminal-phase + allow-listed persona only (delta §3).
+	// Records per-phase BarokApplied / BarokRetry / BarokValidatorMs for the
+	// metrics DB + Trigger H (>5% retry rate reverts).
+	return e.runBarokValidation(ctx, phase, config, phaseArtifactDir)
+}
+
+// runBarokValidation inspects every markdown artifact written by a terminal,
+// barok-eligible phase and records structural-soundness outcomes on the phase.
+//
+// On validator failure (unbalanced code fence, YAML marker, or scratch marker
+// in the compressed output) the path re-invokes the worker once with barok
+// injection suppressed (retryBarokPhase), re-merges the regenerated artifacts,
+// and re-validates them with ValidateArtifactStructure only. phase.BarokRetry
+// is set to 1 solely when that retry fires and completes. A second validator
+// failure returns an error so the caller fails the phase via the normal
+// error path — the cap is one retry per phase.
+func (e *Engine) runBarokValidation(ctx context.Context, phase *core.Phase, config *core.WorkerConfig, phaseArtifactDir string) error {
+	if worker.BarokDisabled() {
+		return nil
+	}
+	if !config.Bundle.IsTerminal {
+		return nil
+	}
+	if !worker.IsBarokEligiblePersona(config.Bundle.PersonaName) {
+		return nil
+	}
+
+	phase.BarokApplied = 1
+
+	artifacts, err := worker.CollectArtifacts(phaseArtifactDir)
+	if err != nil {
+		e.emit(ctx, event.SystemError, phase.ID, config.Name, map[string]any{
+			"error":   fmt.Sprintf("barok: collecting artifacts from %s: %v", phaseArtifactDir, err),
+			"warning": true,
+		})
+		return nil
+	}
+
+	var totalDur time.Duration
+	retryNeeded := false
+	for _, path := range artifacts {
+		rel, _ := filepath.Rel(phaseArtifactDir, path)
+		if !strings.HasSuffix(strings.ToLower(rel), ".md") {
+			continue
+		}
+		data, readErr := os.ReadFile(path)
+		if readErr != nil {
+			e.emit(ctx, event.SystemError, phase.ID, config.Name, map[string]any{
+				"error":    fmt.Sprintf("barok: reading artifact %s: %v", path, readErr),
+				"artifact": path,
+				"warning":  true,
+			})
+			continue
+		}
+		// Barok V2 density observation. Log-only, must never fail the phase.
+		// Fires on the initial (Barok-applied) pass only — the retry path in
+		// retryBarokPhase reruns with Barok suppressed and would pollute the
+		// density signal.
+		worker.ObserveDensity(data, worker.DensityMeta{
+			WorkspaceID:   e.workspace.ID,
+			Persona:       config.Bundle.PersonaName,
+			PhaseID:       phase.ID,
+			PhaseName:     phase.Name,
+			IntensityTier: worker.BarokIntensityTier(config.Bundle.PersonaName),
+			ArtifactPath:  path,
+		})
+		start := time.Now()
+		vErr := worker.ValidateArtifactStructure(data, config.Bundle.PersonaName)
+		totalDur += time.Since(start)
+		if vErr != nil {
+			retryNeeded = true
+			e.emit(ctx, event.SystemError, phase.ID, config.Name, map[string]any{
+				"error":    fmt.Sprintf("barok validator flagged artifact %s: %v", rel, vErr),
+				"persona":  config.Bundle.PersonaName,
+				"artifact": path,
+				"warning":  true,
+			})
+		}
+	}
+	phase.BarokValidatorMs = int(totalDur / time.Millisecond)
+	if !retryNeeded {
+		return nil
+	}
+	return e.retryBarokPhase(ctx, phase, config, phaseArtifactDir)
+}
+
+// retryBarokPhase re-invokes the worker for phase with barok injection
+// suppressed (via ContextBundle.SkipBarokInjection), re-merges the regenerated
+// artifacts into phaseArtifactDir + the merged-artifacts directory, and
+// re-validates every markdown artifact with ValidateArtifactStructure.
+//
+// Cap: exactly one retry per phase. phase.BarokRetry is set to 1 only after
+// the retry actually fires and completes — re-spawn errors, execute errors,
+// merge errors, and a second validator failure all return up so the caller
+// fails the phase via the normal error path. No recursion, no re-entry.
+func (e *Engine) retryBarokPhase(ctx context.Context, phase *core.Phase, config *core.WorkerConfig, phaseArtifactDir string) error {
+	// Stash before the retry's executor call overwrites phase.SessionID, so
+	// post-mortems can still find the rejected run's transcript.
+	phase.BarokFirstRunSessionID = phase.SessionID
+
+	// Scope mutations to this call — config is shared with checkpoint and
+	// metrics readers that must not see the suppression flip or the cleared
+	// resume id once the retry returns.
+	origSkip := config.Bundle.SkipBarokInjection
+	origResume := config.ResumeSessionID
+	config.Bundle.SkipBarokInjection = true
+	config.ResumeSessionID = "" // fresh run — don't resume the compressed session
+	defer func() {
+		config.Bundle.SkipBarokInjection = origSkip
+		config.ResumeSessionID = origResume
+	}()
+
+	// Rewrite CLAUDE.md with barok injection suppressed. A new Spawn would
+	// collide on the deterministic worker-dir name; reusing the existing dir
+	// keeps session continuity and avoids touching core.CreateWorkerDir.
+	claudemd := worker.BuildCLAUDEmd(config.Bundle)
+	claudemdPath := filepath.Join(config.WorkerDir, "CLAUDE.md")
+	if err := os.WriteFile(claudemdPath, []byte(claudemd), 0600); err != nil {
+		return fmt.Errorf("barok retry: rewriting CLAUDE.md at %s: %w", claudemdPath, err)
+	}
+
+	captureEmitter := newPhaseToolCaptureEmitter(phase.ID, e.emitter)
+	_, sessionID, phaseCost, execErr := e.resolveExecutor(phase.Runtime).Execute(ctx, config, captureEmitter, e.config.Verbose)
+	if sessionID != "" {
+		phase.SessionID = sessionID
+	}
+	if phaseCost != nil {
+		phase.TokensIn += phaseCost.InputTokens
+		phase.TokensOut += phaseCost.OutputTokens
+		phase.TokensCacheCreation += phaseCost.CacheCreationTokens
+		phase.TokensCacheRead += phaseCost.CacheReadTokens
+		phase.CostUSD += phaseCost.TotalCostUSD
+	}
+	if execErr != nil {
+		return fmt.Errorf("barok retry: worker execute: %w", execErr)
+	}
+
+	confidence := "medium"
+	if phase.GatePassed {
+		confidence = "high"
+	}
+	meta := worker.ArtifactMeta{
+		ProducedBy: config.Bundle.PersonaName,
+		Role:       string(phase.Role),
+		Phase:      phase.Name,
+		Workspace:  e.workspace.ID,
+		CreatedAt:  time.Now(),
+		Confidence: confidence,
+		DependsOn:  phase.Dependencies,
+	}
+	mergedDir := core.MergedArtifactsDir(e.workspace.Path)
+	if mergeErr := worker.MergeArtifactsWithMeta(config.WorkerDir, phaseArtifactDir, mergedDir, meta); mergeErr != nil {
+		return fmt.Errorf("barok retry: re-merging artifacts: %w", mergeErr)
+	}
+
+	artifacts, err := worker.CollectArtifacts(phaseArtifactDir)
+	if err != nil {
+		return fmt.Errorf("barok retry: collecting artifacts from %s: %w", phaseArtifactDir, err)
+	}
+	var retryDur time.Duration
+	defer func() { phase.BarokRetryValidatorMs = int(retryDur / time.Millisecond) }()
+	for _, path := range artifacts {
+		rel, _ := filepath.Rel(phaseArtifactDir, path)
+		if !strings.HasSuffix(strings.ToLower(rel), ".md") {
+			continue
+		}
+		data, readErr := os.ReadFile(path)
+		if readErr != nil {
+			e.emit(ctx, event.SystemError, phase.ID, config.Name, map[string]any{
+				"error":    fmt.Sprintf("barok retry: reading artifact %s: %v", path, readErr),
+				"artifact": path,
+				"warning":  true,
+			})
+			continue
+		}
+		start := time.Now()
+		vErr := worker.ValidateArtifactStructure(data, config.Bundle.PersonaName)
+		retryDur += time.Since(start)
+		if vErr != nil {
+			return fmt.Errorf("barok retry: artifact %s still fails validation: %w", rel, vErr)
+		}
+	}
+
+	// Retry fired and completed successfully — flag it only now.
+	phase.BarokRetry = 1
+	return nil
 }
 
 // recordChangedFiles runs git diff --name-only against the base branch in the
@@ -1388,21 +1637,26 @@ func (e *Engine) handleReviewLoop(ctx context.Context, phase *core.Phase, output
 	// whenever the reviewer is disciplined about that split.
 	reviewText := output
 	findings := ParseReviewFindings(output)
-	workerReviewPath := filepath.Join(
+	workerDir := filepath.Join(
 		e.workspace.Path,
 		"workers",
 		fmt.Sprintf("%s-%s", phase.Persona, phase.ID),
-		"review.md",
 	)
-	if artifactFindings, err := ParseReviewFindingsFromArtifact(workerReviewPath); err == nil {
-		if len(artifactFindings.Blockers) > 0 || len(artifactFindings.Warnings) > 0 {
-			findings = artifactFindings
-			if data, readErr := os.ReadFile(workerReviewPath); readErr == nil {
-				reviewText = string(data)
-			}
-			if e.config.Verbose {
-				fmt.Printf("[engine] review loop: using review.md artifact for %s (%d blocker(s), %d warning(s))\n",
-					phase.Name, len(findings.Blockers), len(findings.Warnings))
+	// Scan directory for review artifact (canonical review.md or custom-slugged variant).
+	workerReviewPath := findReviewMdCaseInsensitive(workerDir)
+	if workerReviewPath != "" {
+		if data, readErr := os.ReadFile(workerReviewPath); readErr == nil {
+			text := string(data)
+			// Adopt the artifact whenever both section headers are present — a
+			// clean approval (0 blockers, 0 warnings) is still a valid structured
+			// response and must not be discarded in favour of unstructured stdout.
+			if hasReviewHeaders(text) {
+				findings = ParseReviewFindings(text)
+				reviewText = text
+				if e.config.Verbose {
+					fmt.Printf("[engine] review loop: using review artifact %s for %s (%d blocker(s), %d warning(s))\n",
+						filepath.Base(workerReviewPath), phase.Name, len(findings.Blockers), len(findings.Warnings))
+				}
 			}
 		}
 	}
@@ -1695,7 +1949,13 @@ func resolveMaxTurns(engineMaxTurns int, persona string) int {
 
 // learningsLimitForPhase returns the number of relevant learnings to inject
 // based on how knowledge-intensive the phase is.
+// NANIKA_LEARNINGS_LIMIT overrides the tier-based default when set to a positive integer.
 func learningsLimitForPhase(phase *core.Phase) int {
+	if v := os.Getenv("NANIKA_LEARNINGS_LIMIT"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			return n
+		}
+	}
 	name := strings.ToLower(phase.Name)
 	if strings.Contains(name, "research") || strings.Contains(name, "write") {
 		return 5

@@ -17,9 +17,9 @@ import (
 // metadataRe matches key: value pairs in metadata sections (compiled once).
 var metadataRe = regexp.MustCompile(`(\w+):\s*([^|]+)`)
 
-// memoryCeilingLines is the maximum number of non-empty entries in the canonical MEMORY.md.
-// Entries beyond this limit are moved to MEMORY_ARCHIVE.md (oldest first).
-const memoryCeilingLines = 100
+// maxBridgedBytes caps the body content bridged from a session memory file to
+// prevent runaway entries from flooding the global memory store.
+const maxBridgedBytes = 1024
 
 // imperativePatterns are compiled once at package level.
 // Any match quarantines the entry to MEMORY_QUARANTINE.md to prevent
@@ -236,15 +236,6 @@ func encodeProjectKey(dir string) string {
 	return r.Replace(dir)
 }
 
-// canonicalMemoryPath returns ~/nanika/personas/<persona>/MEMORY.md.
-func canonicalMemoryPath(personaName string) (string, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", fmt.Errorf("getting home dir: %w", err)
-	}
-	return filepath.Join(home, "nanika", "personas", personaName, "MEMORY.md"), nil
-}
-
 // globalMemoryPath returns ~/.alluka/memory/global.md.
 func globalMemoryPath() (string, error) {
 	home, err := os.UserHomeDir()
@@ -345,73 +336,6 @@ func safetyGate(personaName, line string) (bool, error) {
 		}
 	}
 	return true, nil
-}
-
-// enforceMemoryCeiling caps the canonical MEMORY.md at memoryCeilingLines non-empty lines.
-// When the file exceeds the cap, the oldest lines (from the top) are moved to
-// MEMORY_ARCHIVE.md so the canonical file retains only the most recent entries.
-func enforceMemoryCeiling(personaName string) error {
-	canonical, err := canonicalMemoryPath(personaName)
-	if err != nil {
-		return fmt.Errorf("resolving canonical path: %w", err)
-	}
-
-	content, err := os.ReadFile(canonical)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil
-		}
-		return fmt.Errorf("reading canonical MEMORY.md: %w", err)
-	}
-
-	var lines []string
-	scanner := bufio.NewScanner(strings.NewReader(string(content)))
-	for scanner.Scan() {
-		line := scanner.Text()
-		if strings.TrimSpace(line) != "" {
-			lines = append(lines, line)
-		}
-	}
-
-	if len(lines) <= memoryCeilingLines {
-		return nil
-	}
-
-	archivePath, err := archiveMemoryPath(personaName)
-	if err != nil {
-		return fmt.Errorf("resolving archive path: %w", err)
-	}
-	if err := os.MkdirAll(filepath.Dir(archivePath), 0700); err != nil {
-		return fmt.Errorf("creating archive dir: %w", err)
-	}
-
-	excess := lines[:len(lines)-memoryCeilingLines]
-	keep := lines[len(lines)-memoryCeilingLines:]
-
-	af, err := os.OpenFile(archivePath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600)
-	if err != nil {
-		return fmt.Errorf("opening archive file: %w", err)
-	}
-	for _, line := range excess {
-		if _, err := fmt.Fprintln(af, line); err != nil {
-			af.Close()
-			return fmt.Errorf("archiving line: %w", err)
-		}
-	}
-	if err := af.Close(); err != nil {
-		return fmt.Errorf("closing archive file: %w", err)
-	}
-
-	var buf strings.Builder
-	for _, line := range keep {
-		buf.WriteString(line)
-		buf.WriteByte('\n')
-	}
-	if err := os.WriteFile(canonical, []byte(buf.String()), 0600); err != nil {
-		return fmt.Errorf("rewriting canonical MEMORY.md after ceiling: %w", err)
-	}
-
-	return nil
 }
 
 // promoteEntriesToGlobal appends entries to ~/.alluka/memory/global.md, deduplicating
@@ -604,32 +528,14 @@ func loadScoredEntries(path string, objKWs map[string]struct{}, now time.Time) (
 	return out, nil
 }
 
-// seedMemory copies the canonical persona MEMORY.md (and the global MEMORY.md) into
-// the worker's Claude auto-memory location so the spawned session inherits prior
-// learnings. Global entries are prepended before persona entries; both draw from the
-// same 4KB budget. Persona entries selected for seeding have their Used counter
-// incremented in the canonical file. When no keywords match the objective, scoring
-// falls back to recency-only.
-func seedMemory(personaName, workerDir, objective string) error {
-	canonical, err := canonicalMemoryPath(personaName)
-	if err != nil {
-		return fmt.Errorf("resolving canonical path: %w", err)
-	}
-
-	// Ensure canonical file exists (create empty if absent).
-	if _, statErr := os.Stat(canonical); os.IsNotExist(statErr) {
-		if err := os.MkdirAll(filepath.Dir(canonical), 0700); err != nil {
-			return fmt.Errorf("creating persona dir: %w", err)
-		}
-		if err := os.WriteFile(canonical, []byte(""), 0600); err != nil {
-			return fmt.Errorf("creating canonical MEMORY.md: %w", err)
-		}
-	}
-
+// seedMemory writes scored global memory entries into the worker's Claude auto-memory
+// location so the spawned session inherits prior learnings. Entries are ranked by
+// keyword overlap * recency and greedily selected up to seedMemoryBudgetBytes.
+// When no keywords match the objective, scoring falls back to recency-only.
+func seedMemory(personaName, workerDir, effectiveCWD, objective string) error {
 	objKWs := objectiveKeywords(objective)
 	now := time.Now()
 
-	// Load global entries (prepended first, consume budget before persona entries).
 	globalPath, err := globalMemoryPath()
 	if err != nil {
 		return fmt.Errorf("resolving global memory path: %w", err)
@@ -639,48 +545,23 @@ func seedMemory(personaName, workerDir, objective string) error {
 		return fmt.Errorf("loading global memory: %w", err)
 	}
 
-	// Load persona entries.
-	personaRanked, err := loadScoredEntries(canonical, objKWs, now)
-	if err != nil {
-		return fmt.Errorf("loading persona memory: %w", err)
-	}
-
-	// Greedily fill the budget: global first, then persona.
 	budget := 0
-	var selectedGlobal, selectedPersona []string
+	var selected []string
 	for _, line := range globalRanked {
 		lineBytes := len(line) + 1
 		if budget+lineBytes > seedMemoryBudgetBytes {
 			break
 		}
-		selectedGlobal = append(selectedGlobal, line)
-		budget += lineBytes
-	}
-	for _, line := range personaRanked {
-		lineBytes := len(line) + 1
-		if budget+lineBytes > seedMemoryBudgetBytes {
-			break
-		}
-		selectedPersona = append(selectedPersona, line)
+		selected = append(selected, line)
 		budget += lineBytes
 	}
 
-	// Increment Used for each persona entry selected for seeding.
-	if len(selectedPersona) > 0 {
-		if err := incrementUsedInCanonical(canonical, selectedPersona); err != nil {
-			// Non-fatal: continue seeding even if the increment fails.
-			_ = err
-		}
-	}
-
-	// Combine: global entries first, then persona entries.
-	all := append(selectedGlobal, selectedPersona...)
 	var filteredContent []byte
-	if len(all) > 0 {
-		filteredContent = []byte(strings.Join(all, "\n") + "\n")
+	if len(selected) > 0 {
+		filteredContent = []byte(strings.Join(selected, "\n") + "\n")
 	}
 
-	dst, err := workerMemoryPath(workerDir)
+	dst, err := workerMemoryPath(effectiveCWD)
 	if err != nil {
 		return fmt.Errorf("resolving worker memory path: %w", err)
 	}
@@ -691,13 +572,11 @@ func seedMemory(personaName, workerDir, objective string) error {
 	if err := os.WriteFile(dst, filteredContent, 0600); err != nil {
 		return fmt.Errorf("writing worker MEMORY.md: %w", err)
 	}
-	// Make MEMORY.md read-only so the worker cannot overwrite the seeded snapshot.
 	if err := os.Chmod(dst, 0400); err != nil {
 		return fmt.Errorf("chmod worker MEMORY.md: %w", err)
 	}
 
-	// Create MEMORY_NEW.md as the writable scratchpad for new memories.
-	newPath, err := workerMemoryNewPath(workerDir)
+	newPath, err := workerMemoryNewPath(effectiveCWD)
 	if err != nil {
 		return fmt.Errorf("resolving worker memory new path: %w", err)
 	}
@@ -707,113 +586,16 @@ func seedMemory(personaName, workerDir, objective string) error {
 	return nil
 }
 
-// incrementUsedInCanonical rewrites the canonical MEMORY.md file incrementing the
-// Used counter for each line whose trimmed text appears in the selectedLines slice.
-// Lines not in selectedLines are written unchanged. The file mode is preserved.
-func incrementUsedInCanonical(canonicalPath string, selectedLines []string) error {
-	content, err := os.ReadFile(canonicalPath)
-	if err != nil {
-		return fmt.Errorf("reading canonical for used-increment: %w", err)
-	}
-
-	// Build a set of selected line texts for O(1) lookup.
-	sel := make(map[string]bool, len(selectedLines))
-	for _, l := range selectedLines {
-		sel[strings.TrimSpace(l)] = true
-	}
-
-	var buf strings.Builder
-	scanner := bufio.NewScanner(strings.NewReader(string(content)))
-	for scanner.Scan() {
-		line := scanner.Text()
-		trimmed := strings.TrimSpace(line)
-		if trimmed != "" && sel[trimmed] {
-			e := ParseMemoryEntry(trimmed)
-			if e != nil {
-				e.Used++
-				buf.WriteString(e.String())
-				buf.WriteByte('\n')
-				continue
-			}
-		}
-		buf.WriteString(line)
-		buf.WriteByte('\n')
-	}
-	if err := scanner.Err(); err != nil {
-		return fmt.Errorf("scanning canonical for used-increment: %w", err)
-	}
-	return os.WriteFile(canonicalPath, []byte(buf.String()), 0600)
-}
-
-// usedPromotionThreshold is the minimum Used count for an entry to be automatically
-// promoted from a persona's MEMORY.md to the global MEMORY.md during mergeMemoryBack.
-const usedPromotionThreshold = 3
-
-// autoPromoteHighUsed scans the persona canonical MEMORY.md for non-superseded entries
-// with Used >= usedPromotionThreshold, promotes them to the global MEMORY.md, then
-// rewrites the persona canonical without those entries.
-func autoPromoteHighUsed(personaName string) error {
-	canonical, err := canonicalMemoryPath(personaName)
-	if err != nil {
-		return fmt.Errorf("resolving canonical path: %w", err)
-	}
-	content, err := os.ReadFile(canonical)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil
-		}
-		return fmt.Errorf("reading canonical for promotion: %w", err)
-	}
-
-	var toPromote []*MemoryEntry
-	var keepLines []string
-	scanner := bufio.NewScanner(strings.NewReader(string(content)))
-	for scanner.Scan() {
-		line := scanner.Text()
-		trimmed := strings.TrimSpace(line)
-		if trimmed == "" {
-			continue
-		}
-		e := ParseMemoryEntry(trimmed)
-		if e != nil && !e.isSuperseded() && e.Used >= usedPromotionThreshold {
-			toPromote = append(toPromote, e)
-		} else {
-			keepLines = append(keepLines, line)
-		}
-	}
-	if err := scanner.Err(); err != nil {
-		return fmt.Errorf("scanning canonical for promotion: %w", err)
-	}
-
-	if len(toPromote) == 0 {
-		return nil
-	}
-
-	if _, err := promoteEntriesToGlobal(toPromote); err != nil {
-		return fmt.Errorf("promoting entries to global: %w", err)
-	}
-
-	// Rewrite canonical without promoted entries.
-	var buf strings.Builder
-	for _, l := range keepLines {
-		buf.WriteString(l)
-		buf.WriteByte('\n')
-	}
-	if err := os.WriteFile(canonical, []byte(buf.String()), 0600); err != nil {
-		return fmt.Errorf("rewriting canonical after promotion: %w", err)
-	}
-	return nil
-}
-
 // PromotePersonaEntries reads the persona canonical MEMORY.md, selects non-superseded
 // entries for which matcher returns true, promotes them to the global MEMORY.md, and
 // removes them from the persona canonical. Returns the count of promoted entries.
 // If matcher is nil, all non-superseded entries are candidates.
 func PromotePersonaEntries(personaName string, matcher func(*MemoryEntry) bool) (int, error) {
-	canonical, err := canonicalMemoryPath(personaName)
+	home, err := os.UserHomeDir()
 	if err != nil {
-		return 0, fmt.Errorf("resolving canonical path: %w", err)
+		return 0, fmt.Errorf("getting home dir: %w", err)
 	}
+	canonical := filepath.Join(home, "nanika", "personas", personaName, "MEMORY.md")
 	content, err := os.ReadFile(canonical)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -860,215 +642,6 @@ func PromotePersonaEntries(personaName string, matcher func(*MemoryEntry) bool) 
 		return promoted, fmt.Errorf("rewriting persona canonical after promotion: %w", err)
 	}
 	return promoted, nil
-}
-
-// mergeMemoryBack reads the worker's post-session MEMORY_NEW.md scratchpad and
-// appends any lines not present in the canonical file. Falls back to diffing
-// against MEMORY.md when MEMORY_NEW.md is absent. Dedup uses normalized content
-// comparison to catch semantically identical entries even with different formatting.
-// This preserves memories the worker accumulated during execution without duplicating.
-func mergeMemoryBack(personaName, workerDir string) error {
-	newPath, err := workerMemoryNewPath(workerDir)
-	if err != nil {
-		return fmt.Errorf("resolving worker memory new path: %w", err)
-	}
-
-	var workerContent []byte
-	workerContent, err = os.ReadFile(newPath)
-	if err != nil {
-		if !os.IsNotExist(err) {
-			return fmt.Errorf("reading worker MEMORY_NEW.md: %w", err)
-		}
-		// MEMORY_NEW.md absent — fall back to diff against MEMORY.md.
-		workerPath, ferr := workerMemoryPath(workerDir)
-		if ferr != nil {
-			return fmt.Errorf("resolving worker memory path: %w", ferr)
-		}
-		workerContent, err = os.ReadFile(workerPath)
-		if err != nil {
-			if os.IsNotExist(err) {
-				return nil // Worker didn't create any memories.
-			}
-			return fmt.Errorf("reading worker MEMORY.md: %w", err)
-		}
-	}
-
-	canonical, err := canonicalMemoryPath(personaName)
-	if err != nil {
-		return fmt.Errorf("resolving canonical path: %w", err)
-	}
-
-	canonicalContent, err := os.ReadFile(canonical)
-	if err != nil {
-		if os.IsNotExist(err) {
-			canonicalContent = []byte{}
-		} else {
-			return fmt.Errorf("reading canonical MEMORY.md: %w", err)
-		}
-	}
-
-	// Parse canonical into tracked entries for correction detection.
-	type trackedEntry struct {
-		raw   string
-		entry *MemoryEntry
-	}
-	var canonEntries []trackedEntry
-	scanner := bufio.NewScanner(strings.NewReader(string(canonicalContent)))
-	for scanner.Scan() {
-		line := scanner.Text()
-		trimmed := strings.TrimSpace(line)
-		var entry *MemoryEntry
-		if trimmed != "" {
-			entry = ParseMemoryEntry(trimmed)
-		}
-		canonEntries = append(canonEntries, trackedEntry{raw: line, entry: entry})
-	}
-
-	// Build hash set for efficient dedup and pre-compute keyword sets for correction detection.
-	existingByHash := make(map[string]bool)
-	canonKW := make([]map[string]struct{}, len(canonEntries))
-	for i, ce := range canonEntries {
-		if ce.entry != nil {
-			if h := ce.entry.contentHash(); h != "" {
-				existingByHash[h] = true
-			}
-			if ce.entry.Type != "" {
-				canonKW[i] = ce.entry.keywords()
-			}
-		}
-	}
-
-	// Process worker entries: dedup, safety gate, correction detection.
-	var newEntries []*MemoryEntry
-	anySuperseded := false
-	wScanner := bufio.NewScanner(strings.NewReader(string(workerContent)))
-	for wScanner.Scan() {
-		line := wScanner.Text()
-		trimmed := strings.TrimSpace(line)
-		if trimmed == "" {
-			continue
-		}
-
-		// Safety gate: quarantine unsafe entries before any other processing.
-		safe, sErr := safetyGate(personaName, trimmed)
-		if sErr != nil {
-			return fmt.Errorf("safety gate check: %w", sErr)
-		}
-		if !safe {
-			continue
-		}
-
-		entry := ParseMemoryEntry(trimmed)
-		if entry == nil {
-			continue
-		}
-
-		hash := entry.contentHash()
-		if hash != "" && existingByHash[hash] {
-			continue // exact or normalized duplicate
-		}
-
-		// Correction detection: same non-empty type + keyword overlap > threshold
-		// marks the old entry as superseded. Both entries persist for audit.
-		if entry.Type != "" {
-			newKW := entry.keywords()
-			for i := range canonEntries {
-				ce := &canonEntries[i]
-				if ce.entry == nil || ce.entry.isSuperseded() || ce.entry.Type != entry.Type {
-					continue
-				}
-				ckw := canonKW[i]
-				if len(ckw) == 0 || len(newKW) == 0 {
-					continue
-				}
-				intersection := 0
-				for w := range ckw {
-					if _, ok := newKW[w]; ok {
-						intersection++
-					}
-				}
-				union := len(ckw) + len(newKW) - intersection
-				if union > 0 && float64(intersection)/float64(union) > correctionOverlapThreshold {
-					ce.entry.SupersededBy = hash
-					anySuperseded = true
-				}
-			}
-		}
-
-		if hash != "" {
-			existingByHash[hash] = true
-		}
-		newEntries = append(newEntries, entry)
-	}
-
-	if anySuperseded {
-		// Rewrite canonical with superseded marks and new entries appended.
-		var buf strings.Builder
-		for _, ce := range canonEntries {
-			if ce.entry != nil && ce.entry.isSuperseded() {
-				buf.WriteString(ce.entry.String())
-			} else {
-				buf.WriteString(ce.raw)
-			}
-			buf.WriteByte('\n')
-		}
-		for _, e := range newEntries {
-			buf.WriteString(e.String())
-			buf.WriteByte('\n')
-		}
-		if err := os.WriteFile(canonical, []byte(buf.String()), 0600); err != nil {
-			return fmt.Errorf("writing canonical MEMORY.md: %w", err)
-		}
-	} else if len(newEntries) > 0 {
-		// Append only (no supersedures detected).
-		f, err := os.OpenFile(canonical, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600)
-		if err != nil {
-			return fmt.Errorf("opening canonical MEMORY.md for append: %w", err)
-		}
-
-		if len(canonicalContent) > 0 && canonicalContent[len(canonicalContent)-1] != '\n' {
-			if _, err := f.WriteString("\n"); err != nil {
-				f.Close()
-				return fmt.Errorf("writing newline: %w", err)
-			}
-		}
-
-		for _, e := range newEntries {
-			if _, err := fmt.Fprintln(f, e.String()); err != nil {
-				f.Close()
-				return fmt.Errorf("appending line: %w", err)
-			}
-		}
-		if err := f.Close(); err != nil {
-			return fmt.Errorf("closing canonical MEMORY.md: %w", err)
-		}
-	}
-
-	// Enforce ceiling; archive oldest entries when canonical exceeds 100 lines.
-	if err := enforceMemoryCeiling(personaName); err != nil {
-		return fmt.Errorf("enforcing memory ceiling: %w", err)
-	}
-
-	// Auto-promote entries with used >= 3 to global MEMORY.md and remove from persona.
-	if err := autoPromoteHighUsed(personaName); err != nil {
-		return fmt.Errorf("auto-promoting high-used entries: %w", err)
-	}
-
-	// Restore MEMORY.md to writable for the next seed cycle.
-	workerPath, err := workerMemoryPath(workerDir)
-	if err != nil {
-		return fmt.Errorf("resolving worker memory path for chmod: %w", err)
-	}
-	if err := os.Chmod(workerPath, 0600); err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("restoring worker MEMORY.md permissions: %w", err)
-	}
-
-	// Remove the scratchpad so stale entries don't bleed into the next session.
-	if err := os.Remove(newPath); err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("removing worker MEMORY_NEW.md: %w", err)
-	}
-
-	return nil
 }
 
 // BridgeSessionMemory reads Claude Code's auto-memory directory for sourceDir,
@@ -1121,7 +694,7 @@ func BridgeSessionMemory(sourceDir string) (int, error) {
 			continue
 		}
 		entryType, name, body := parseClaudeMemoryFile(string(content))
-		if entryType != "project" && entryType != "reference" {
+		if entryType != "project" && entryType != "reference" && entryType != "feedback" {
 			continue
 		}
 		// Use the name as content. If no name, use the first non-empty
@@ -1139,6 +712,13 @@ func BridgeSessionMemory(sourceDir string) (int, error) {
 		}
 		if entryContent == "" {
 			continue
+		}
+		if len(entryContent) > maxBridgedBytes {
+			truncated := entryContent[:maxBridgedBytes]
+			if idx := strings.LastIndexByte(truncated, '\n'); idx > 0 {
+				truncated = truncated[:idx]
+			}
+			entryContent = truncated + "…"
 		}
 		e := &MemoryEntry{
 			Type:    entryType,

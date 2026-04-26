@@ -21,7 +21,7 @@ import (
 
 	"github.com/joeyhipolito/orchestrator-cli/internal/core"
 	"github.com/joeyhipolito/orchestrator-cli/internal/event"
-	"github.com/joeyhipolito/orchestrator-cli/internal/sdk"
+	"github.com/joeyhipolito/nanika/shared/sdk"
 )
 
 // ---------------------------------------------------------------------------
@@ -444,6 +444,8 @@ done
 
 if printf "%s" "$prompt" | grep -q "Fix the following code review blockers"; then
   printf '%s\n' '{"type":"assistant","content":[{"type":"text","text":"applied fixes"}]}'
+elif printf "%s" "$prompt" | grep -qi "re-review\|re-attempt"; then
+  printf '%s\n' '{"type":"assistant","content":[{"type":"text","text":"### Blockers\n\n_(none)_\n\n### Warnings\n\n_(none)_"}]}'
 elif printf "%s" "$prompt" | grep -q "Review the implementation"; then
   printf '%s\n' '{"type":"assistant","content":[{"type":"text","text":"### Blockers\n- **[engine.go:123]** Missing regression coverage for sequential review loop."}]}'
 else
@@ -553,6 +555,8 @@ done
 
 if printf "%s" "$prompt" | grep -q "Fix the following code review blockers"; then
   printf '%s\n' '{"type":"assistant","content":[{"type":"text","text":"applied fixes"}]}'
+elif printf "%s" "$prompt" | grep -qi "re-review\|re-attempt"; then
+  printf '%s\n' '{"type":"assistant","content":[{"type":"text","text":"### Blockers\n\n_(none)_\n\n### Warnings\n\n_(none)_"}]}'
 elif printf "%s" "$prompt" | grep -q "Review the implementation"; then
   printf '%s\n' '{"type":"assistant","content":[{"type":"text","text":"### Blockers\n- **[engine.go:123]** Missing regression coverage for explicit reviewer loops."}]}'
 else
@@ -961,6 +965,42 @@ func TestLearningsLimitForPhase(t *testing.T) {
 			}
 		})
 	}
+
+	t.Run("override_via_env", func(t *testing.T) {
+		t.Setenv("NANIKA_LEARNINGS_LIMIT", "10")
+		phase := &core.Phase{Name: "compile-results"} // would normally return 3
+		got := learningsLimitForPhase(phase)
+		if got != 10 {
+			t.Errorf("learningsLimitForPhase with NANIKA_LEARNINGS_LIMIT=10 = %d; want 10", got)
+		}
+	})
+
+	t.Run("override_env_invalid", func(t *testing.T) {
+		t.Setenv("NANIKA_LEARNINGS_LIMIT", "abc")
+		phase := &core.Phase{Name: "compile-results"}
+		got := learningsLimitForPhase(phase)
+		if got != 3 {
+			t.Errorf("learningsLimitForPhase with NANIKA_LEARNINGS_LIMIT=abc = %d; want 3 (fallback)", got)
+		}
+	})
+
+	t.Run("override_env_zero", func(t *testing.T) {
+		t.Setenv("NANIKA_LEARNINGS_LIMIT", "0")
+		phase := &core.Phase{Name: "compile-results"}
+		got := learningsLimitForPhase(phase)
+		if got != 3 {
+			t.Errorf("learningsLimitForPhase with NANIKA_LEARNINGS_LIMIT=0 = %d; want 3 (fallback)", got)
+		}
+	})
+
+	t.Run("no_override_default", func(t *testing.T) {
+		t.Setenv("NANIKA_LEARNINGS_LIMIT", "")
+		phase := &core.Phase{Name: "compile-results"}
+		got := learningsLimitForPhase(phase)
+		if got != 3 {
+			t.Errorf("learningsLimitForPhase with no env override = %d; want 3", got)
+		}
+	})
 }
 
 // ---------------------------------------------------------------------------

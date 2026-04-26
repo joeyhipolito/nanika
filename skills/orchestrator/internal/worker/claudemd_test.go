@@ -1002,6 +1002,78 @@ func TestPhaseWorkerField_Settable(t *testing.T) {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// BuildCLAUDEmd: Persona Memory section
+// ---------------------------------------------------------------------------
+
+func TestBuildCLAUDEmd_WithPersonaMemory(t *testing.T) {
+	bundle := core.ContextBundle{
+		Persona:       "# Backend Engineer",
+		PersonaName:   "senior-backend-engineer",
+		Objective:     "Implement the feature",
+		Domain:        "dev",
+		WorkspaceID:   "ws-pmem",
+		PhaseID:       "phase-1",
+		WorkerName:    "alpha",
+		WorkerMemory:  "- use atomic writes",
+		PersonaMemory: "- always validate inputs at boundaries\n- prefer stdlib over third-party",
+	}
+
+	md := BuildCLAUDEmd(bundle)
+
+	if !strings.Contains(md, "## Persona Memory") {
+		t.Error("CLAUDE.md missing Persona Memory section when PersonaMemory is set")
+	}
+	if !strings.Contains(md, "validate inputs at boundaries") {
+		t.Error("CLAUDE.md Persona Memory missing content")
+	}
+
+	// Persona Memory must appear between Worker Identity and Primary Tools
+	workerIdx := strings.Index(md, "## Worker Identity")
+	personaMemIdx := strings.Index(md, "## Persona Memory")
+	toolsIdx := strings.Index(md, "## Primary Tools for This Phase")
+
+	// Worker Identity is present (WorkerMemory set)
+	if workerIdx < 0 {
+		t.Fatal("missing Worker Identity section")
+	}
+	if personaMemIdx < 0 {
+		t.Fatal("missing Persona Memory section")
+	}
+	// Primary Tools absent (no skills) — just verify order relative to constraints
+	constraintsIdx := strings.Index(md, "## Constraints")
+	if constraintsIdx < 0 {
+		t.Fatal("missing Constraints section")
+	}
+	if personaMemIdx <= workerIdx {
+		t.Errorf("Persona Memory (%d) must appear after Worker Identity (%d)", personaMemIdx, workerIdx)
+	}
+	if toolsIdx >= 0 && personaMemIdx >= toolsIdx {
+		t.Errorf("Persona Memory (%d) must appear before Primary Tools (%d)", personaMemIdx, toolsIdx)
+	}
+	if constraintsIdx <= personaMemIdx {
+		t.Errorf("Constraints (%d) must appear after Persona Memory (%d)", constraintsIdx, personaMemIdx)
+	}
+}
+
+func TestBuildCLAUDEmd_PersonaMemory_Empty(t *testing.T) {
+	bundle := core.ContextBundle{
+		Persona:     "# Backend Engineer",
+		PersonaName: "senior-backend-engineer",
+		Objective:   "Implement the feature",
+		Domain:      "dev",
+		WorkspaceID: "ws-nopmem",
+		PhaseID:     "phase-1",
+		// PersonaMemory intentionally empty
+	}
+
+	md := BuildCLAUDEmd(bundle)
+
+	if strings.Contains(md, "## Persona Memory") {
+		t.Error("CLAUDE.md must not have Persona Memory section when PersonaMemory is empty")
+	}
+}
+
 // mustParseTime parses an RFC3339 timestamp for use in tests.
 func mustParseTime(s string) time.Time {
 	t, err := time.Parse(time.RFC3339, s)

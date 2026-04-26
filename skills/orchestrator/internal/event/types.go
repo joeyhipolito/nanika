@@ -12,7 +12,7 @@ import (
 // EventType is a typed string for event kinds.
 type EventType string
 
-// The 28 event type constants, grouped by category.
+// The 30 event type constants, grouped by category.
 const (
 	// Mission lifecycle (4)
 	MissionStarted   EventType = "mission.started"
@@ -38,9 +38,14 @@ const (
 	DecomposeCompleted EventType = "decompose.completed"
 	DecomposeFallback  EventType = "decompose.fallback"
 
-	// Learning (2)
+	// Learning (3)
 	LearningExtracted EventType = "learning.extracted"
 	LearningStored    EventType = "learning.stored"
+	// LearningInjected is emitted once per learning that was selected for
+	// injection into a phase prompt. Data includes "learning_id" (string,
+	// short ID), "learning_type" (string), "rank" (int, 1-based position in
+	// the injected list), and "reason" (string, e.g. "find_relevant").
+	LearningInjected EventType = "learning.injected"
 
 	// DAG progress (2)
 	DAGDependencyResolved EventType = "dag.dependency_resolved"
@@ -104,6 +109,20 @@ const (
 	// semicolon-separated list of matched pattern descriptions), and "sanitized"
 	// (bool: true when block patterns fired and content was modified).
 	SecurityInjectionDetected EventType = "security.injection_detected"
+
+	// Zettel (3)
+	// ZettelWritten is emitted after a mission Zettel is successfully written to
+	// the vault. Data includes "path" (string) and "type" (string, e.g. "mission").
+	ZettelWritten EventType = "zettel.written"
+
+	// ZettelSkipped is emitted when a Zettel write is skipped due to deduplication.
+	// Data includes "path" (string, existing file path) and "reason" (string).
+	ZettelSkipped EventType = "zettel.skipped"
+
+	// ZettelWriteFailed is emitted when a Zettel write fails. Data includes
+	// "slug" (string), "reason" (string), and "dropped_path" (string, path
+	// of the staged fallback file when the drop succeeded, else empty).
+	ZettelWriteFailed EventType = "zettel.write_failed"
 )
 
 // Event is the envelope for all orchestrator events.

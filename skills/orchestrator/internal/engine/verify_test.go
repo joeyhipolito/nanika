@@ -355,6 +355,150 @@ func TestVerifyAndRetry_BuildFails_NoImplPhase(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// execBuildRunner (newNodeAwareBuildRunner) — command routing via stub runner
+// ---------------------------------------------------------------------------
+
+func TestExecBuildRunner_BunNoBuildScript(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "bun.lockb"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "package.json"), []byte(`{"name":"test","scripts":{}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var called bool
+	runner := newNodeAwareBuildRunner(func(_ context.Context, _ string, _ string, _ []string) error {
+		called = true
+		return nil
+	})
+	if err := runner(context.Background(), dir); err != nil {
+		t.Fatalf("expected nil when build script absent, got %v", err)
+	}
+	if called {
+		t.Error("cmdRunFn must not be called when scripts.build is absent")
+	}
+}
+
+func TestExecBuildRunner_NpmWithBuildScript(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "package.json"), []byte(`{"name":"test","scripts":{"build":"echo ok"}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var gotName string
+	var gotArgs []string
+	runner := newNodeAwareBuildRunner(func(_ context.Context, _ string, name string, args []string) error {
+		gotName = name
+		gotArgs = args
+		return nil
+	})
+	if err := runner(context.Background(), dir); err != nil {
+		t.Fatalf("expected nil, got %v", err)
+	}
+	if gotName != "npm" {
+		t.Errorf("manager = %q, want %q", gotName, "npm")
+	}
+	if len(gotArgs) != 2 || gotArgs[0] != "run" || gotArgs[1] != "build" {
+		t.Errorf("args = %v, want [run build]", gotArgs)
+	}
+}
+
+func TestExecBuildRunner_PnpmDetected(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "pnpm-lock.yaml"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "package.json"), []byte(`{"scripts":{"build":"tsc"}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var gotName string
+	var gotArgs []string
+	runner := newNodeAwareBuildRunner(func(_ context.Context, _ string, name string, args []string) error {
+		gotName = name
+		gotArgs = args
+		return nil
+	})
+	if err := runner(context.Background(), dir); err != nil {
+		t.Fatalf("expected nil, got %v", err)
+	}
+	if gotName != "pnpm" {
+		t.Errorf("manager = %q, want %q", gotName, "pnpm")
+	}
+	if len(gotArgs) != 2 || gotArgs[0] != "run" || gotArgs[1] != "build" {
+		t.Errorf("args = %v, want [run build]", gotArgs)
+	}
+}
+
+func TestExecBuildRunner_GoPath(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module example.com/test\n\ngo 1.21\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var gotName string
+	var gotArgs []string
+	runner := newNodeAwareBuildRunner(func(_ context.Context, _ string, name string, args []string) error {
+		gotName = name
+		gotArgs = args
+		return nil
+	})
+	if err := runner(context.Background(), dir); err != nil {
+		t.Fatalf("expected nil, got %v", err)
+	}
+	if gotName != "go" {
+		t.Errorf("manager = %q, want %q", gotName, "go")
+	}
+	if len(gotArgs) != 2 || gotArgs[0] != "build" || gotArgs[1] != "./..." {
+		t.Errorf("args = %v, want [build ./...]", gotArgs)
+	}
+}
+
+func TestExecBuildRunner_YarnDetected(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "yarn.lock"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "package.json"), []byte(`{"scripts":{"build":"tsc"}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var gotName string
+	var gotArgs []string
+	runner := newNodeAwareBuildRunner(func(_ context.Context, _ string, name string, args []string) error {
+		gotName = name
+		gotArgs = args
+		return nil
+	})
+	if err := runner(context.Background(), dir); err != nil {
+		t.Fatalf("expected nil, got %v", err)
+	}
+	if gotName != "yarn" {
+		t.Errorf("manager = %q, want %q", gotName, "yarn")
+	}
+	if len(gotArgs) != 2 || gotArgs[0] != "run" || gotArgs[1] != "build" {
+		t.Errorf("args = %v, want [run build]", gotArgs)
+	}
+}
+
+func TestExecBuildRunner_Unknown(t *testing.T) {
+	dir := t.TempDir() // no go.mod, no package.json
+
+	var called bool
+	runner := newNodeAwareBuildRunner(func(_ context.Context, _ string, _ string, _ []string) error {
+		called = true
+		return nil
+	})
+	if err := runner(context.Background(), dir); err != nil {
+		t.Fatalf("expected nil for unknown project, got %v", err)
+	}
+	if called {
+		t.Error("cmdRunFn must not be called for unknown project type")
+	}
+}
+
+// ---------------------------------------------------------------------------
 // injectBuildRetry — skills are defensively copied
 // ---------------------------------------------------------------------------
 

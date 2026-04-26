@@ -128,6 +128,15 @@ type PhaseRecord struct {
 	// WorkerName is the persistent worker that ran this phase (e.g. "alpha").
 	// Empty means the phase ran on an ephemeral worker.
 	WorkerName string `json:"worker_name,omitempty"`
+	// OutputBytes is the total on-disk size of this phase's artifacts after
+	// the initial merge. Populated by engine.handleArtifactMerge. Used for
+	// Barok V2 compression-density rollup.
+	OutputBytes int `json:"output_bytes,omitempty"`
+	// Barok output-compression telemetry (see worker/barok.go + barok_validator.go).
+	BarokApplied          int `json:"barok_applied,omitempty"`            // 1 when InjectBarok returned non-empty
+	BarokRetry            int `json:"barok_retry,omitempty"`              // 1 when the validator rejected and a retry ran
+	BarokValidatorMs      int `json:"barok_validator_ms,omitempty"`       // wall-clock ms inside ValidateArtifactStructure on the initial pass (sum)
+	BarokRetryValidatorMs int `json:"barok_retry_validator_ms,omitempty"` // wall-clock ms inside ValidateArtifactStructure on the retry pass (sum, 0 if no retry)
 }
 
 func (p *PhaseRecord) UnmarshalJSON(data []byte) error {
@@ -155,6 +164,11 @@ func (p *PhaseRecord) UnmarshalJSON(data []byte) error {
 		TokensCacheRead       int      `json:"tokens_cache_read,omitempty"`
 		CostUSD               float64  `json:"cost_usd,omitempty"`
 		WorkerName            string   `json:"worker_name,omitempty"`
+		OutputBytes           int      `json:"output_bytes,omitempty"`
+		BarokApplied          int      `json:"barok_applied,omitempty"`
+		BarokRetry            int      `json:"barok_retry,omitempty"`
+		BarokValidatorMs      int      `json:"barok_validator_ms,omitempty"`
+		BarokRetryValidatorMs int      `json:"barok_retry_validator_ms,omitempty"`
 	}
 
 	var aux phaseRecordJSON
@@ -187,6 +201,11 @@ func (p *PhaseRecord) UnmarshalJSON(data []byte) error {
 	p.TokensCacheRead = aux.TokensCacheRead
 	p.CostUSD = aux.CostUSD
 	p.WorkerName = aux.WorkerName
+	p.OutputBytes = aux.OutputBytes
+	p.BarokApplied = aux.BarokApplied
+	p.BarokRetry = aux.BarokRetry
+	p.BarokValidatorMs = aux.BarokValidatorMs
+	p.BarokRetryValidatorMs = aux.BarokRetryValidatorMs
 	return nil
 }
 
@@ -369,6 +388,11 @@ func (d *DB) initSchema() error {
 		{"add phases.error_type", `ALTER TABLE phases ADD COLUMN error_type TEXT NOT NULL DEFAULT ''`},
 		{"add phases.error_message", `ALTER TABLE phases ADD COLUMN error_message TEXT NOT NULL DEFAULT ''`},
 		{"add phases.worker_name", `ALTER TABLE phases ADD COLUMN worker_name TEXT NOT NULL DEFAULT ''`},
+		{"add phases.barok_applied", `ALTER TABLE phases ADD COLUMN barok_applied INTEGER NOT NULL DEFAULT 0`},
+		{"add phases.barok_retry", `ALTER TABLE phases ADD COLUMN barok_retry INTEGER NOT NULL DEFAULT 0`},
+		{"add phases.barok_validator_ms", `ALTER TABLE phases ADD COLUMN barok_validator_ms INTEGER NOT NULL DEFAULT 0`},
+		{"add phases.barok_retry_validator_ms", `ALTER TABLE phases ADD COLUMN barok_retry_validator_ms INTEGER NOT NULL DEFAULT 0`},
+		{"add phases.output_bytes", `ALTER TABLE phases ADD COLUMN output_bytes INTEGER NOT NULL DEFAULT 0`},
 		// NOTE: CREATE TABLE IF NOT EXISTS is idempotent at the SQLite level — it
 		// succeeds silently when the table already exists and returns no error.
 		// This is distinct from the ALTER TABLE entries above, which rely on the
@@ -603,8 +627,10 @@ func insertPhase(ctx context.Context, tx *sql.Tx, missionID string, p PhaseRecor
 			status, retries, gate_passed, output_len, learnings_retrieved,
 			error_type, error_message,
 			provider, model, tokens_in, tokens_out, cost_usd, parsed_skills,
-			worker_name, tokens_cache_creation, tokens_cache_read
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			worker_name, tokens_cache_creation, tokens_cache_read,
+			barok_applied, barok_retry, barok_validator_ms, barok_retry_validator_ms,
+			output_bytes
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`,
 		phaseID, missionID, p.Name, p.Persona, p.SelectionMethod, p.DurationS,
 		p.Status, p.Retries, gatePassed, p.OutputLen, p.LearningsRetrieved,
@@ -612,6 +638,8 @@ func insertPhase(ctx context.Context, tx *sql.Tx, missionID string, p PhaseRecor
 		p.Provider, p.Model, p.TokensIn, p.TokensOut, p.CostUSD,
 		marshalSkillsJSON(p.ParsedSkills),
 		p.WorkerName, p.TokensCacheCreation, p.TokensCacheRead,
+		p.BarokApplied, p.BarokRetry, p.BarokValidatorMs, p.BarokRetryValidatorMs,
+		p.OutputBytes,
 	)
 	if err != nil {
 		return fmt.Errorf("inserting phase %s: %w", phaseID, err)
@@ -636,8 +664,10 @@ func upsertPhase(ctx context.Context, execer execContexter, missionID string, p 
 			status, retries, gate_passed, output_len, learnings_retrieved,
 			error_type, error_message,
 			provider, model, tokens_in, tokens_out, cost_usd, parsed_skills,
-			worker_name, tokens_cache_creation, tokens_cache_read
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			worker_name, tokens_cache_creation, tokens_cache_read,
+			barok_applied, barok_retry, barok_validator_ms, barok_retry_validator_ms,
+			output_bytes
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET
 			mission_id = excluded.mission_id,
 			name = excluded.name,
@@ -659,7 +689,12 @@ func upsertPhase(ctx context.Context, execer execContexter, missionID string, p 
 			parsed_skills = excluded.parsed_skills,
 			worker_name = excluded.worker_name,
 			tokens_cache_creation = excluded.tokens_cache_creation,
-			tokens_cache_read = excluded.tokens_cache_read
+			tokens_cache_read = excluded.tokens_cache_read,
+			barok_applied = excluded.barok_applied,
+			barok_retry = excluded.barok_retry,
+			barok_validator_ms = excluded.barok_validator_ms,
+			barok_retry_validator_ms = excluded.barok_retry_validator_ms,
+			output_bytes = excluded.output_bytes
 	`,
 		phaseID, missionID, p.Name, p.Persona, p.SelectionMethod, p.DurationS,
 		p.Status, p.Retries, gatePassed, p.OutputLen, p.LearningsRetrieved,
@@ -667,6 +702,8 @@ func upsertPhase(ctx context.Context, execer execContexter, missionID string, p 
 		p.Provider, p.Model, p.TokensIn, p.TokensOut, p.CostUSD,
 		marshalSkillsJSON(p.ParsedSkills),
 		p.WorkerName, p.TokensCacheCreation, p.TokensCacheRead,
+		p.BarokApplied, p.BarokRetry, p.BarokValidatorMs, p.BarokRetryValidatorMs,
+		p.OutputBytes,
 	)
 	if err != nil {
 		return fmt.Errorf("upserting phase %s: %w", phaseID, err)
@@ -1462,26 +1499,26 @@ func (d *DB) QueryCostSummary(ctx context.Context, days int) (*CostSummary, erro
 // rolling 5-hour window totals and an estimated utilization ratio relative to
 // the operator-configured token budget.
 type QuotaSnapshot struct {
-	ID                    int64     `json:"id,omitempty"`
-	CapturedAt            time.Time `json:"captured_at"`
-	MissionID             string    `json:"mission_id"`
-	TokensIn              int       `json:"tokens_in"`
-	TokensOut             int       `json:"tokens_out"`
-	TokensCacheRead       int       `json:"tokens_cache_read"`
-	CostUSD               float64   `json:"cost_usd"`
-	Window5hTokensIn      int       `json:"window_5h_tokens_in"`
-	Window5hTokensOut     int       `json:"window_5h_tokens_out"`
-	Window5hCostUSD       float64   `json:"window_5h_cost_usd"`
-	Estimated5hUtil       float64   `json:"estimated_5h_utilization"` // (effective_in + out) / budget; cache_read excluded from effective_in
-	Model                 string    `json:"model"`
+	ID                int64     `json:"id,omitempty"`
+	CapturedAt        time.Time `json:"captured_at"`
+	MissionID         string    `json:"mission_id"`
+	TokensIn          int       `json:"tokens_in"`
+	TokensOut         int       `json:"tokens_out"`
+	TokensCacheRead   int       `json:"tokens_cache_read"`
+	CostUSD           float64   `json:"cost_usd"`
+	Window5hTokensIn  int       `json:"window_5h_tokens_in"`
+	Window5hTokensOut int       `json:"window_5h_tokens_out"`
+	Window5hCostUSD   float64   `json:"window_5h_cost_usd"`
+	Estimated5hUtil   float64   `json:"estimated_5h_utilization"` // (effective_in + out) / budget; cache_read excluded from effective_in
+	Model             string    `json:"model"`
 }
 
 // WindowTotals holds the aggregate token and cost totals over a time window.
 type WindowTotals struct {
-	TokensIn       int
-	TokensOut      int
+	TokensIn        int
+	TokensOut       int
 	TokensCacheRead int
-	CostUSD        float64
+	CostUSD         float64
 }
 
 // InsertQuotaSnapshot writes a single snapshot row to the quota_snapshots table.
@@ -1557,16 +1594,16 @@ func (d *DB) GetRecentSnapshots(ctx context.Context, window time.Duration) ([]Qu
 // UsageSnapshot records real plan-utilization figures fetched from the
 // Anthropic OAuth usage endpoint at a point in time.
 type UsageSnapshot struct {
-	ID                    int64      `json:"id,omitempty"`
-	CapturedAt            time.Time  `json:"captured_at"`
-	MissionID             string     `json:"mission_id"`
-	FiveHourUtil          float64    `json:"five_hour_util"`
-	FiveHourResetsAt      *time.Time `json:"five_hour_resets_at,omitempty"`
-	SevenDayUtil          float64    `json:"seven_day_util"`
-	SevenDayResetsAt      *time.Time `json:"seven_day_resets_at,omitempty"`
-	SevenDaySonnetUtil    float64    `json:"seven_day_sonnet_util"`
+	ID                     int64      `json:"id,omitempty"`
+	CapturedAt             time.Time  `json:"captured_at"`
+	MissionID              string     `json:"mission_id"`
+	FiveHourUtil           float64    `json:"five_hour_util"`
+	FiveHourResetsAt       *time.Time `json:"five_hour_resets_at,omitempty"`
+	SevenDayUtil           float64    `json:"seven_day_util"`
+	SevenDayResetsAt       *time.Time `json:"seven_day_resets_at,omitempty"`
+	SevenDaySonnetUtil     float64    `json:"seven_day_sonnet_util"`
 	SevenDaySonnetResetsAt *time.Time `json:"seven_day_sonnet_resets_at,omitempty"`
-	RawJSON               string     `json:"raw_json"`
+	RawJSON                string     `json:"raw_json"`
 }
 
 // InsertUsageSnapshot writes a single row to the usage_snapshots table.

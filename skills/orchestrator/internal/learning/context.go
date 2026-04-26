@@ -58,7 +58,7 @@ func InjectContext(ctx context.Context, db *DB, embedder *Embedder, query, domai
 	var sb strings.Builder
 	sb.WriteString("## Relevant Learnings\n\n")
 	for _, l := range learnings {
-		sb.WriteString(fmt.Sprintf("- **[%s]** %s\n", l.Type, l.Content))
+		sb.WriteString(fmt.Sprintf("- [%s · %s] %s\n", l.Type, l.ShortID(), l.Content))
 	}
 	sb.WriteString("\n")
 

@@ -3,6 +3,7 @@ package engine
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -17,6 +18,10 @@ import (
 // Returns nil on success, non-nil when the build fails.
 // Injected into Engine so tests can swap in a stub without spawning processes.
 type BuildRunner func(ctx context.Context, targetDir string) error
+
+// cmdRunFn is the internal execution primitive used by newNodeAwareBuildRunner.
+// Swappable in tests to avoid spawning real subprocesses.
+type cmdRunFn func(ctx context.Context, dir, name string, args []string) error
 
 // detectProjectType identifies the build system by inspecting targetDir.
 // Returns "go" when go.mod is present, "node" when package.json is present,
@@ -34,28 +39,71 @@ func detectProjectType(targetDir string) string {
 	return ""
 }
 
-// execBuildRunner is the default BuildRunner used in production.
-// It detects the project type from targetDir, runs the appropriate build
-// command, and returns a wrapped error with combined stdout+stderr on failure.
-func execBuildRunner(ctx context.Context, targetDir string) error {
-	projectType := detectProjectType(targetDir)
-	if projectType == "" {
-		return nil // unknown project type; skip verification
+// detectNodeManager returns the node package manager to use based on lockfiles
+// present in targetDir. Priority: bun > pnpm > yarn > npm (fallback).
+func detectNodeManager(targetDir string) string {
+	for _, pair := range []struct{ file, mgr string }{
+		{"bun.lockb", "bun"},
+		{"pnpm-lock.yaml", "pnpm"},
+		{"yarn.lock", "yarn"},
+	} {
+		if _, err := os.Stat(filepath.Join(targetDir, pair.file)); err == nil {
+			return pair.mgr
+		}
 	}
+	return "npm"
+}
 
-	var name string
-	var args []string
-	switch projectType {
-	case "go":
-		name = "go"
-		args = []string{"build", "./..."}
-	case "node":
-		name = "npm"
-		args = []string{"run", "build"}
+// nodeHasBuildScript reports whether package.json in targetDir contains a
+// non-empty scripts.build entry.
+func nodeHasBuildScript(targetDir string) (bool, error) {
+	data, err := os.ReadFile(filepath.Join(targetDir, "package.json"))
+	if err != nil {
+		return false, fmt.Errorf("reading package.json: %w", err)
 	}
+	var pkg struct {
+		Scripts map[string]string `json:"scripts"`
+	}
+	if err := json.Unmarshal(data, &pkg); err != nil {
+		return false, fmt.Errorf("parsing package.json: %w", err)
+	}
+	return pkg.Scripts["build"] != "", nil
+}
 
+// newNodeAwareBuildRunner returns a BuildRunner backed by run. The runner:
+//   - runs "go build ./..." when go.mod is present (Go path, unchanged)
+//   - detects the node package manager from lockfiles and checks for a build
+//     script in package.json when package.json is present; emits a warning and
+//     returns nil when scripts.build is absent (skip, do not fail the phase)
+//   - returns nil for unknown project types
+func newNodeAwareBuildRunner(run cmdRunFn) BuildRunner {
+	return func(ctx context.Context, targetDir string) error {
+		switch detectProjectType(targetDir) {
+		case "go":
+			return run(ctx, targetDir, "go", []string{"build", "./..."})
+		case "node":
+			manager := detectNodeManager(targetDir)
+			ok, err := nodeHasBuildScript(targetDir)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "[build] warning: %v; skipping build verification\n", err)
+				return nil
+			}
+			if !ok {
+				fmt.Fprintf(os.Stderr, "[build] warning: no scripts.build in package.json; skipping build verification\n")
+				return nil
+			}
+			return run(ctx, targetDir, manager, []string{"run", "build"})
+		default:
+			return nil // unknown project type; skip verification
+		}
+	}
+}
+
+// realRunCmd is the production cmdRunFn: executes name with args in dir,
+// capturing combined stdout+stderr and wrapping any error.
+func realRunCmd(ctx context.Context, dir, name string, args []string) error {
 	cmd := exec.CommandContext(ctx, name, args...) //nolint:gosec
-	cmd.Dir = targetDir
+	cmd.Dir = dir
 	var out bytes.Buffer
 	cmd.Stdout = &out
 	cmd.Stderr = &out
@@ -64,6 +112,9 @@ func execBuildRunner(ctx context.Context, targetDir string) error {
 	}
 	return nil
 }
+
+// execBuildRunner is the default BuildRunner used in production.
+var execBuildRunner BuildRunner = newNodeAwareBuildRunner(realRunCmd)
 
 // verifyAndRetry runs build verification after a fix phase succeeds.
 // Returns nil when the build passes, e.buildRunner is nil, or TargetDir is empty.

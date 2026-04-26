@@ -24,7 +24,7 @@ export default class ClaudeCliProvider {
       const output = execFileSync(
         'claude',
         [
-          '--model', 'claude-sonnet-4-5',
+          '--model', 'claude-sonnet-4-6',
           '--print',
           '--output-format', 'text',
           '--max-turns', '1',

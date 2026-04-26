@@ -111,69 +111,36 @@ func TestBuildArgs_ResumeSession_NoModel(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// buildReviewArgs
+// buildArgs — reviewer + codex path
 // ---------------------------------------------------------------------------
 
-func TestBuildReviewArgs_Basic(t *testing.T) {
+// TestBuildArgs_ReviewerCodex verifies that a RoleReviewer phase with
+// RuntimeCodex routes through buildArgs (the codex exec path) and not the
+// codex review path.
+func TestBuildArgs_ReviewerCodex(t *testing.T) {
 	e := &CodexExecutor{BinaryPath: "codex"}
 	config := &core.WorkerConfig{
 		Bundle: core.ContextBundle{
-			Objective: "Review the implementation for bugs",
+			Role:      core.RoleReviewer,
+			Runtime:   core.RuntimeCodex,
+			Objective: "Review the implementation for correctness and test coverage",
 		},
 	}
-	args := e.buildReviewArgs(config, "/work", "main")
+	args := e.buildArgs(config, "/repo")
 
-	mustContain(t, args, "review")
-	mustContain(t, args, "--base")
-	mustContain(t, args, "main")
+	// (a) subcommand must be "exec", not "review"
+	mustContain(t, args, "exec")
+	mustNotContain(t, args, "review")
+
+	// (b) codex exec-compatible flags must be present
 	mustContain(t, args, "--dangerously-bypass-approvals-and-sandbox")
 	mustContain(t, args, "--json")
 	mustContain(t, args, "--skip-git-repo-check")
-	mustContain(t, args, "Review the implementation for bugs")
-}
 
-func TestBuildReviewArgs_WithModel(t *testing.T) {
-	e := &CodexExecutor{BinaryPath: "codex"}
-	config := &core.WorkerConfig{
-		Model: "o4",
-		Bundle: core.ContextBundle{
-			Objective: "Review code quality",
-		},
-	}
-	args := e.buildReviewArgs(config, "/repo", "develop")
+	// (c) codex review-incompatible flags must not appear
+	mustNotContain(t, args, "--base")
 
-	mustContain(t, args, "review")
-	mustContain(t, args, "--base")
-	mustContain(t, args, "develop")
-	mustContain(t, args, "-m")
-	mustContain(t, args, "o4")
-	mustContain(t, args, "Review code quality")
-}
-
-func TestBuildReviewArgs_WithEffortLevel(t *testing.T) {
-	e := &CodexExecutor{BinaryPath: "codex"}
-	config := &core.WorkerConfig{
-		EffortLevel: "high",
-		Bundle: core.ContextBundle{
-			Objective: "Review implementation",
-		},
-	}
-	args := e.buildReviewArgs(config, "/work", "feature-x")
-
-	mustContain(t, args, "-c")
-	mustContain(t, args, "model_reasoning_effort=high")
-}
-
-func TestBuildReviewArgs_EmptyCwd(t *testing.T) {
-	e := &CodexExecutor{BinaryPath: "codex"}
-	config := &core.WorkerConfig{
-		Bundle: core.ContextBundle{
-			Objective: "Review",
-		},
-	}
-	args := e.buildReviewArgs(config, "", "main")
-
-	mustNotContain(t, args, "-C")
+	mustContain(t, args, "Review the implementation for correctness and test coverage")
 }
 
 // ---------------------------------------------------------------------------

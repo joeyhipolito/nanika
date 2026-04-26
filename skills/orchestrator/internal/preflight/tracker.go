@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	_ "modernc.org/sqlite"
@@ -21,8 +22,8 @@ func init() {
 // trackerSection surfaces open P0/P1 tracker issues from ~/.alluka/tracker.db.
 type trackerSection struct{}
 
-func (t *trackerSection) Name() string     { return "tracker" }
-func (t *trackerSection) Priority() int    { return 20 }
+func (t *trackerSection) Name() string  { return "tracker" }
+func (t *trackerSection) Priority() int { return 20 }
 
 func (t *trackerSection) Fetch(ctx context.Context) (Block, error) {
 	dbPath := trackerDBPath()
@@ -38,14 +39,21 @@ func (t *trackerSection) Fetch(ctx context.Context) (Block, error) {
 	}
 	defer db.Close()
 
+	limit := trackerLimit()
+
+	// G6: use seq_id when present so output matches CLI format (TRK-<n>);
+	// legacy rows without seq_id fall back to their hash id.
 	rows, err := db.QueryContext(ctx, `
-		SELECT id, title, COALESCE(assignee, '') AS assignee
+		SELECT
+			CASE WHEN seq_id IS NOT NULL THEN 'TRK-' || seq_id ELSE id END AS display_id,
+			title,
+			COALESCE(assignee, '') AS assignee
 		FROM issues
 		WHERE status = 'open'
 		  AND priority IN ('P0', 'P1')
 		ORDER BY priority ASC, created_at ASC
-		LIMIT 10
-	`)
+		LIMIT ?
+	`, limit)
 	if err != nil {
 		return Block{}, fmt.Errorf("querying tracker issues: %w", err)
 	}
@@ -67,10 +75,34 @@ func (t *trackerSection) Fetch(ctx context.Context) (Block, error) {
 		return Block{}, fmt.Errorf("iterating tracker rows: %w", err)
 	}
 
+	var total int
+	if err := db.QueryRowContext(ctx, `
+		SELECT count(*) FROM issues
+		WHERE status = 'open' AND priority IN ('P0', 'P1')
+	`).Scan(&total); err != nil {
+		return Block{}, fmt.Errorf("counting tracker issues: %w", err)
+	}
+
+	body := strings.TrimRight(sb.String(), "\n")
+	if total > limit {
+		body += fmt.Sprintf("\n- _(showing %d of %d; set NANIKA_PREFLIGHT_TRACKER_LIMIT to see more)_", limit, total)
+	}
+
 	return Block{
 		Title: trackerBlockTitle,
-		Body:  strings.TrimRight(sb.String(), "\n"),
+		Body:  body,
 	}, nil
+}
+
+// trackerLimit returns the maximum number of issues to fetch.
+// Read NANIKA_PREFLIGHT_TRACKER_LIMIT env var; default to 25.
+func trackerLimit() int {
+	if v := os.Getenv("NANIKA_PREFLIGHT_TRACKER_LIMIT"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			return n
+		}
+	}
+	return 25
 }
 
 // trackerDBPath returns the path to tracker.db.

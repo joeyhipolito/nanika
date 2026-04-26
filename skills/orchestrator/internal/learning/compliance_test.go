@@ -1,6 +1,7 @@
 package learning
 
 import (
+	"reflect"
 	"testing"
 )
 
@@ -118,5 +119,76 @@ No injection pattern was used here.
 	}
 	if result["learn_2"] {
 		t.Error("expected learn_2 (dependency injection) not to be followed, but it was")
+	}
+}
+
+func TestParseCitedLearnings_HappyPath(t *testing.T) {
+	out := "Per [44537000], I did X."
+	got := ParseCitedLearnings(out)
+	want := []string{"44537000"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("ParseCitedLearnings = %v, want %v", got, want)
+	}
+}
+
+func TestParseCitedLearnings_MultipleCites(t *testing.T) {
+	out := "Applied [44537000] and later [d428280a] as well."
+	got := ParseCitedLearnings(out)
+	want := []string{"44537000", "d428280a"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("ParseCitedLearnings = %v, want %v", got, want)
+	}
+
+	dup := "Used [44537000] again [44537000] here."
+	gotDup := ParseCitedLearnings(dup)
+	wantDup := []string{"44537000"}
+	if !reflect.DeepEqual(gotDup, wantDup) {
+		t.Errorf("ParseCitedLearnings dedup = %v, want %v", gotDup, wantDup)
+	}
+}
+
+func TestParseCitedLearnings_SkipsInjectionLines(t *testing.T) {
+	// Only the injection line — must not self-cite.
+	onlyInjection := "- [insight · 44537000] Do X because Y."
+	if got := ParseCitedLearnings(onlyInjection); len(got) != 0 {
+		t.Errorf("expected no cites from injection-only input, got %v", got)
+	}
+
+	// Injection line plus a later free-prose citation — must return the cite.
+	mixed := "- [insight · 44537000] Do X because Y.\n\nPer [44537000], I applied it."
+	got := ParseCitedLearnings(mixed)
+	want := []string{"44537000"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("ParseCitedLearnings mixed = %v, want %v", got, want)
+	}
+}
+
+func TestComplianceScan_CitationBoost(t *testing.T) {
+	learnings := []Learning{
+		{
+			ID:      "learn_1770676804944537000",
+			Content: "Always wrap errors with context using fmt.Errorf to preserve chain.",
+		},
+	}
+	output := "Per [44537000], I applied the relevant guidance."
+
+	result := ComplianceScan(learnings, output)
+	if !result["learn_1770676804944537000"] {
+		t.Error("expected citation to boost followed=true, but it wasn't")
+	}
+}
+
+func TestComplianceScan_KeywordFallback(t *testing.T) {
+	learnings := []Learning{
+		{
+			ID:      "learn_1770676804944537000",
+			Content: "Always wrap errors with context using fmt.Errorf to preserve chain.",
+		},
+	}
+	output := "I wrapped the error using fmt.Errorf to preserve the error chain and context."
+
+	result := ComplianceScan(learnings, output)
+	if !result["learn_1770676804944537000"] {
+		t.Error("expected keyword fallback to mark followed=true, but it wasn't")
 	}
 }

@@ -13,6 +13,28 @@ import (
 	"github.com/joeyhipolito/orchestrator-cli/internal/preflight"
 )
 
+// clearSectionsFlag replaces the value of the preflight --sections StringSlice
+// flag with an empty slice. resetCmdFlags() cannot reset StringSlice cleanly
+// because pflag's Set("[]") appends the literal "[]" to the slice, corrupting
+// BuildBrief's filter on every invocation after the first.
+func clearSectionsFlag(t *testing.T) {
+	t.Helper()
+	for _, sub := range rootCmd.Commands() {
+		for _, sub2 := range sub.Commands() {
+			f := sub2.Flags().Lookup("sections")
+			if f == nil {
+				continue
+			}
+			if sv, ok := f.Value.(pflag.SliceValue); ok {
+				if err := sv.Replace(nil); err != nil {
+					t.Fatalf("reset sections flag: %v", err)
+				}
+				f.Changed = false
+			}
+		}
+	}
+}
+
 // setTestConfigDir redirects the orchestrator config dir to a temp dir so
 // hooks commands open an isolated learning DB instead of the real one.
 func setTestConfigDir(t *testing.T) string {
@@ -532,6 +554,85 @@ func TestHooksPreflight_IntegrationWithFixtureHome(t *testing.T) {
 	// Verify the fixture directory was preserved throughout the operation.
 	if _, err := os.Stat(allukaDir); os.IsNotExist(err) {
 		t.Error("fixture home directory was not preserved")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// preflight: TRK-522 audit log wiring
+// ---------------------------------------------------------------------------
+
+// TestHooksPreflight_WritesAuditEntry verifies that runPreflight appends a
+// JSONL entry to ~/.alluka/logs/preflight-audit.<YYYY-MM-DD>.jsonl when the
+// brief is non-empty and NANIKA_NO_INJECT is not set.
+func TestHooksPreflight_WritesAuditEntry(t *testing.T) {
+	resetCmdFlags(t)
+	clearSectionsFlag(t)
+	configDir := setTestConfigDir(t)
+
+	// Sandbox HOME so WriteAudit targets a temp directory.
+	fakeHome := t.TempDir()
+	t.Setenv("HOME", fakeHome)
+	// Clear NANIKA_NO_INJECT in case the surrounding env sets it.
+	t.Setenv("NANIKA_NO_INJECT", "")
+
+	preflight.Reset()
+	t.Cleanup(preflight.Reset)
+	preflight.Register(&testFakeSection{
+		name:     "scheduler",
+		priority: 10,
+		title:    "Scheduled Jobs",
+		body:     "job-1\njob-2\n",
+	})
+
+	t.Setenv("ORCHESTRATOR_CONFIG_DIR", configDir)
+	rootCmd.SetArgs([]string{"hooks", "preflight", "--format", "text"})
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("preflight: %v", err)
+	}
+
+	logDir := filepath.Join(fakeHome, ".alluka", "logs")
+	entries, err := os.ReadDir(logDir)
+	if err != nil {
+		t.Fatalf("audit log dir not created: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("want exactly 1 audit log file, got %d (%v)", len(entries), entries)
+	}
+	if !strings.HasPrefix(entries[0].Name(), "preflight-audit.") ||
+		!strings.HasSuffix(entries[0].Name(), ".jsonl") {
+		t.Errorf("unexpected audit log file name: %s", entries[0].Name())
+	}
+}
+
+// TestHooksPreflight_NoAuditWhenSuppressed verifies that setting
+// NANIKA_NO_INJECT=1 suppresses both stdout output and the audit log write.
+func TestHooksPreflight_NoAuditWhenSuppressed(t *testing.T) {
+	resetCmdFlags(t)
+	clearSectionsFlag(t)
+	configDir := setTestConfigDir(t)
+
+	fakeHome := t.TempDir()
+	t.Setenv("HOME", fakeHome)
+	t.Setenv("NANIKA_NO_INJECT", "1")
+
+	preflight.Reset()
+	t.Cleanup(preflight.Reset)
+	preflight.Register(&testFakeSection{
+		name:     "scheduler",
+		priority: 10,
+		title:    "Scheduled Jobs",
+		body:     "job-1\n",
+	})
+
+	t.Setenv("ORCHESTRATOR_CONFIG_DIR", configDir)
+	rootCmd.SetArgs([]string{"hooks", "preflight", "--format", "text"})
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("preflight: %v", err)
+	}
+
+	// No audit directory must have been created.
+	if _, err := os.Stat(filepath.Join(fakeHome, ".alluka", "logs")); err == nil {
+		t.Errorf("audit log dir was created despite NANIKA_NO_INJECT=1")
 	}
 }
 

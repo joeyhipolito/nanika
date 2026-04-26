@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -25,6 +26,7 @@ type Embedder struct {
 	apiKey     string
 	model      string
 	httpClient *http.Client
+	baseURL    string // override for testing; empty = production API
 }
 
 type geminiEmbedRequest struct {
@@ -65,6 +67,17 @@ func NewEmbedder(apiKey string) *Embedder {
 	}
 }
 
+// NewEmbedderWithBaseURL creates an Embedder targeting baseURL instead of the
+// production Gemini endpoint. Intended for tests that need a controllable
+// embedding backend; baseURL must not be empty.
+func NewEmbedderWithBaseURL(apiKey, baseURL string) *Embedder {
+	e := NewEmbedder(apiKey)
+	if e != nil {
+		e.baseURL = baseURL
+	}
+	return e
+}
+
 // Embed generates an embedding vector for the given text.
 func (e *Embedder) Embed(ctx context.Context, text string) ([]float32, error) {
 	if e == nil {
@@ -81,8 +94,11 @@ func (e *Embedder) Embed(ctx context.Context, text string) ([]float32, error) {
 		return nil, err
 	}
 
-	url := fmt.Sprintf("https://generativelanguage.googleapis.com/v1beta/models/%s:embedContent",
-		e.model)
+	apiBase := "https://generativelanguage.googleapis.com"
+	if e.baseURL != "" {
+		apiBase = strings.TrimRight(e.baseURL, "/")
+	}
+	url := fmt.Sprintf("%s/v1beta/models/%s:embedContent", apiBase, e.model)
 
 	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(jsonBody))
 	if err != nil {
@@ -96,6 +112,11 @@ func (e *Embedder) Embed(ctx context.Context, text string) ([]float32, error) {
 		return nil, fmt.Errorf("embedding request failed: %w", err)
 	}
 	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		snippet, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+		return nil, fmt.Errorf("embedding API returned HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(snippet)))
+	}
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -118,7 +139,25 @@ func (e *Embedder) Embed(ctx context.Context, text string) ([]float32, error) {
 	return embedResp.Embedding.Values, nil
 }
 
+// HTTPStatusError is returned by EmbedBatch when the API responds with a
+// non-200 status. Callers (notably the backfill retry loop) inspect Status
+// and RetryAfter to decide whether to back off and retry.
+type HTTPStatusError struct {
+	Status     int
+	RetryAfter time.Duration // honored when server provides Retry-After header
+	Body       string
+}
+
+func (e *HTTPStatusError) Error() string {
+	return fmt.Sprintf("embedding API returned HTTP %d: %s", e.Status, e.Body)
+}
+
 // EmbedBatch generates embeddings for multiple texts.
+//
+// Returns an *HTTPStatusError when the API responds with a non-200 status so
+// callers can branch on retryable codes (429 / 5xx). Returns a plain error
+// when the response is malformed or partial — partial responses are unsafe
+// for batch backfill since the caller would silently lose rows.
 func (e *Embedder) EmbedBatch(ctx context.Context, texts []string) ([][]float32, error) {
 	if e == nil {
 		return nil, fmt.Errorf("embedder not configured")
@@ -134,6 +173,10 @@ func (e *Embedder) EmbedBatch(ctx context.Context, texts []string) ([][]float32,
 		Embeddings []struct {
 			Values []float32 `json:"values"`
 		} `json:"embeddings"`
+		Error *struct {
+			Code    int    `json:"code"`
+			Message string `json:"message"`
+		} `json:"error,omitempty"`
 	}
 
 	requests := make([]geminiEmbedRequest, len(texts))
@@ -149,8 +192,11 @@ func (e *Embedder) EmbedBatch(ctx context.Context, texts []string) ([][]float32,
 		return nil, err
 	}
 
-	url := fmt.Sprintf("https://generativelanguage.googleapis.com/v1beta/models/%s:batchEmbedContents",
-		e.model)
+	apiBase := "https://generativelanguage.googleapis.com"
+	if e.baseURL != "" {
+		apiBase = strings.TrimRight(e.baseURL, "/")
+	}
+	url := fmt.Sprintf("%s/v1beta/models/%s:batchEmbedContents", apiBase, e.model)
 
 	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(jsonBody))
 	if err != nil {
@@ -161,7 +207,7 @@ func (e *Embedder) EmbedBatch(ctx context.Context, texts []string) ([][]float32,
 
 	resp, err := e.httpClient.Do(req)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("batch embedding request failed: %w", err)
 	}
 	defer resp.Body.Close()
 
@@ -170,16 +216,49 @@ func (e *Embedder) EmbedBatch(ctx context.Context, texts []string) ([][]float32,
 		return nil, err
 	}
 
+	if resp.StatusCode != http.StatusOK {
+		ra := parseRetryAfter(resp.Header.Get("Retry-After"))
+		return nil, &HTTPStatusError{
+			Status:     resp.StatusCode,
+			RetryAfter: ra,
+			Body:       strings.TrimSpace(string(body)),
+		}
+	}
+
 	var br batchResp
 	if err := json.Unmarshal(body, &br); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("decoding batch embedding response: %w", err)
+	}
+	if br.Error != nil {
+		return nil, fmt.Errorf("batch embedding API error %d: %s", br.Error.Code, br.Error.Message)
+	}
+
+	if len(br.Embeddings) != len(texts) {
+		return nil, fmt.Errorf("batch embedding: expected %d embeddings, got %d", len(texts), len(br.Embeddings))
 	}
 
 	result := make([][]float32, len(br.Embeddings))
 	for i, emb := range br.Embeddings {
+		if len(emb.Values) == 0 {
+			return nil, fmt.Errorf("batch embedding: row %d returned empty vector", i)
+		}
 		result[i] = emb.Values
 	}
 	return result, nil
+}
+
+// parseRetryAfter parses the Retry-After header. Supports a delta-seconds
+// integer; HTTP-date form is treated as no hint (return 0) since the backfill
+// retry loop falls back to its computed exponential delay in that case.
+func parseRetryAfter(v string) time.Duration {
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return 0
+	}
+	if secs, err := strconv.Atoi(v); err == nil && secs > 0 {
+		return time.Duration(secs) * time.Second
+	}
+	return 0
 }
 
 // CosineSimilarity computes cosine similarity between two vectors.
