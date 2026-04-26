@@ -1,0 +1,2 @@
+go test fuzz v1
+string("no markers here\njust plain text\nnothing to parse\n")

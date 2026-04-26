@@ -1,0 +1,4 @@
+FINDING: The key insight about the system.
+DECISION: Used atomic.Int64 over mutex.
+PATTERN: Always use table-driven tests.
+GOTCHA: Don't use init() functions.

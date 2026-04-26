@@ -1,0 +1,2 @@
+go test fuzz v1
+string("FINDING: The key insight about the system.\nDECISION: Used atomic.Int64 over mutex.\nPATTERN: Always use table-driven tests.\nGOTCHA: Don't use init() functions.\n")
