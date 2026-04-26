@@ -283,6 +283,17 @@ if [[ "$PLAN_UTIL" -gt 0 ]]; then
     }')
   fi
 
+  # Real plan-consumption per phase. Only meaningful when the window has not
+  # crossed a 7d reset — otherwise the delta understates real burn.
+  PLAN_DELTA_PP="-"
+  PLAN_PER_PHASE="-"
+  PHASES_PER_PCT="-"
+  if [[ "$CROSSED_RESET" == "no" ]] && [[ "$WIN_FIRST_7D" != "-" ]] && [[ "$PU_7D" != "-" ]] && [[ "$TOTAL" -gt 0 ]]; then
+    PLAN_DELTA_PP=$(awk -v s="$WIN_FIRST_7D" -v e="$PU_7D" 'BEGIN{printf "%+.2f pp", e - s}')
+    PLAN_PER_PHASE=$(awk -v s="$WIN_FIRST_7D" -v e="$PU_7D" -v n="$TOTAL" 'BEGIN{d=e-s; printf "%.3f%%", (n>0 ? d/n : 0)}')
+    PHASES_PER_PCT=$(awk -v s="$WIN_FIRST_7D" -v e="$PU_7D" -v n="$TOTAL" 'BEGIN{d=e-s; printf "%.0f", (d>0 ? n/d : 0)}')
+  fi
+
   echo "## Plan Util (real, from Anthropic OAuth endpoint)"
   echo ""
   printf "%-28s %10s\n" "Metric" "Value"
@@ -291,6 +302,9 @@ if [[ "$PLAN_UTIL" -gt 0 ]]; then
   printf "%-28s %9s%%\n" "7d util (current)"       "$PU_7D"
   printf "%-28s %9s%%\n" "7d Sonnet util (current)" "$PU_SONNET"
   printf "%-28s %9s%%\n" "7d at window start"      "$WIN_FIRST_7D"
+  printf "%-28s %10s\n" "7d util burned (window)"  "$PLAN_DELTA_PP"
+  printf "%-28s %10s\n" "Plan % per phase"         "$PLAN_PER_PHASE"
+  printf "%-28s %10s\n" "Phases per 1% of plan"    "$PHASES_PER_PCT"
   printf "%-28s %9s h\n" "Hours until 7d reset"    "$HOURS_UNTIL_RESET"
   printf "%-28s %10s\n" "Window crossed 7d reset?" "$CROSSED_RESET"
   if [[ "$CROSSED_RESET" == "no" ]] && [[ "$PLAN_UTIL" -lt 20 ]]; then
@@ -311,6 +325,50 @@ echo ""
 echo "## Skill Invocations"
 echo ""
 echo "Total: $SKILL_TOTAL (declared: $SKILL_DECLARED, output_parse: $SKILL_PARSED)"
+echo ""
+
+# --- Barok Compliance (from ~/.alluka/barok-density/*.json, emitted by
+#     worker.ObserveDensity on each Barok-eligible terminal phase artifact).
+#     Aggregates by intensity tier so window-level ranking is honest across
+#     persona mixes.
+BAROK_DENSITY_DIR="${NANIKA_BAROK_DENSITY_DIR:-$HOME/.alluka/barok-density}"
+echo "## Barok Compliance"
+echo ""
+if [[ -d "$BAROK_DENSITY_DIR" ]] && compgen -G "$BAROK_DENSITY_DIR/*.json" >/dev/null; then
+  # Aggregate per-tier: n, median article_count, median linking_verb_count,
+  # median fragment_ratio, median avg_sentence_len, median total_bytes.
+  BAROK_ROWS=$(jq -rs '
+    def median: sort as $s | ($s | length) as $n
+      | if $n == 0 then 0
+        elif $n % 2 == 1 then $s[$n/2|floor]
+        else ($s[$n/2 - 1] + $s[$n/2]) / 2
+        end;
+    group_by(.intensity_tier)
+    | map({
+        tier: (.[0].intensity_tier // "unknown"),
+        n: length,
+        art:  ([.[].article_count]      | median),
+        lv:   ([.[].linking_verb_count] | median),
+        frag: ([.[].fragment_ratio]     | median),
+        asl:  ([.[].avg_sentence_len]   | median),
+        tb:   ([.[].total_bytes]        | median)
+      })
+    | .[]
+    | [.tier, .n, .art, .lv, (.frag|tostring), (.asl|tostring), .tb] | @tsv
+  ' "$BAROK_DENSITY_DIR"/*.json 2>/dev/null)
+
+  if [[ -n "$BAROK_ROWS" ]]; then
+    printf "%-16s %5s %8s %8s %10s %12s %10s\n" "Tier" "n" "art(med)" "lv(med)" "frag(med)" "sent_len(med)" "bytes(med)"
+    printf "%-16s %5s %8s %8s %10s %12s %10s\n" "----------------" "-----" "--------" "--------" "----------" "------------" "----------"
+    while IFS=$'\t' read -r tier n art lv frag asl tb; do
+      printf "%-16s %5s %8s %8s %10s %12s %10s\n" "$tier" "$n" "$art" "$lv" "$frag" "$asl" "$tb"
+    done <<< "$BAROK_ROWS"
+  else
+    echo "(no density records parseable in $BAROK_DENSITY_DIR)"
+  fi
+else
+  echo "(no density data yet — $BAROK_DENSITY_DIR absent or empty)"
+fi
 echo ""
 
 if [[ -n "$FAILED_DETAIL" ]]; then

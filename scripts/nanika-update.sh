@@ -260,6 +260,44 @@ is_daemon_plugin() {
   esac
 }
 
+# ── Phase: Voice Checks ───────────────────────────────────────────────────────
+# Runs voice existence + drift checks against persona files before any plugin
+# work. Either failure aborts the run — letting the build continue would ship
+# persona drift silently.
+
+run_voice_check() {
+  local check_name="$1" script_path="$2"
+
+  if [[ "$DRY_RUN" -eq 1 ]]; then
+    skip_line "[dry-run] bash ${script_path}"
+    json_record "voice" "$check_name" "dry-run" "$script_path"
+    return 0
+  fi
+
+  local rc=0 output
+  output=$(bash "$script_path" 2>&1) || rc=$?
+  if [[ $rc -ne 0 ]]; then
+    loud_error "voice ${check_name} check failed (exit $rc)"
+    if [[ "$JSON_OUTPUT" -eq 0 && -n "$output" ]]; then
+      printf '%s\n' "$output" >&2
+    fi
+    json_record "voice" "$check_name" "failed" "exit $rc"
+    return "$rc"
+  fi
+
+  ok "voice ${check_name}: ${output#OK: }"
+  json_record "voice" "$check_name" "ok"
+  return 0
+}
+
+phase_voice_checks() {
+  phase_header "voice checks"
+
+  run_voice_check "existence" "${REPO_ROOT}/scripts/check-voice-existence.sh" || return $?
+  run_voice_check "drift"     "${REPO_ROOT}/scripts/check-voice-drift.sh"     || return $?
+  return 0
+}
+
 # ── Phase: Build ──────────────────────────────────────────────────────────────
 
 phase_build() {
@@ -401,6 +439,13 @@ phase_verify() {
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 main() {
+  local voice_rc=0
+  phase_voice_checks || voice_rc=$?
+  if [[ $voice_rc -ne 0 ]]; then
+    loud_error "voice checks failed — aborting before plugin work."
+    return "$voice_rc"
+  fi
+
   discover_plugins
 
   if [[ ${#DISCOVERED_PLUGINS[@]} -eq 0 ]]; then

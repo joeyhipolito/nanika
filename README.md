@@ -44,7 +44,8 @@ The orchestrator daemon emits structured events to JSONL files and a Unix domain
 
 ```
 orchestrator daemon  →  events.sock (UDS)  →  nen-daemon (scanners)
-                     →  events/*.jsonl     →  discord/telegram (notifications)
+                     →  events/*.jsonl     →  dashboard (UI)
+                                           →  discord/telegram (notifications)
 ```
 
 Plugins are **subscribers, not dependencies**. The orchestrator runs fine without any of them installed.
@@ -72,7 +73,7 @@ When findings exceed severity thresholds, `shu propose` auto-generates remediati
 
 ### Plugin Protocol
 
-Every plugin exposes a uniform query interface so other plugins and tools can discover and render them without knowing implementation details:
+Every plugin exposes a uniform query interface so the dashboard (and other plugins) can discover and render them without knowing implementation details:
 
 ```bash
 <plugin> query status --json   →  { "status": "ok", ... }
@@ -80,7 +81,7 @@ Every plugin exposes a uniform query interface so other plugins and tools can di
 <plugin> query actions --json  →  { "actions": [{ "name", "command", "description" }] }
 ```
 
-Declared in `plugin.json`. Subscribers poll these to render plugin cards or surface actions. The `"ui": true` field is reserved for future UI rendering support.
+Declared in `plugin.json`. The dashboard polls these to render plugin cards, and plugins with `"ui": true` ship custom React components.
 
 ### Personas
 
@@ -93,23 +94,6 @@ PHASE: review    | PERSONA: security-auditor         | OBJECTIVE: Audit auth flo
 ```
 
 10 included: `academic-researcher` · `architect` · `data-analyst` · `devops-engineer` · `qa-engineer` · `security-auditor` · `senior-backend-engineer` · `senior-frontend-engineer` · `staff-code-reviewer` · `technical-writer`
-
-#### On persona design
-
-Most agent frameworks give models a role identity — *"You are a senior software engineer with 10 years of experience..."* — and call it a persona.
-
-We don't do that.
-
-The role-playing framing is a holdover from how human teams are structured. It made sense when a human could only do one job. Models don't have that constraint. Telling a model it *is* an architect doesn't make it better at architecture — the identity framing is empirically inert. What actually changes output is **behavioral constraints**: what to produce, what to avoid, what the output contract is, and what failure modes to guard against.
-
-Every nanika persona leads with `## Constraints` first — not identity. No "You are a...", no backstory, no persona fiction. Just:
-
-- What this agent must do
-- What it must never do  
-- What a correct output looks like
-- What patterns to avoid
-
-The direction for future iterations is further in this direction: composable constraint modules that stack onto any worker without any identity layer at all. The goal is to make roles unnecessary — not simulate them.
 
 ## Architecture
 
@@ -135,7 +119,7 @@ The direction for future iterations is further in this direction: composable con
 │         │  subscribe to events                         │
 ├────────────────────────────────────────────────────────┤
 │  Event Bus  (JSONL files + UDS socket)                 │
-│  orchestrator emits → nen, channels consume            │
+│  orchestrator emits → nen, dashboard, channels consume │
 ├────────────────────────────────────────────────────────┤
 │  ~/.alluka/                                            │
 │  missions/ · workspaces/ · metrics.db · findings.db    │
@@ -147,12 +131,11 @@ The direction for future iterations is further in this direction: composable con
 - **decomposer** — breaks tasks into dependency-aware PHASE lines (knowledge-only, no binary)
 
 **Plugins** are the hands — domain-specific CLIs that skills invoke:
-- **nen** — self-improvement scanners + eval engine (Shu, Gyo, Ko, En, Ryu, Zetsu)
-- **scheduler** — cron jobs and dispatch loop for mission runs
-- **tracker** — local issue tracker with hierarchical relationships and blocking links (Rust)
-- **discord** / **telegram** — channel notifications + native voice messages
-
-Build your own by dropping a CLI + `plugin.json` + `skills/SKILL.md` under `plugins/`.
+- **Core**: **nen** (self-improvement scanners + eval engine)
+- **Recommended**: **scout** (intelligence gathering), **obsidian** (vault CLI), **tracker** (issue tracking, Rust), **scheduler** (cron + publishing), **gmail** (multi-account), **engage** (cross-platform comments)
+- **Optional**: **linkedin**, **youtube**, **reddit**, **substack**, **elevenlabs** (TTS), **ynab** (budgets), **dashboard** (macOS Spotlight overlay, Wails)
+- **Channels**: **discord** / **telegram** — notifications + native voice messages
+- **Examples**: **example-hello** / **example-bookmarks** — starter plugins for learning the system
 
 ## Quick Start
 
@@ -167,11 +150,11 @@ The installer is interactive — checks prerequisites, lets you pick plugins, bu
 ```bash
 scripts/install.sh                        # Interactive — pick what to install
 scripts/install.sh --core                 # Core only (orchestrator + nen + tracker + scheduler)
-scripts/install.sh --all                  # Core + discord + telegram
+scripts/install.sh --all                  # Core + discord, telegram, dashboard
 scripts/install.sh --plugins discord      # Core + specific plugins
 scripts/install.sh --no-interactive       # CI: core only, no prompts
 scripts/install.sh --dry-run              # Show what would be installed
-scripts/install.sh --repair               # Re-check prereqs, rebuild broken plugins
+scripts/install.sh --repair              # Re-check prereqs, rebuild broken plugins
 ```
 
 Open in Claude Code — it reads `CLAUDE.md` and discovers all skills automatically:
@@ -188,6 +171,7 @@ claude
 scripts/install.sh              # Interactive installer
 scripts/new-mission.sh <slug>   # Create a mission file in ~/.alluka/missions/
 scripts/generate-agents-md.sh   # Regenerate the AGENTS.md routing index
+scripts/nanika-update.sh        # Build, install, and verify all plugins; restart daemons
 ```
 
 After adding a plugin or skill, run `generate-agents-md.sh` to update the routing index so the orchestrator can discover it.
@@ -223,14 +207,14 @@ After creating your plugin, register it:
 ```bash
 scripts/generate-agents-md.sh   # Updates AGENTS.md + CLAUDE.md routing index
 make build-plugin-my-plugin     # Build the binary
-make install-plugin-my-plugin   # Install to ~/bin/
+make install-plugin-my-plugin   # Install to ~/.alluka/bin/
 ```
 
 See [SKILL-STANDARD.md](docs/SKILL-STANDARD.md) for the full specification.
 
 ## Extending Nanika
 
-- **[Plugin Protocol](docs/PLUGIN-PROTOCOL.md)** — Full reference for `plugin.json` and the query protocol.
+- **[Plugin Protocol](docs/PLUGIN-PROTOCOL.md)** — Full reference for `plugin.json`, the query protocol, dashboard microfrontend contract, and custom UI bundles.
 - **[Event Bus](docs/EVENT-BUS.md)** — How to subscribe to orchestrator events (mission lifecycle, phase completions, anomalies) via the JSONL log or Unix domain socket.
 
 ## Requirements
@@ -239,7 +223,9 @@ See [SKILL-STANDARD.md](docs/SKILL-STANDARD.md) for the full specification.
 |-----------|---------|-------------|
 | Go | >= 1.25 | Skills and most plugins |
 | Claude Code | latest | Agent integration |
-| Rust/Cargo | latest | `tracker` plugin |
+| Rust/Cargo | latest | `tracker` plugin (optional) |
+| Node.js | >= 22 | `dashboard` plugin (optional) |
+| Wails | v2 | `dashboard` plugin (optional) |
 
 The installer checks only what you need based on selected plugins.
 
@@ -248,7 +234,7 @@ The installer checks only what you need based on selected plugins.
 ```bash
 make uninstall              # Stop daemons, remove launchd plists
 make clean                  # Remove build artifacts
-rm -rf ~/bin/{orchestrator,shu,gyo,en,ryu,tracker,scheduler,discord,telegram}  # Remove binaries
+rm -rf ~/.alluka/bin/{orchestrator,shu,gyo,en,ryu,tracker,scheduler,discord,telegram}  # Remove binaries
 rm -rf ~/.alluka/           # Remove all runtime data (missions, databases, logs)
 ```
 

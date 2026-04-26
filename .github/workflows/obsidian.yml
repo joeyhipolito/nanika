@@ -1,0 +1,145 @@
+---
+name: obsidian
+
+"on":
+  push:
+    branches:
+      - main
+    paths:
+      - "plugins/obsidian/**"
+      - ".github/workflows/obsidian.yml"
+  pull_request:
+    paths:
+      - "plugins/obsidian/**"
+      - ".github/workflows/obsidian.yml"
+
+jobs:
+  unit:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        go-version: ["1.25.4"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ matrix.go-version }}
+          cache: true
+      - run: |
+          cd plugins/obsidian && go test -race -count=1 ./...
+      - run: |
+          go test -race -count=1 \
+            ./skills/orchestrator/cmd/hooks/... \
+            ./skills/orchestrator/internal/engine/...
+
+  benchmark:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    strategy:
+      matrix:
+        go-version: ["1.25.4"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ matrix.go-version }}
+          cache: true
+      - name: Benchmark tests
+        run: |
+          cd plugins/obsidian && go test -bench . -benchtime 10x -run ^$ ./...
+      - name: Benchmark orchestrator hooks
+        run: |
+          go test -bench . -benchtime 10x -run ^$ \
+            ./skills/orchestrator/cmd/hooks/...
+      - name: Future latency gates
+        run: |
+          echo "Future latency gates (uncomment in benchmark when implemented):"
+          echo "T2.7 <50ms until 2.5, T2.5.5 <5ms, T3.8 <20ms"
+
+  fuzz:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        go-version: ["1.25.4"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ matrix.go-version }}
+          cache: true
+      - run: |
+          cd plugins/obsidian
+          go test -fuzz=FuzzSocketRequest \
+            -fuzztime=60s ./cmd/obsidian-indexer/
+          go test -fuzz=FuzzMarkerParser \
+            -fuzztime=60s ./internal/zettel/
+
+  golden:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        go-version: ["1.25.4"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ matrix.go-version }}
+          cache: true
+      - run: |
+          cd plugins/obsidian && go test -run Golden ./...
+
+  vault-doctor:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - name: pending TRK-524
+        run: echo vault-doctor pending TRK-524
+
+  coverage:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    strategy:
+      matrix:
+        go-version: ["1.25.4"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ matrix.go-version }}
+          cache: true
+      - name: Run coverage tests
+        run: |
+          # Coverage is informational until Phase 2.
+          # Minimum gate of 85% will be enforced in a future phase.
+          cd plugins/obsidian && go test -cover ./...
+          cd - && go test -cover \
+            ./skills/orchestrator/cmd/hooks/...
+      - name: Upload coverage
+        uses: codecov/codecov-action@v4
+
+  chaos:
+    needs: unit
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        go-version: ["1.25.4"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ matrix.go-version }}
+          cache: true
+      - name: chaos daemon-kill
+        run: bash scripts/chaos-obsidian.sh --dry-run --only daemon-kill
+      - name: chaos partial-write
+        run: bash scripts/chaos-obsidian.sh --dry-run --only partial-write
+      - name: chaos disk-full
+        run: bash scripts/chaos-obsidian.sh --dry-run --only disk-full
+
+  test-first-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - run: bash scripts/test-first-check.sh "${{ github.base_ref && format('origin/{0}', github.base_ref) || 'HEAD~1' }}" HEAD

@@ -26,25 +26,79 @@ skills/*/
 !skills/orchestrator/
 !skills/decomposer/
 !skills/channels/
+!skills/article/
 
 # Installed skill definitions — core is tracked, rest is user-installed
 .claude/skills/*/
 !.claude/skills/orchestrator/
 !.claude/skills/decomposer/
 !.claude/skills/channels/
+!.claude/skills/article/
 
 # Private docs (evaluations, audits, business planning)
 private/
+
+# AI IDE config dirs
+.adal/
+.augment/
+.bob/
+.codebuddy/
+.commandcode/
+.continue/
+.cortex/
+.crush/
+.factory/
+.goose/
+.iflow/
+.junie/
+.kilocode/
+.kiro/
+.kode/
+.mcpjam/
+.mux/
+.neovate/
+.openhands/
+.pi/
+.pochi/
+.qoder/
+.qwen/
+.roo/
+.trae/
+.vibe/
+.windsurf/
+.zencoder/
 
 # Claude Code local state
 .agents/
 .claude/settings.json
 skills-lock.json
 
+# Rust/Tauri build artifacts
+plugins/dust/target/
+plugins/dust/dist/
+plugins/dust/**/target/
+plugins/tracker/target/
+plugins/chat/target/
+
+# macOS
+.DS_Store
+
+# Runtime locks
+.claude/scheduled_tasks.lock
+
 # Generated files
 go.work.sum
 AGENTS.md
 .claude/worktrees/
+plugins/engage/engage-cli
 plugins/nen/review-scanner
+plugins/obsidian/obsidian-indexer
+plugins/obsidian/obsidian-cli
 plugins/dashboard/nanika-dashboard
 plugins/nen/cmd/shu/shu
+plugins/nen/ryu
+plugins/nen/shu
+plugins/nen_mcp/nen-mcp
+.nanika-lock
+skills/orchestrator/internal/engine/checkpoint.json
+skills/orchestrator/internal/engine/workers/

@@ -222,22 +222,27 @@ scripts/nanika-update.sh --dry-run --json
 <!-- NANIKA-AGENTS-MD-START -->
 [Nanika Skills Index][root: .claude/skills]IMPORTANT: Prefer retrieval-led reasoning over pre-training-led reasoning. Read skill files before making assumptions.
 
+|academic-voice — When the user wants to revise academic prose — research proposals, thesis chapters, coursework, literature reviews, methodology sections — so it reads as their own evaluative thinking rather than templated synthesis:{.claude/skills/academic-voice/SKILL.md}|
 |agent-browser — Browser automation CLI for AI agents:{.claude/skills/agent-browser/SKILL.md}|
 |ai-seo — When the user wants to optimize content for AI search engines, get cited by LLMs, or appear in AI-generated answers:{.claude/skills/ai-seo/SKILL.md}|
 |article — Full article pipeline — from topic research to Substack draft:{.claude/skills/article/SKILL.md}|
 |better-auth-best-practices — Configure Better Auth server and client, set up database adapters, manage sessions, add plugins, and handle environment variables:{.claude/skills/better-auth-best-practices/SKILL.md}|
+|bft — Byzantine-fault-tolerant plan review loop:{.claude/skills/bft/SKILL.md}|
 |building-native-ui — Complete guide for building beautiful apps with Expo Router:{.claude/skills/building-native-ui/SKILL.md}|
 |channels — Telegram and Discord channel integration for the orchestrator:{.claude/skills/channels/SKILL.md}|
 |copy-editing — When the user wants to edit, review, or improve existing marketing copy:{.claude/skills/copy-editing/SKILL.md}|
 |copywriting — When the user wants to write, rewrite, or improve marketing copy for any page — including homepage, landing pages, pricing pages, feature pages, about pages, or product pages:{.claude/skills/copywriting/SKILL.md}|
 |decomposer — Mission decomposition skill — breaks complex tasks into dependency-aware PHASE lines that the orchestrator executes directly, bypassing its internal LLM decomposer:{.claude/skills/decomposer/SKILL.md}|
+|docx — Use this skill whenever the user wants to create, read, edit, or manipulate Word documents (.docx files):{.claude/skills/docx/SKILL.md}|
 |golang-cli — Golang CLI application development:{.claude/skills/golang-cli/SKILL.md}|
 |golang-design-patterns — Idiomatic Golang design patterns — functional options, constructors, error flow and cascading, resource management and lifecycle, graceful shutdown, resilience, architecture, dependency injection, data handling, and streaming:{.claude/skills/golang-design-patterns/SKILL.md}|
 |golang-error-handling — Idiomatic Golang error handling — creation, wrapping with %w, errors.Is/As, errors.Join, custom error types, sentinel errors, panic/recover, the single handling rule, structured logging with slog, HTTP request logging middleware, and samber/oops for production errors:{.claude/skills/golang-error-handling/SKILL.md}|
 |golang-testing — Provides a comprehensive guide for writing production-ready Golang tests:{.claude/skills/golang-testing/SKILL.md}|
 |orchestrator — Executes tasks and missions via orchestrator CLI:{.claude/skills/orchestrator/SKILL.md}|
+|pdf — Use this skill whenever the user wants to do anything with PDF files:{.claude/skills/pdf/SKILL.md}|
 |product-marketing-context — When the user wants to create or update their product marketing context document:{.claude/skills/product-marketing-context/SKILL.md}|
 |rust-best-practices — Guide for writing idiomatic Rust code based on Apollo GraphQL's best practices handbook:{.claude/skills/rust-best-practices/SKILL.md}|
+|session-handoff — Generates a structured handoff summary of the current session so the user can /clear and paste it into a fresh session to keep momentum without carrying token bloat:{.claude/skills/session-handoff/SKILL.md}|
 |social-content — When the user wants help creating, scheduling, or optimizing social media content for LinkedIn, Twitter/X, Instagram, TikTok, Facebook, or other platforms:{.claude/skills/social-content/SKILL.md}|
 |supabase-postgres-best-practices — Postgres performance optimization and best practices from Supabase:{.claude/skills/supabase-postgres-best-practices/SKILL.md}|
 |vercel-react-best-practices — React and Next.js performance optimization guidelines from Vercel Engineering:{.claude/skills/vercel-react-best-practices/SKILL.md}|
@@ -248,7 +253,7 @@ scripts/nanika-update.sh --dry-run --json
 |gmail — Reads inbox, triages threads, applies labels, organizes email, and composes/sends email across multiple Gmail accounts via gmail CLI:{plugins/gmail/skills/SKILL.md}|
 |linkedin — LinkedIn CLI — publish posts, read feed, comment, react, and automate engagement from the terminal:{plugins/linkedin/skills/SKILL.md}|
 |nen_mcp — MCP server for the nen ability system:{plugins/nen_mcp/skills/SKILL.md}|
-|obsidian — Obsidian vault CLI — read, write, search, capture, triage, enrich, and ingest into your Obsidian vault from the terminal:{plugins/obsidian/skills/SKILL.md}|
+|obsidian — Obsidian vault CLI — read, write, search, capture, triage, enrich, and ingest into the vault at ~/.alluka/vault/:{plugins/obsidian/skills/SKILL.md}|
 |reddit — Reddit CLI — submit posts, read feeds, comment, vote, and search from the terminal using browser cookies:{plugins/reddit/skills/SKILL.md}|
 |scheduler — Schedules and runs cron jobs and the nanika publishing pipeline via scheduler CLI:{plugins/scheduler/skills/SKILL.md}|
 |scout — Gathers intelligence on configurable topics via scout CLI:{plugins/scout/skills/SKILL.md}|
