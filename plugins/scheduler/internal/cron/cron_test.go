@@ -287,3 +287,215 @@ func BenchmarkNextRun(b *testing.B) {
 		_, _ = NextRun(schedule)
 	}
 }
+
+// TestParseNaturalLanguage tests the ParseNaturalLanguage function with various inputs.
+func TestParseNaturalLanguage(t *testing.T) {
+	tests := []struct {
+		name      string
+		input     string
+		wantCron  string
+		wantError bool
+	}{
+		// Standard cron expressions
+		{
+			name:     "standard cron - daily at 9am",
+			input:    "0 9 * * *",
+			wantCron: "0 9 * * *",
+		},
+		{
+			name:     "standard cron - every 5 minutes",
+			input:    "*/5 * * * *",
+			wantCron: "*/5 * * * *",
+		},
+		// Descriptors
+		{
+			name:     "descriptor - @daily",
+			input:    "@daily",
+			wantCron: "0 0 * * *",
+		},
+		{
+			name:     "descriptor - @hourly",
+			input:    "@hourly",
+			wantCron: "0 * * * *",
+		},
+		{
+			name:     "descriptor - @weekly",
+			input:    "@weekly",
+			wantCron: "0 0 * * 0",
+		},
+		{
+			name:     "descriptor - @monthly",
+			input:    "@monthly",
+			wantCron: "0 0 1 * *",
+		},
+		// Every N time units
+		{
+			name:     "every 2 hours",
+			input:    "every 2h",
+			wantCron: "0 */2 * * *",
+		},
+		{
+			name:     "every 30 minutes",
+			input:    "every 30m",
+			wantCron: "*/30 * * * *",
+		},
+		{
+			name:     "every 30 minutes (spelled out)",
+			input:    "every 30 minutes",
+			wantCron: "*/30 * * * *",
+		},
+		{
+			name:     "every 4 hours (spelled out)",
+			input:    "every 4 hours",
+			wantCron: "0 */4 * * *",
+		},
+		{
+			name:     "every day",
+			input:    "every 1 day",
+			wantCron: "0 0 * * *",
+		},
+		// Daily at time
+		{
+			name:     "daily at 9am",
+			input:    "daily at 9am",
+			wantCron: "0 9 * * *",
+		},
+		{
+			name:     "daily at 9:00 AM",
+			input:    "daily at 9:00 AM",
+			wantCron: "0 9 * * *",
+		},
+		{
+			name:     "daily at 2pm",
+			input:    "daily at 2pm",
+			wantCron: "0 14 * * *",
+		},
+		{
+			name:     "daily at 2:30 PM",
+			input:    "daily at 2:30 PM",
+			wantCron: "30 14 * * *",
+		},
+		{
+			name:     "daily at 12:00 AM (midnight)",
+			input:    "daily at 12:00 AM",
+			wantCron: "0 0 * * *",
+		},
+		{
+			name:     "daily at 12:00 PM (noon)",
+			input:    "daily at 12:00 PM",
+			wantCron: "0 12 * * *",
+		},
+		// Weekly on day at time
+		{
+			name:     "weekly on Monday at 9am",
+			input:    "weekly on monday at 9am",
+			wantCron: "0 9 * * 1",
+		},
+		{
+			name:     "weekly on Friday at 6pm",
+			input:    "weekly on friday at 6pm",
+			wantCron: "0 18 * * 5",
+		},
+		{
+			name:     "weekly on Sunday at 6:30 PM",
+			input:    "weekly on sunday at 6:30 PM",
+			wantCron: "30 18 * * 0",
+		},
+		{
+			name:     "weekly on Wed at 2:00 AM",
+			input:    "weekly on Wed at 2:00 AM",
+			wantCron: "0 2 * * 3",
+		},
+		// Error cases
+		{
+			name:      "invalid input",
+			input:     "blah blah blah",
+			wantError: true,
+		},
+		{
+			name:      "incomplete daily",
+			input:     "daily at",
+			wantError: true,
+		},
+		{
+			name:      "invalid day name",
+			input:     "weekly on funday at 9am",
+			wantError: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := ParseNaturalLanguage(tt.input)
+			if tt.wantError {
+				if err == nil {
+					t.Fatalf("want error, got nil")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if got != tt.wantCron {
+				t.Errorf("got %q, want %q", got, tt.wantCron)
+			}
+
+			// Verify the result is a valid cron expression
+			if !isValidCron(got) {
+				t.Errorf("result %q is not a valid cron expression", got)
+			}
+		})
+	}
+}
+
+// TestParseNaturalLanguageIntegration verifies that NL cron expressions can be used with NextRunAfter.
+func TestParseNaturalLanguageIntegration(t *testing.T) {
+	tests := []struct {
+		name    string
+		nlInput string
+		after   time.Time
+		check   func(t *testing.T, got time.Time)
+	}{
+		{
+			name:    "daily at 9am",
+			nlInput: "daily at 9am",
+			after:   time.Date(2026, 3, 31, 8, 0, 0, 0, time.UTC),
+			check: func(t *testing.T, got time.Time) {
+				if got.Hour() != 9 || got.Minute() != 0 {
+					t.Errorf("got %02d:%02d, want 09:00", got.Hour(), got.Minute())
+				}
+			},
+		},
+		{
+			name:    "weekly on Monday at 9am",
+			nlInput: "weekly on monday at 9am",
+			after:   time.Date(2026, 3, 31, 0, 0, 0, 0, time.UTC), // Tuesday
+			check: func(t *testing.T, got time.Time) {
+				if got.Weekday() != time.Monday {
+					t.Errorf("got %v, want Monday", got.Weekday())
+				}
+				if got.Hour() != 9 {
+					t.Errorf("got hour %d, want 9", got.Hour())
+				}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cronExpr, err := ParseNaturalLanguage(tt.nlInput)
+			if err != nil {
+				t.Fatalf("ParseNaturalLanguage: %v", err)
+			}
+
+			got, err := NextRunAfter(cronExpr, tt.after)
+			if err != nil {
+				t.Fatalf("NextRunAfter: %v", err)
+			}
+
+			if tt.check != nil {
+				tt.check(t, got)
+			}
+		})
+	}
+}

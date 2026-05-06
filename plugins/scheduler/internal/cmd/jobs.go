@@ -262,13 +262,20 @@ func runJobsAdd(name, schedule, randomDaily, atStr, everyStr, delayStr, command 
 		scheduleType = "delay"
 
 	default: // --cron
-		t, err := cronutil.NextRun(schedule)
+		// Try to parse as natural language, then as standard cron
+		cronExpr, err := cronutil.ParseNaturalLanguage(schedule)
 		if err != nil {
 			return fmt.Errorf("invalid cron schedule %q: %w", schedule, err)
+		}
+		t, err := cronutil.NextRun(cronExpr)
+		if err != nil {
+			return fmt.Errorf("invalid cron schedule %q: %w", cronExpr, err)
 		}
 		next = t
 		displaySchedule = schedule
 		scheduleType = "cron"
+		// Store the normalized cron expression, not the NL version
+		schedule = cronExpr
 	}
 
 	// For --every, store the interval string in the schedule column.

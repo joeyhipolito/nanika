@@ -232,6 +232,10 @@ Run `scheduler configure` to create or update it interactively. All keys are opt
 
 ## Cron Expression Reference
 
+Scheduler supports three cron formats: standard 5-field expressions, descriptors, and natural-language phrases.
+
+### Standard 5-Field Cron
+
 ```
 ┌─── minute (0–59)
 │ ┌─── hour (0–23)
@@ -245,6 +249,67 @@ Run `scheduler configure` to create or update it interactively. All keys are opt
 0 8 * * *       daily at 8 AM
 0 10 * * 1      Monday at 10 AM
 0 2 * * 0       weekly on Sunday at 2 AM
+```
+
+### Cron Descriptors
+
+Short aliases for common schedules:
+
+```
+@hourly           every hour at minute 0
+@daily            every day at midnight
+@weekly           every Sunday at midnight
+@monthly          first day of every month at midnight
+@yearly/@annually January 1 at midnight
+```
+
+### Natural-Language Cron Phrases
+
+Scheduler accepts human-readable phrases that are converted to standard cron expressions:
+
+#### Every N time units
+
+```
+every 5m            every 5 minutes (→ */5 * * * *)
+every 2h            every 2 hours (→ */2 * * * *)
+every 30 minutes    every 30 minutes (→ */30 * * * *)
+every 4 hours       every 4 hours (→ */4 * * * *)
+every 1 day         every day at midnight (→ 0 0 * * *)
+```
+
+#### Daily at a specific time
+
+```
+daily at 9am        every day at 9:00 AM (→ 0 9 * * *)
+daily at 9:30am     every day at 9:30 AM (→ 30 9 * * *)
+daily at 2pm        every day at 2:00 PM (→ 0 14 * * *)
+daily at 2:30 PM    every day at 2:30 PM (→ 30 14 * * *)
+daily at 12:00 AM   every day at midnight (→ 0 0 * * *)
+daily at 12:00 PM   every day at noon (→ 0 12 * * *)
+```
+
+#### Weekly on a specific day and time
+
+```
+weekly on monday at 9am       Monday at 9:00 AM (→ 0 9 * * 1)
+weekly on Friday at 6pm       Friday at 6:00 PM (→ 0 18 * * 5)
+weekly on sunday at 6:30 PM   Sunday at 6:30 PM (→ 30 18 * * 0)
+weekly on Wed at 2:00 AM      Wednesday at 2:00 AM (→ 0 2 * * 3)
+```
+
+### Examples
+
+```bash
+# Natural-language phrases (recommended for readability)
+scheduler jobs add --name "morning-digest" --cron "daily at 9am" --command "scout gather && engage draft"
+scheduler jobs add --name "backup" --cron "weekly on monday at 2am" --command "backup.sh"
+scheduler jobs add --name "health-check" --cron "every 30m" --command "curl localhost:8080/health"
+
+# Descriptors
+scheduler jobs add --name "hourly-task" --cron "@hourly" --command "check.sh"
+
+# Standard cron expressions
+scheduler jobs add --name "precise" --cron "*/15 * * * *" --command "task.sh"
 ```
 
 ## Event Log
