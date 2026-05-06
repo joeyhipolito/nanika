@@ -363,14 +363,27 @@ func (d *DB) hybridSearch(domain, query string, queryEmb []float32, limit int, f
 	// Step 1: FTS top 50 candidates — collect id → BM25 rank (negative float).
 	ftsRanks := make(map[string]float64)
 	if query != "" {
-		ftsRows, err := d.db.Query(`
-			SELECT l.id, fts.rank
-			FROM learnings_fts fts
-			JOIN learnings l ON fts.rowid = l.rowid
-			WHERE learnings_fts MATCH ? AND l.domain = ? AND l.archived = 0
-			ORDER BY rank
-			LIMIT 50
-		`, query, domain)
+		var ftsRows *sql.Rows
+		var err error
+		if domain != "" {
+			ftsRows, err = d.db.Query(`
+				SELECT l.id, fts.rank
+				FROM learnings_fts fts
+				JOIN learnings l ON fts.rowid = l.rowid
+				WHERE learnings_fts MATCH ? AND l.domain = ? AND l.archived = 0
+				ORDER BY rank
+				LIMIT 50
+			`, query, domain)
+		} else {
+			ftsRows, err = d.db.Query(`
+				SELECT l.id, fts.rank
+				FROM learnings_fts fts
+				JOIN learnings l ON fts.rowid = l.rowid
+				WHERE learnings_fts MATCH ? AND l.archived = 0
+				ORDER BY rank
+				LIMIT 50
+			`, query)
+		}
 		if err == nil {
 			for ftsRows.Next() {
 				var id string
@@ -398,12 +411,25 @@ func (d *DB) hybridSearch(domain, query string, queryEmb []float32, limit int, f
 			sim float64
 		}
 		embResults := make([]embResult, 0, 512)
-		embRows, err := d.db.Query(`
-			SELECT id, embedding FROM learnings
-			WHERE domain = ? AND archived = 0 AND embedding IS NOT NULL
-				AND (injection_count < 20 OR compliance_rate >= 0.15)
-				AND NOT (injection_count > 100 AND compliance_rate < 0.25)
-		`, domain)
+		var embRows *sql.Rows
+		var embErr error
+		if domain != "" {
+			embRows, embErr = d.db.Query(`
+				SELECT id, embedding FROM learnings
+				WHERE domain = ? AND archived = 0 AND embedding IS NOT NULL
+					AND (injection_count < 20 OR compliance_rate >= 0.15)
+					AND NOT (injection_count > 100 AND compliance_rate < 0.25)
+			`, domain)
+		} else {
+			embRows, embErr = d.db.Query(`
+				SELECT id, embedding FROM learnings
+				WHERE archived = 0 AND embedding IS NOT NULL
+					AND (injection_count < 20 OR compliance_rate >= 0.15)
+					AND NOT (injection_count > 100 AND compliance_rate < 0.25)
+			`)
+		}
+		err := embErr
+		_ = err
 		if err == nil {
 			for embRows.Next() {
 				var id string

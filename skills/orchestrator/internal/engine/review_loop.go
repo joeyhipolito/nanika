@@ -43,8 +43,9 @@ type ReviewItem struct {
 }
 
 // ParseReviewFindings extracts structured findings from a staff-code-reviewer
-// output. It looks for "### Blockers" and "### Warnings" sections and collects
-// "- **[" prefixed items until the next "###" header or end of string.
+// output. It looks for "### Blockers" / "### Warnings" H3 sections and the
+// bold-paragraph variants "**Blockers:**" / "**Warnings...:**", collecting
+// items until the next section header or end of string.
 //
 // Parsing is fail-open: malformed or empty output returns Passed()==true so
 // a mis-formatted review never injects a spurious fix phase.
@@ -108,16 +109,16 @@ func findReviewMdCaseInsensitive(dir string) string {
 	return bestPath
 }
 
-// hasReviewHeaders reports whether text contains both "### Blockers" and
-// "### Warnings" as line-start headers. Used to distinguish a well-formed
-// review artifact (even when both sections are empty) from unstructured prose.
+// hasReviewHeaders reports whether text contains both a Blockers and a Warnings
+// section header, in either the canonical H3 form ("### Blockers" / "### Warnings")
+// or the bold-paragraph variant ("**Blockers:**" / "**Warnings...:**").
 func hasReviewHeaders(text string) bool {
 	hasBlockers, hasWarnings := false, false
 	for _, line := range strings.Split(text, "\n") {
 		trimmed := strings.TrimSpace(line)
-		if trimmed == "### Blockers" {
+		if trimmed == "### Blockers" || isBoldSectionHeader(trimmed, "Blockers") {
 			hasBlockers = true
-		} else if trimmed == "### Warnings" {
+		} else if trimmed == "### Warnings" || isBoldSectionHeader(trimmed, "Warnings") {
 			hasWarnings = true
 		}
 		if hasBlockers && hasWarnings {
@@ -129,9 +130,8 @@ func hasReviewHeaders(text string) bool {
 
 // reviewOutputLooksMalformed reports whether the reviewer output is non-empty,
 // has no parsed findings, AND lacks a structural header at the start of any
-// line. Line-start matching prevents prose mentions of the format string
-// (e.g. backtick-quoted `### Blockers` inside a scratchpad note) from
-// defeating the safeguard.
+// line. Accepts both H3 headers ("### Blockers" / "### Warnings") and the
+// bold-paragraph variant ("**Blockers:**" / "**Warnings...:**").
 func reviewOutputLooksMalformed(output string, findings ReviewFindings) bool {
 	trimmed := strings.TrimSpace(output)
 	if trimmed == "" {
@@ -142,19 +142,29 @@ func reviewOutputLooksMalformed(output string, findings ReviewFindings) bool {
 	}
 	for _, line := range strings.Split(trimmed, "\n") {
 		line = strings.TrimSpace(line)
-		if line == "### Blockers" || line == "### Warnings" {
+		if line == "### Blockers" || line == "### Warnings" ||
+			isBoldSectionHeader(line, "Blockers") || isBoldSectionHeader(line, "Warnings") {
 			return false
 		}
 	}
 	return true
 }
 
-// parseSection scans lines for a header matching sectionHeader, then collects
-// items prefixed with "- **[" or "- **`" until the next "###" header or end of slice.
-// Each item may span multiple lines (e.g., "Fix:" continuations).
+// parseSection scans lines for a header matching sectionHeader (e.g. "### Blockers")
+// or its bold-paragraph equivalent (e.g. "**Blockers:**"), then collects items
+// until the next section header or end of slice.
+//
+// H3 sections collect "- **[" / "- **`" prefixed items that may span multiple lines.
+// Bold-paragraph sections collect:
+//   - Numbered list items ("1. …", "2. …") on subsequent lines.
+//   - Semicolon-separated inline items appended to the header line itself.
 func parseSection(lines []string, sectionHeader string) []ReviewItem {
+	// sectionName is "Blockers" or "Warnings" — used for bold-header detection.
+	sectionName := strings.TrimPrefix(sectionHeader, "### ")
+
 	var items []ReviewItem
 	inSection := false
+	boldSection := false
 	var current *ReviewItem
 
 	flush := func() {
@@ -168,37 +178,121 @@ func parseSection(lines []string, sectionHeader string) []ReviewItem {
 	for _, line := range lines {
 		trimmed := strings.TrimSpace(line)
 
+		// Canonical H3 header.
 		if strings.HasPrefix(trimmed, "### ") {
 			if inSection {
-				// Leaving the section — flush any in-progress item and stop.
 				flush()
 				break
 			}
 			if trimmed == sectionHeader {
 				inSection = true
+				boldSection = false
 			}
 			continue
+		}
+
+		// Bold-paragraph header for this section (e.g. "**Blockers:**").
+		if isBoldSectionHeader(trimmed, sectionName) {
+			if inSection {
+				flush()
+				break
+			}
+			inSection = true
+			boldSection = true
+			// Parse inline content from bold-paragraph section headers.
+			// Accept either mid-dot (·) or semicolon separators for both Blockers
+			// and Warnings so a "**Blockers (3):** B1; B2; B3" line is not silently
+			// dropped (and likewise "**Warnings:** w1 · w2"). Lines without an inline
+			// payload fall through to the numbered-list parsing below.
+			if inline := extractBoldSectionInline(trimmed); inline != "" {
+				var sep string
+				switch {
+				case strings.Contains(inline, " · "):
+					sep = " · "
+				case strings.Contains(inline, "; "):
+					sep = "; "
+				}
+				if sep != "" {
+					for _, part := range strings.Split(inline, sep) {
+						part = strings.TrimRight(strings.TrimSpace(part), ".")
+						if part != "" {
+							items = append(items, ReviewItem{Description: part})
+						}
+					}
+				}
+			}
+			continue
+		}
+
+		// Any other bold-paragraph header terminates the current bold section.
+		if inSection && boldSection && strings.HasPrefix(trimmed, "**") && strings.Contains(trimmed, ":**") {
+			flush()
+			break
 		}
 
 		if !inSection {
 			continue
 		}
 
-		// Match both "- **[" (bracket) and "- **`" (backtick) formats.
-		if strings.HasPrefix(trimmed, "- **[") || strings.HasPrefix(trimmed, "- **`") {
-			flush()
-			loc, desc := parseItemLine(trimmed)
-			current = &ReviewItem{Location: loc, Description: desc}
-			continue
-		}
-
-		// Continuation line for the current item (e.g., Fix: …, Why: …)
-		if current != nil && trimmed != "" {
-			current.Description += " " + trimmed
+		if boldSection {
+			// Numbered list item: "1. content", "2. content", …
+			if desc := parseBoldSectionNumberedItem(trimmed); desc != "" {
+				flush()
+				current = &ReviewItem{Description: desc}
+				continue
+			}
+			// Continuation line for the current numbered item.
+			if current != nil && trimmed != "" {
+				current.Description += " " + trimmed
+			}
+		} else {
+			// Match both "- **[" (bracket) and "- **`" (backtick) formats.
+			if strings.HasPrefix(trimmed, "- **[") || strings.HasPrefix(trimmed, "- **`") {
+				flush()
+				loc, desc := parseItemLine(trimmed)
+				current = &ReviewItem{Location: loc, Description: desc}
+				continue
+			}
+			// Continuation line for the current item (e.g., Fix: …, Why: …)
+			if current != nil && trimmed != "" {
+				current.Description += " " + trimmed
+			}
 		}
 	}
 	flush()
 	return items
+}
+
+// isBoldSectionHeader reports whether line is a bold-paragraph section header
+// for the given sectionName (e.g., "Blockers" or "Warnings"). Matches patterns
+// like "**Blockers:**" and "**Warnings (foo):**".
+func isBoldSectionHeader(line, sectionName string) bool {
+	return strings.HasPrefix(line, "**"+sectionName) && strings.Contains(line, ":**")
+}
+
+// extractBoldSectionInline returns the text that follows the ":**" marker in a
+// bold-paragraph header line. Returns "" when no inline content is present.
+func extractBoldSectionInline(line string) string {
+	idx := strings.Index(line, ":**")
+	if idx < 0 {
+		return ""
+	}
+	return strings.TrimSpace(line[idx+3:])
+}
+
+// parseBoldSectionNumberedItem returns the content of a numbered list item
+// ("1. content", "2. content", …) or "" when line does not match.
+func parseBoldSectionNumberedItem(line string) string {
+	dotIdx := strings.Index(line, ". ")
+	if dotIdx <= 0 {
+		return ""
+	}
+	for _, c := range line[:dotIdx] {
+		if c < '0' || c > '9' {
+			return ""
+		}
+	}
+	return strings.TrimSpace(line[dotIdx+2:])
 }
 
 // parseItemLine extracts the location and description from a line like:
@@ -428,8 +522,11 @@ func (e *Engine) injectRetryReviewPhase(review *core.Phase) *core.Phase {
 		Name: "re-review",
 		Objective: fmt.Sprintf(
 			"Re-attempt the code review for phase %q. The previous review output was malformed "+
-				"(missing ### Blockers / ### Warnings sections). Produce properly structured output "+
-				"with ### Blockers and ### Warnings sections, listing each finding as either \"- **[location]** description\" (bracket form) or \"- **`location`** description\" (backtick form).",
+				"(missing ### Blockers / ### Warnings sections). "+
+				"Start your response with `### Blockers`. Do not write any prefatory text, summary, or 'Output written to X' claim before the header. "+
+				"Examples of banned prefixes: \"Now I'll\", \"Output written to\". "+
+				"Produce properly structured output with ### Blockers and ### Warnings sections, "+
+				"listing each finding as either \"- **[location]** description\" (bracket form) or \"- **`location`** description\" (backtick form).",
 			review.Name,
 		),
 		Persona:                review.Persona,

@@ -71,7 +71,24 @@ func init() {
 	}
 	bridgeSessionCmd.Flags().String("source-dir", "", "project directory whose Claude auto-memory to read (default: ~/nanika)")
 
-	hooksCmd.AddCommand(flushCtxCmd, injectCtxCmd, snapshotCmd, preflightCmd, bridgeSessionCmd)
+	insightsCmd := &cobra.Command{
+		Use:   "insights",
+		Short: "Query learnings from the learning database",
+	}
+
+	insightsSearchCmd := &cobra.Command{
+		Use:   "search",
+		Short: "Search learnings for a query",
+		Long:  "Queries the learning database for learnings matching the given query, ranked by relevance. Returns results as markdown for the TUI scrollback.",
+		RunE:  runInsightsSearch,
+		Args:  cobra.MinimumNArgs(1),
+	}
+	insightsSearchCmd.Flags().Int("limit", 10, "max results to return")
+	insightsSearchCmd.Flags().Int("days", 0, "only include learnings from the last N days (0 = all)")
+	insightsSearchCmd.Flags().String("domain", "", "filter by domain (empty = all)")
+
+	insightsCmd.AddCommand(insightsSearchCmd)
+	hooksCmd.AddCommand(flushCtxCmd, injectCtxCmd, snapshotCmd, preflightCmd, bridgeSessionCmd, insightsCmd)
 	rootCmd.AddCommand(hooksCmd)
 }
 
@@ -272,5 +289,70 @@ func runPreflight(cmd *cobra.Command, args []string) error {
 	if out != "" {
 		fmt.Print(out)
 	}
+	return nil
+}
+
+func runInsightsSearch(cmd *cobra.Command, args []string) error {
+	if len(args) == 0 {
+		return fmt.Errorf("query is required")
+	}
+	query := strings.Join(args, " ")
+	limit, _ := cmd.Flags().GetInt("limit")
+	days, _ := cmd.Flags().GetInt("days")
+	domain, _ := cmd.Flags().GetString("domain")
+
+	db, err := learning.OpenDB("")
+	if err != nil {
+		return fmt.Errorf("open learning DB: %w", err)
+	}
+	defer db.Close()
+
+	embedder := learning.NewEmbedder(learning.LoadAPIKey())
+	ctx, cancel := context.WithTimeout(cmd.Context(), 10*time.Second)
+	defer cancel()
+
+	learnings, err := db.FindRelevant(ctx, query, domain, limit, embedder)
+	if err != nil {
+		return fmt.Errorf("search failed: %w", err)
+	}
+
+	if len(learnings) == 0 {
+		fmt.Println("no insights found")
+		return nil
+	}
+
+	// Filter by age if --days is specified
+	if days > 0 {
+		cutoff := time.Now().AddDate(0, 0, -days)
+		var filtered []learning.Learning
+		for _, l := range learnings {
+			if l.CreatedAt.After(cutoff) {
+				filtered = append(filtered, l)
+			}
+		}
+		learnings = filtered
+	}
+
+	// Format output for TUI scrollback
+	fmt.Printf("### Search Results for %q\n\n", query)
+	if domain != "" {
+		fmt.Printf("Domain: %s | ", domain)
+	}
+	if days > 0 {
+		fmt.Printf("Last %d days\n\n", days)
+	} else {
+		fmt.Printf("\n\n")
+	}
+
+	for i, l := range learnings {
+		fmt.Printf("%d. [%s · %s · %s] %s\n",
+			i+1,
+			l.Type,
+			l.ShortID(),
+			l.CreatedAt.Format("2006-01-02"),
+			l.Content,
+		)
+	}
+
 	return nil
 }

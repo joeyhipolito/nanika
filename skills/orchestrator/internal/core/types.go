@@ -279,6 +279,7 @@ type OrchestratorConfig struct {
 	Verbose            bool
 	DryRun             bool
 	ForcedModel        string   // override model for all phases
+	ForcedRuntime      Runtime  // --runtime flag: override runtime for all policy-applied phases
 	ForceSequential    bool     // force sequential execution
 	Force              bool     // bypass quota gate (--force flag)
 	Domain             string   // dev/personal/work/creative/academic

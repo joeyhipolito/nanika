@@ -57,9 +57,26 @@ var runtimeWarningWriter io.Writer = os.Stdout
 // calling Engine.RegisterExecutor before the first Execute call.
 func defaultRegistry() executorRegistry {
 	return executorRegistry{
-		core.RuntimeClaude: ClaudeExecutor{},
-		core.RuntimeCodex:  NewCodexExecutor(),
+		core.RuntimeClaude:       ClaudeExecutor{},
+		core.RuntimeCodex:        NewCodexExecutor(),
+		core.RuntimeAnthropicAPI: NewAnthropicAPIExecutor(nil),
+		core.RuntimeOpenAIAPI:    NewOpenAIAPIExecutor(nil),
+		core.RuntimeOpenRouter:   NewOpenRouterAPIExecutor(nil),
+		core.RuntimeGeminiAPI:    GeminiAPIExecutor{},
 	}
+}
+
+// GeminiAPIExecutor is a placeholder for the Google Gemini API executor.
+// It returns a descriptive error so that phases routed to gemini-api fail
+// explicitly rather than silently falling back to Claude.
+type GeminiAPIExecutor struct{}
+
+func (GeminiAPIExecutor) Execute(_ context.Context, _ *core.WorkerConfig, _ event.Emitter, _ bool) (string, string, *sdk.CostInfo, error) {
+	return "", "", nil, fmt.Errorf("gemini-api executor is not yet implemented; set a different runtime or implement GeminiAPIExecutor")
+}
+
+func (GeminiAPIExecutor) Describe() core.RuntimeDescriptor {
+	return core.GeminiAPIDescriptor()
 }
 
 func (r executorRegistry) has(rt core.Runtime) bool {

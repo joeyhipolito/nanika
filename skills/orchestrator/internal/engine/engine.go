@@ -18,6 +18,7 @@ import (
 	"github.com/joeyhipolito/orchestrator-cli/internal/git"
 	"github.com/joeyhipolito/orchestrator-cli/internal/learning"
 	"github.com/joeyhipolito/orchestrator-cli/internal/persona"
+	"github.com/joeyhipolito/orchestrator-cli/internal/router"
 	"github.com/joeyhipolito/nanika/shared/sdk"
 	"github.com/joeyhipolito/orchestrator-cli/internal/worker"
 )
@@ -53,6 +54,11 @@ type Engine struct {
 	// serialized behind mu to prevent concurrent disk writes.
 	persistentWorker *worker.WorkerIdentity
 
+	// routingCfg holds the per-tier routing table loaded from config.yaml.
+	// Used by effectiveRuntime to resolve model/runtime for policy-applied phases.
+	// Nil disables config-based routing (falls back to SelectRuntime policy).
+	routingCfg *router.RoutingConfig
+
 	// Background learning extraction: at most one extraction runs at a time per
 	// mission (extractMu) and extractWG tracks outstanding goroutines for
 	// graceful shutdown before terminal events are emitted.
@@ -84,6 +90,40 @@ func (e *Engine) RegisterExecutor(rt core.Runtime, ex PhaseExecutor) {
 		e.executors = defaultRegistry()
 	}
 	e.executors[rt] = ex
+}
+
+// WithRoutingConfig attaches the per-tier routing table to the engine.
+// Call before Execute. When nil, policy-applied phases fall back to the
+// SelectRuntime heuristic (currently always RuntimeClaude).
+func (e *Engine) WithRoutingConfig(rc *router.RoutingConfig) {
+	e.routingCfg = rc
+}
+
+// effectiveRuntime returns the runtime the engine will actually use for phase.
+// It applies the full precedence chain:
+//  1. Per-phase authored RUNTIME: (RuntimePolicyApplied==false) — always wins.
+//  2. OrchestratorConfig.ForcedRuntime — set by --runtime CLI flag.
+//  3. NANIKA_DEFAULT_RUNTIME env var.
+//  4. routingCfg.ModelTiers[tier].Runtime — config.yaml per-tier default.
+//  5. phase.Runtime (the policy-applied value from SelectRuntime).
+//
+// When the runtime is resolved via the override chain (steps 2-4) the phase's
+// Runtime field is updated in place so that telemetry always reflects the
+// actual runtime used.
+func (e *Engine) effectiveRuntime(phase *core.Phase) core.Runtime {
+	if !phase.RuntimePolicyApplied && phase.Runtime != "" {
+		return phase.Runtime
+	}
+	rc := e.routingCfg
+	if rc == nil {
+		rc = router.DefaultRoutingConfig()
+	}
+	tier := router.ModelTier(phase.ModelTier)
+	resolved := rc.EffectiveRuntime(e.config.ForcedRuntime, phase.Runtime, tier)
+	if resolved != phase.Runtime {
+		phase.Runtime = resolved
+	}
+	return resolved
 }
 
 // resolveExecutor returns the PhaseExecutor for the given runtime, falling
@@ -809,7 +849,7 @@ func (e *Engine) executePhase(ctx context.Context, phase *core.Phase, priorConte
 		var sessionID string
 		var phaseCost *sdk.CostInfo
 		captureEmitter := newPhaseToolCaptureEmitter(phaseID, e.emitter)
-		output, sessionID, phaseCost, err = e.resolveExecutor(phase.Runtime).Execute(phaseCtx, config, captureEmitter, e.config.Verbose)
+		output, sessionID, phaseCost, err = e.resolveExecutor(e.effectiveRuntime(phase)).Execute(phaseCtx, config, captureEmitter, e.config.Verbose)
 		if sessionID != "" {
 			phase.SessionID = sessionID
 		}
@@ -1055,12 +1095,23 @@ func (e *Engine) executePhase(ctx context.Context, phase *core.Phase, priorConte
 
 	// Emit point 5: phase.completed
 	completedData := map[string]any{
-		"output_len":  len(output),
-		"gate_passed": gate.Passed,
-		"retries":     phase.Retries,
+		"output_len":   len(output),
+		"gate_passed":  gate.Passed,
+		"retries":      phase.Retries,
+		"runtime":      string(phase.Runtime.Effective()),
+		"model":        phase.Model,
+		"total_cost":   phase.CostUSD,
+		"total_tokens": phase.TokensIn + phase.TokensOut,
 	}
 	if phase.Role != "" {
 		completedData["role"] = string(phase.Role)
+	}
+	rc := e.routingCfg
+	if rc == nil {
+		rc = router.DefaultRoutingConfig()
+	}
+	if provider := rc.ProviderForTier(router.ModelTier(phase.ModelTier)); provider != "" {
+		completedData["provider"] = provider
 	}
 	e.emit(ctx, event.PhaseCompleted, phaseID, config.Name, completedData)
 
@@ -1421,7 +1472,7 @@ func (e *Engine) retryBarokPhase(ctx context.Context, phase *core.Phase, config 
 	}
 
 	captureEmitter := newPhaseToolCaptureEmitter(phase.ID, e.emitter)
-	_, sessionID, phaseCost, execErr := e.resolveExecutor(phase.Runtime).Execute(ctx, config, captureEmitter, e.config.Verbose)
+	_, sessionID, phaseCost, execErr := e.resolveExecutor(e.effectiveRuntime(phase)).Execute(ctx, config, captureEmitter, e.config.Verbose)
 	if sessionID != "" {
 		phase.SessionID = sessionID
 	}

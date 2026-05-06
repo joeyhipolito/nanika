@@ -27,6 +27,7 @@ import (
 	"github.com/joeyhipolito/orchestrator-cli/internal/git"
 	"github.com/joeyhipolito/orchestrator-cli/internal/learning"
 	"github.com/joeyhipolito/orchestrator-cli/internal/render"
+	"github.com/joeyhipolito/orchestrator-cli/internal/router"
 	"github.com/joeyhipolito/orchestrator-cli/internal/routing"
 	"github.com/joeyhipolito/orchestrator-cli/internal/sanitize"
 	"github.com/joeyhipolito/orchestrator-cli/internal/worker"
@@ -37,6 +38,7 @@ var (
 	noLearnings        bool
 	noReview           bool
 	reviewRuntime      string
+	globalRuntime      string
 	gateMode           string
 	templateName       string
 	saveTemplate       string
@@ -70,6 +72,7 @@ Use --save-template to freeze a plan after execution:
 	runCmd.Flags().BoolVar(&noLearnings, "no-learnings", false, "skip learning retrieval and injection")
 	runCmd.Flags().BoolVar(&noReview, "no-review", false, "skip automatic review-phase injection after decomposition")
 	runCmd.Flags().StringVar(&reviewRuntime, "review-runtime", "", "runtime for auto-injected review phases (claude, codex, both); default uses policy")
+	runCmd.Flags().StringVar(&globalRuntime, "runtime", "", "override runtime for all policy-applied phases (claude, anthropic-api, openai-api, openrouter, gemini-api); env NANIKA_DEFAULT_RUNTIME is also honoured")
 	runCmd.Flags().StringVar(&gateMode, "gate-mode", "block", "quality gate mode: block (fail phase on bad output) or warn (log and continue)")
 	runCmd.Flags().StringVar(&templateName, "template", "", "run from a saved template (skips decomposition)")
 	runCmd.Flags().StringVar(&saveTemplate, "save-template", "", "save plan as reusable template after execution")
@@ -466,6 +469,7 @@ func runTask(cmd *cobra.Command, args []string) error {
 		Verbose:          verbose,
 		DryRun:           dryRun,
 		ForcedModel:      model,
+		ForcedRuntime:    resolvedForcedRuntime(),
 		ForceSequential:  sequential,
 		Domain:           domain,
 		MaxTurns:         maxTurns,
@@ -477,6 +481,7 @@ func runTask(cmd *cobra.Command, args []string) error {
 
 	eng := engine.New(ws, config, embedder, db).WithEmitter(emitter)
 	registerRuntimeExecutors(eng)
+	eng.WithRoutingConfig(loadRoutingConfig())
 	result, err := eng.Execute(ctx, plan)
 	result = normalizeExecutionResult(plan, result, err)
 	success := missionSucceeded(result, err)
@@ -579,6 +584,16 @@ func runTask(cmd *cobra.Command, args []string) error {
 		}
 	}
 
+	// Periodic USER.md nudge — best-effort, sampled, gated by
+	// NANIKA_USER_PROFILE_NUDGE env var and the profile's opt-in flag. Only
+	// runs on successful missions to avoid teaching the model from broken
+	// runs. Failures here never affect the mission result.
+	if success && ws != nil {
+		if nerr := worker.PeriodicallyNudgeUserProfile(ctx, ws.TargetDir, ws.Path, domain); nerr != nil && verbose {
+			fmt.Printf("warning: USER.md nudge: %v\n", nerr)
+		}
+	}
+
 	// Save template on successful execution if requested.
 	if saveTemplate != "" && result.Success {
 		if saveErr := core.SaveTemplate(saveTemplate, plan); saveErr != nil {
@@ -666,6 +681,7 @@ func resumeMission(ctx context.Context, wsPath string, db *learning.DB, embedder
 		Timeout:         15 * time.Minute,
 		Verbose:         verbose,
 		ForcedModel:     model,
+		ForcedRuntime:   resolvedForcedRuntime(),
 		ForceSequential: sequential,
 		Domain:          cp.Domain,
 		MaxTurns:        maxTurns,
@@ -678,6 +694,7 @@ func resumeMission(ctx context.Context, wsPath string, db *learning.DB, embedder
 
 	eng := engine.New(ws, config, embedder, db).WithEmitter(resumeEmitter)
 	registerRuntimeExecutors(eng)
+	eng.WithRoutingConfig(loadRoutingConfig())
 	result, err := eng.Execute(ctx, cp.Plan)
 	result = normalizeExecutionResult(cp.Plan, result, err)
 	success := missionSucceeded(result, err)
@@ -2239,6 +2256,33 @@ func summarizeForRouting(text string, maxLen int) string {
 // rather than a silent fallback to Claude.
 func registerRuntimeExecutors(eng *engine.Engine) {
 	eng.RegisterExecutor(core.RuntimeCodex, engine.NewCodexExecutor())
+}
+
+// resolvedForcedRuntime returns the effective forced runtime from the --runtime
+// flag. Returns "" when the flag was not set (no override).
+func resolvedForcedRuntime() core.Runtime {
+	if globalRuntime != "" {
+		return core.Runtime(globalRuntime)
+	}
+	return ""
+}
+
+// loadRoutingConfig loads the per-tier routing table from the orchestrator
+// config dir. Falls back to the built-in defaults on any error so that a
+// missing or malformed config.yaml never blocks a mission.
+func loadRoutingConfig() *router.RoutingConfig {
+	cfgDir, err := config.Dir()
+	if err != nil {
+		return router.DefaultRoutingConfig()
+	}
+	rc, err := router.LoadRoutingConfig(cfgDir)
+	if err != nil {
+		if verbose {
+			fmt.Printf("warning: could not load routing config: %v; using defaults\n", err)
+		}
+		return router.DefaultRoutingConfig()
+	}
+	return rc
 }
 
 func normalizeExecutionResult(plan *core.Plan, result *core.ExecutionResult, err error) *core.ExecutionResult {

@@ -29,6 +29,28 @@ const (
 	// their outputs. Only valid for implementer phases; reviewer phases always
 	// use RuntimeClaude regardless of this value.
 	RuntimeBoth Runtime = "both"
+
+	// RuntimeAnthropicAPI routes the phase through the Anthropic Messages API
+	// directly via HTTP, bypassing the Claude Code CLI subprocess. Tools are
+	// resolved from the orchestrator's native tool registry and invoked in
+	// process during the response loop.
+	RuntimeAnthropicAPI Runtime = "anthropic-api"
+
+	// RuntimeOpenAIAPI routes the phase through the OpenAI Chat Completions
+	// API directly. Like RuntimeAnthropicAPI, tools are resolved from the
+	// orchestrator's native tool registry and invoked in process.
+	RuntimeOpenAIAPI Runtime = "openai-api"
+
+	// RuntimeOpenRouter routes the phase through OpenRouter, which is
+	// OpenAI-compatible (same Chat Completions wire format) but exposes a
+	// catalogue of cross-provider models (Anthropic, Google, Meta, Mistral,
+	// OpenAI). Implemented as a thin wrapper over the OpenAI executor.
+	RuntimeOpenRouter Runtime = "openrouter"
+
+	// RuntimeGeminiAPI routes the phase through the Google Gemini API directly
+	// via HTTP. Like RuntimeAnthropicAPI, tools are resolved from the
+	// orchestrator's native tool registry and invoked in process.
+	RuntimeGeminiAPI Runtime = "gemini-api"
 )
 
 // Effective returns RuntimeClaude when r is the zero value (""), preserving
@@ -225,6 +247,69 @@ func ClaudeDescriptor() RuntimeDescriptor {
 			CapStreaming:     true,
 			CapCostReport:    true,
 			CapArtifacts:     true,
+		},
+	}
+}
+
+// AnthropicAPIDescriptor returns the canonical descriptor for RuntimeAnthropicAPI.
+// The Anthropic Messages API supports tool use, native streaming, and reports
+// per-call usage so the executor can compute exact cost. Session resume is not
+// modelled (each call ships full message history), and artifacts are produced
+// by the registered tools rather than the runtime itself.
+func AnthropicAPIDescriptor() RuntimeDescriptor {
+	return RuntimeDescriptor{
+		Name: RuntimeAnthropicAPI,
+		Caps: RuntimeCaps{
+			CapToolUse:    true,
+			CapStreaming:  true,
+			CapCostReport: true,
+			CapArtifacts:  true,
+		},
+	}
+}
+
+// OpenAIAPIDescriptor returns the canonical descriptor for RuntimeOpenAIAPI.
+// The OpenAI Chat Completions API supports tool use, native streaming, and
+// reports per-call usage so the executor can compute exact cost. Session
+// resume is not modelled (each call ships full message history).
+func OpenAIAPIDescriptor() RuntimeDescriptor {
+	return RuntimeDescriptor{
+		Name: RuntimeOpenAIAPI,
+		Caps: RuntimeCaps{
+			CapToolUse:    true,
+			CapStreaming:  true,
+			CapCostReport: true,
+			CapArtifacts:  true,
+		},
+	}
+}
+
+// OpenRouterDescriptor returns the canonical descriptor for RuntimeOpenRouter.
+// OpenRouter is OpenAI-compatible, so its capability profile matches the
+// OpenAI executor: tool use, streaming, cost reporting, artifact production.
+func OpenRouterDescriptor() RuntimeDescriptor {
+	return RuntimeDescriptor{
+		Name: RuntimeOpenRouter,
+		Caps: RuntimeCaps{
+			CapToolUse:    true,
+			CapStreaming:  true,
+			CapCostReport: true,
+			CapArtifacts:  true,
+		},
+	}
+}
+
+// GeminiAPIDescriptor returns the canonical descriptor for RuntimeGeminiAPI.
+// The Google Gemini API supports tool use, streaming, and reports per-call
+// usage for cost computation. Session resume is not modelled.
+func GeminiAPIDescriptor() RuntimeDescriptor {
+	return RuntimeDescriptor{
+		Name: RuntimeGeminiAPI,
+		Caps: RuntimeCaps{
+			CapToolUse:    true,
+			CapStreaming:  true,
+			CapCostReport: true,
+			CapArtifacts:  true,
 		},
 	}
 }

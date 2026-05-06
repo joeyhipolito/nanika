@@ -864,10 +864,7 @@ func ParsePhases(output string, tc *TargetContext) ([]*core.Phase, error) {
 		expected := f["EXPECTED"]
 		workdir := f["WORKDIR"]
 		runtimeStr := strings.ToLower(strings.TrimSpace(f["RUNTIME"]))
-		if runtimeStr != "" &&
-			runtimeStr != string(core.RuntimeClaude) &&
-			runtimeStr != string(core.RuntimeCodex) &&
-			runtimeStr != string(core.RuntimeBoth) {
+		if runtimeStr != "" && !isKnownRuntime(core.Runtime(runtimeStr)) {
 			fmt.Fprintf(os.Stderr, "[decompose] warning: unknown RUNTIME value %q for phase %q; ignoring\n", runtimeStr, f["PHASE"])
 			runtimeStr = ""
 		}
@@ -1668,6 +1665,22 @@ func containsAny(s string, substrs ...string) bool {
 		if strings.Contains(s, sub) {
 			return true
 		}
+	}
+	return false
+}
+
+// isKnownRuntime reports whether rt is a recognized Runtime constant.
+// Unknown values in PHASE RUNTIME: fields are rejected with a warning.
+func isKnownRuntime(rt core.Runtime) bool {
+	switch rt {
+	case core.RuntimeClaude,
+		core.RuntimeCodex,
+		core.RuntimeBoth,
+		core.RuntimeAnthropicAPI,
+		core.RuntimeOpenAIAPI,
+		core.RuntimeOpenRouter,
+		core.RuntimeGeminiAPI:
+		return true
 	}
 	return false
 }

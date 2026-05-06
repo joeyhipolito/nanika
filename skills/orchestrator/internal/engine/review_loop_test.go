@@ -1817,16 +1817,32 @@ func TestParseReviewFindingsFromArtifact_EmptyFile(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestReviewOutputLooksMalformed_MidLineHeaderNotSuppressed(t *testing.T) {
-	// Prose mentions of the header strings must NOT defeat the safeguard.
+	// Prose backtick-quoted header strings must NOT defeat the malformed safeguard.
 	// This reproduces the exact failure mode from workspace 20260410-4160cbf8
 	// phase-5/output.md where the reviewer wrote a scratchpad note containing
-	// backtick-quoted header strings.
+	// backtick-quoted header strings with no actual section headers at line start.
+	input := "The review should include `### Blockers` and `### Warnings` sections.\n" +
+		"Writing the re-structured review now.\n"
+	findings := ParseReviewFindings(input)
+	if !reviewOutputLooksMalformed(input, findings) {
+		t.Fatal("expected malformed=true: headers only appear mid-line inside backticks, not at line start")
+	}
+}
+
+func TestReviewOutputLooksMalformed_BoldLineStartHeaderNotMalformed(t *testing.T) {
+	// A bold-paragraph header with mid-dot (·) separated items is a recognized
+	// structured format. "**Blockers (5):** B1 · B2 · …" parses to 5 blockers
+	// and reviewOutputLooksMalformed must return false.
 	input := "The review should include `### Blockers` and `### Warnings` sections.\n" +
 		"Writing the re-structured review now.\n" +
 		"**Blockers (5):** B1 foo · B2 bar · B3 baz · B4 qux · B5 quux.\n"
 	findings := ParseReviewFindings(input)
-	if !reviewOutputLooksMalformed(input, findings) {
-		t.Fatal("expected malformed=true: headers only appear mid-line inside backticks, not at line start")
+	if len(findings.Blockers) != 5 {
+		t.Fatalf("expected 5 blockers (mid-dot separated), got %d: %v", len(findings.Blockers), findings.Blockers)
+	}
+	// The header is recognized → not malformed.
+	if reviewOutputLooksMalformed(input, findings) {
+		t.Fatal("expected malformed=false: bold line-start header is a recognized section marker")
 	}
 }
 
@@ -1967,10 +1983,10 @@ func TestHandleReviewLoop_Regression_4160cbf8_PhasePassFive(t *testing.T) {
 		"**Blockers (5):** B1 CLAUDE.md unchanged · B2 pidfile write race · B3 env var instead of positional · B4 stdin JSON payload never drained · B5 only 1 of 3 hook entries wired.\n\n" +
 		"**Warnings (4):** W1 disown no-op on bash 3.2 · W2 no signal cleanup · W3 redundant fallback · W4 SessionEnd missing async.\n"
 
-	// Sanity check: the stdout alone has no structured sections the parser can match.
+	// Sanity check: the stdout uses inline mid-dot notation which is now parsed.
 	proseOnlyFindings := ParseReviewFindings(proseStdout)
-	if len(proseOnlyFindings.Blockers) != 0 {
-		t.Fatalf("sanity: expected 0 blockers parsed from prose stdout, got %d", len(proseOnlyFindings.Blockers))
+	if len(proseOnlyFindings.Blockers) != 5 {
+		t.Fatalf("sanity: expected 5 blockers parsed from prose stdout (mid-dot format), got %d", len(proseOnlyFindings.Blockers))
 	}
 
 	// The reviewer wrote the structured findings to review.md in its worker dir.
@@ -2170,6 +2186,41 @@ func TestInjectRetryReviewPhase_FailsClosedAtMaxRetries(t *testing.T) {
 	}
 }
 
+// TestInjectRetryReviewPhase_ObjectiveContainsBannedPrefixExamples verifies that
+// the retry objective explicitly forbids prefatory meta-narration and names the
+// banned prefix examples required by the task spec.
+func TestInjectRetryReviewPhase_ObjectiveContainsBannedPrefixExamples(t *testing.T) {
+	reviewPhase := &core.Phase{
+		ID:                     "phase-2",
+		Name:                   "review",
+		Persona:                "staff-code-reviewer",
+		PersonaSelectionMethod: core.SelectionRequiredReview,
+		MaxReviewLoops:         2,
+		ReviewIteration:        0,
+		ParseRetryCount:        0,
+	}
+
+	e := newTestEngine()
+	e.plan.Phases = []*core.Phase{reviewPhase}
+	e.phases["phase-2"] = reviewPhase
+
+	retry := e.injectRetryReviewPhase(reviewPhase)
+	if retry == nil {
+		t.Fatal("expected retry phase")
+	}
+
+	wantSubstrings := []string{
+		"### Blockers",
+		"Now I'll",
+		"Output written to",
+	}
+	for _, sub := range wantSubstrings {
+		if !strings.Contains(retry.Objective, sub) {
+			t.Errorf("retry.Objective missing required substring %q\nObjective: %s", sub, retry.Objective)
+		}
+	}
+}
+
 // ---------------------------------------------------------------------------
 // findReviewMdCaseInsensitive — custom-slug and mtime-preference tests
 // ---------------------------------------------------------------------------
@@ -2306,5 +2357,123 @@ func TestHandleReviewLoop_EmptySectionsArtifactIsApproval(t *testing.T) {
 	// The gate must have registered a pass.
 	if len(reviewPhase.ReviewBlockers) != 0 {
 		t.Errorf("ReviewBlockers = %v, want empty for clean approval", reviewPhase.ReviewBlockers)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Bold-paragraph variant tests
+// ---------------------------------------------------------------------------
+
+// TestParseReviewFindings_BoldParagraphPhase4Output verifies that the bold-heading
+// format used by staff-code-reviewer phase-4 (20260424-adae884d) is parsed correctly.
+// Expected: 2 blockers (numbered list) and 5 warnings (semicolon-separated inline).
+func TestParseReviewFindings_BoldParagraphPhase4Output(t *testing.T) {
+	data, err := os.ReadFile("testdata/review-bold-paragraph-phase4.md")
+	if err != nil {
+		t.Fatalf("missing fixture: %v", err)
+	}
+	if got := len(data); got != 1526 {
+		t.Fatalf("fixture byte count drifted: got %d, want 1526 — restore from ~/.alluka/workspaces/20260424-adae884d/workers/staff-code-reviewer-phase-4/output.md", got)
+	}
+	f := ParseReviewFindings(string(data))
+	if len(f.Blockers) != 2 {
+		t.Errorf("expected 2 blockers, got %d: %v", len(f.Blockers), f.Blockers)
+	}
+	if len(f.Warnings) != 5 {
+		t.Errorf("expected 5 warnings, got %d: %v", len(f.Warnings), f.Warnings)
+	}
+}
+
+// TestParseReviewFindings_InlineBlockersSemicolon verifies that a bold-paragraph
+// Blockers section using semicolon separators (e.g. "**Blockers (3):** A; B; C")
+// is parsed correctly. Symmetric to the Warnings semicolon path — the prior
+// implementation only split Blockers on mid-dot and silently dropped semicolon
+// variants. Regression hook for TRK-622 re-review warning #1.
+func TestParseReviewFindings_InlineBlockersSemicolon(t *testing.T) {
+	input := "**Blockers (3):** missing import; nil deref at line 42; flaky test\n\n**Warnings:**\n"
+	f := ParseReviewFindings(input)
+	if len(f.Blockers) != 3 {
+		t.Fatalf("expected 3 blockers from semicolon-inline form, got %d: %v", len(f.Blockers), f.Blockers)
+	}
+	wantDescs := []string{"missing import", "nil deref at line 42", "flaky test"}
+	for i, want := range wantDescs {
+		if f.Blockers[i].Description != want {
+			t.Errorf("blocker[%d] = %q, want %q", i, f.Blockers[i].Description, want)
+		}
+	}
+}
+
+// TestParseReviewFindings_InlineWarningsMidDot verifies the symmetric case:
+// a bold-paragraph Warnings section using mid-dot separators is parsed
+// correctly. Regression hook for TRK-622 re-review warning #1.
+func TestParseReviewFindings_InlineWarningsMidDot(t *testing.T) {
+	input := "**Blockers:**\n\n**Warnings:** drift in copy · stale link · missing alt text\n"
+	f := ParseReviewFindings(input)
+	if len(f.Warnings) != 3 {
+		t.Fatalf("expected 3 warnings from mid-dot-inline form, got %d: %v", len(f.Warnings), f.Warnings)
+	}
+}
+
+// TestHasReviewHeaders_BoldHeadings verifies that hasReviewHeaders returns true
+// when the input uses "**Blockers:**" / "**Warnings:**" instead of H3 markers.
+func TestHasReviewHeaders_BoldHeadings(t *testing.T) {
+	cases := []struct {
+		name  string
+		input string
+	}{
+		{
+			name:  "simple bold headers",
+			input: "**Blockers:**\n\n**Warnings:**\n",
+		},
+		{
+			name:  "warnings with parenthetical",
+			input: "**Blockers:**\n1. something broke\n\n**Warnings (spec drift):** foo; bar\n",
+		},
+		{
+			name:  "mixed: H3 blockers, bold warnings",
+			input: "### Blockers\n\n**Warnings:**\n",
+		},
+		{
+			name:  "mixed: bold blockers, H3 warnings",
+			input: "**Blockers:**\n\n### Warnings\n",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if !hasReviewHeaders(tc.input) {
+				t.Errorf("hasReviewHeaders(%q) = false, want true", tc.input)
+			}
+		})
+	}
+}
+
+// TestReviewOutputLooksMalformed_EmptyBoldHeaded verifies that an output with
+// bold-paragraph headers but no item findings is not considered malformed
+// (the headers signal the reviewer understood the format; empty sections are valid).
+func TestReviewOutputLooksMalformed_EmptyBoldHeaded(t *testing.T) {
+	cases := []struct {
+		name   string
+		output string
+	}{
+		{
+			name:   "bold blockers and warnings, no items",
+			output: "**Blockers:**\n\n**Warnings:**\n",
+		},
+		{
+			name:   "bold blockers only",
+			output: "Some prose.\n\n**Blockers:**\n\n_(none)_\n",
+		},
+		{
+			name:   "bold warnings only",
+			output: "**Warnings:**\n\n_(none)_\n",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			findings := ParseReviewFindings(tc.output)
+			if reviewOutputLooksMalformed(tc.output, findings) {
+				t.Errorf("reviewOutputLooksMalformed(%q) = true, want false for bold-headed output", tc.output)
+			}
+		})
 	}
 }
