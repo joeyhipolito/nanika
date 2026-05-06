@@ -13,20 +13,20 @@
     "windows": [
       {
         "label": "main",
-        "title": "Dust",
-        "width": 820,
-        "height": 520,
-        "resizable": false,
-        "transparent": true,
-        "decorations": false,
-        "alwaysOnTop": true,
-        "skipTaskbar": true,
+        "title": "Whim",
+        "width": 1280,
+        "height": 800,
+        "resizable": true,
+        "transparent": false,
+        "decorations": true,
+        "alwaysOnTop": false,
+        "skipTaskbar": false,
         "visible": true,
         "center": true
       }
     ],
     "security": {
-      "csp": null
+      "csp": "default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'; font-src 'self'; connect-src 'self' tauri: ipc:; img-src 'self' data:"
     },
     "macOSPrivateApi": true
   },

@@ -1,9 +1,10 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
+import Icons from 'unplugin-icons/vite'
 
 // https://vitejs.dev/config/
 export default defineConfig({
-  plugins: [react()],
+  plugins: [react(), Icons({ compiler: 'jsx', jsx: 'react', autoInstall: false })],
   // Vite options tailored for Tauri development and only applied in `tauri dev` or `tauri build`
   //   prevent vite from obscuring rust errors
   clearScreen: false,

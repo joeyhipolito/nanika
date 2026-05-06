@@ -6,6 +6,23 @@
 //! - `get_plugin_info`     — manifest + liveness for one plugin
 //! - `render_ui`           — first Component from registry render
 //! - `dispatch_action`     — execute a plugin action
+//! - `list_missions`       — list orchestrator missions from disk
+//! - `get_mission`         — single mission detail
+//! - `get_phase`           — phase detail + worker log tail
+//! - `mission_approve_gate` — approve/reject a review gate
+//! - `mission_cancel`      — cancel a running mission
+//! - `phase_rerun`         — rerun a phase (not yet supported by orchestrator CLI)
+//! - `start_mission_run_watcher` — watch workspace for checkpoint + log events
+//! - rail commands: `list_projects`, `list_routines`, `read_pins`, `write_pins`
+//! - git commands: `get_repo_status`, `git_stage_all`, `git_commit`, `git_push`, `reveal_in_finder`, `open_external_url`
+//! - commit_summary commands: `get_commit_summary`, `get_pr_metadata`, `create_pr`
+//! - notification commands: `list_notifications`, `notification_dismiss`, `notification_dismiss_all`, `start_routines_watcher`
+
+mod mission;
+mod rail;
+mod git;
+mod commit_summary;
+mod notifications;
 
 use dust_core::envelope::EventType;
 use dust_core::Component;
@@ -83,6 +100,13 @@ pub struct AppState {
     /// At most one live chat subscription per webview.  `Mutex` because
     /// `chat_subscribe` mutates this across an async boundary.
     pub chat_sub: TokioMutex<Option<ChatSubscription>>,
+    /// Active filesystem watcher, kept alive for the lifetime of the watch.
+    /// Replaced atomically by `watch_repo`; dropping the old value tears
+    /// down its debounce thread via channel disconnect.
+    pub fs_watcher: std::sync::Mutex<Option<notify::RecommendedWatcher>>,
+    /// Active mission-run watcher. Replaced atomically by `start_mission_run_watcher`;
+    /// dropping the old watcher disconnects its channel and the debounce thread exits.
+    pub mission_watcher: std::sync::Mutex<Option<notify::RecommendedWatcher>>,
 }
 
 // ---------------------------------------------------------------------------
@@ -536,6 +560,374 @@ async fn open_in_editor(path: String, line: Option<u32>) -> Result<(), String> {
 }
 
 // ---------------------------------------------------------------------------
+// Filesystem commands — list_directory, search_files, watch_repo
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FileEntry {
+    pub path: String,
+    pub name: String,
+    /// `"file"` or `"dir"`
+    pub kind: String,
+    pub size: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FileMatch {
+    pub path: String,
+    pub line: Option<u32>,
+    pub snippet: String,
+    pub score: f32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SearchKind {
+    Filename,
+    Content,
+}
+
+#[tauri::command]
+async fn list_directory(path: String) -> Result<Vec<FileEntry>, String> {
+    let safe = validate_path(&path)?;
+    let mut entries = Vec::new();
+    let mut dir = tokio::fs::read_dir(&safe).await.map_err(|e| e.to_string())?;
+    while let Ok(Some(entry)) = dir.next_entry().await {
+        let Ok(meta) = entry.metadata().await else { continue };
+        let path_str = entry.path().to_string_lossy().to_string();
+        let name = entry.file_name().to_string_lossy().to_string();
+        let kind = if meta.is_dir() { "dir" } else { "file" }.to_string();
+        entries.push(FileEntry { path: path_str, name, kind, size: meta.len() });
+    }
+    Ok(entries)
+}
+
+#[tauri::command]
+async fn search_files(
+    root: String,
+    query: String,
+    kind: SearchKind,
+) -> Result<Vec<FileMatch>, String> {
+    let safe = validate_path(&root)?;
+    const MAX: usize = 100;
+
+    match kind {
+        SearchKind::Filename => {
+            let query_lower = query.to_lowercase();
+            let mut results = Vec::new();
+            for entry in walkdir::WalkDir::new(&safe).follow_links(false) {
+                let Ok(entry) = entry else { continue };
+                let name = entry.file_name().to_string_lossy().to_lowercase();
+                if name.contains(&query_lower) {
+                    results.push(FileMatch {
+                        path: entry.path().to_string_lossy().to_string(),
+                        line: None,
+                        snippet: entry.file_name().to_string_lossy().to_string(),
+                        score: 1.0,
+                    });
+                    if results.len() >= MAX {
+                        break;
+                    }
+                }
+            }
+            Ok(results)
+        }
+        SearchKind::Content => {
+            tokio::task::spawn_blocking(move || {
+                let mut results = Vec::new();
+                let query_lower = query.to_lowercase();
+                'outer: for entry in ignore::WalkBuilder::new(&safe).build() {
+                    let Ok(entry) = entry else { continue };
+                    if entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+                        continue;
+                    }
+                    let path = entry.path().to_string_lossy().to_string();
+                    let Ok(content) = std::fs::read_to_string(entry.path()) else { continue };
+                    for (idx, line) in content.lines().enumerate() {
+                        if line.to_lowercase().contains(&query_lower) {
+                            results.push(FileMatch {
+                                path: path.clone(),
+                                line: Some((idx + 1) as u32),
+                                snippet: line.trim().to_string(),
+                                score: 1.0,
+                            });
+                            if results.len() >= MAX {
+                                break 'outer;
+                            }
+                        }
+                    }
+                }
+                Ok::<Vec<FileMatch>, String>(results)
+            })
+            .await
+            .map_err(|e| e.to_string())?
+        }
+    }
+}
+
+#[tauri::command]
+async fn watch_repo(
+    path: String,
+    state: State<'_, AppState>,
+    app: tauri::AppHandle,
+) -> Result<(), String> {
+    use notify::{RecursiveMode, Watcher};
+    use std::time::{Duration, Instant};
+
+    let safe = validate_path(&path)?;
+    let (tx, rx) = std::sync::mpsc::channel::<notify::Result<notify::Event>>();
+
+    let mut watcher = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
+        let _ = tx.send(res);
+    })
+    .map_err(|e| e.to_string())?;
+
+    watcher
+        .watch(&safe, RecursiveMode::Recursive)
+        .map_err(|e| e.to_string())?;
+
+    *state
+        .fs_watcher
+        .lock()
+        .map_err(|e| e.to_string())? = Some(watcher);
+
+    std::thread::spawn(move || {
+        use std::collections::HashMap;
+
+        const DEBOUNCE: Duration = Duration::from_millis(200);
+        const POLL: Duration = Duration::from_millis(50);
+
+        let mut pending: HashMap<std::path::PathBuf, (String, Instant)> = HashMap::new();
+
+        loop {
+            match rx.recv_timeout(POLL) {
+                Ok(Ok(event)) => {
+                    let kind_str = match event.kind {
+                        notify::EventKind::Create(_) => "created",
+                        notify::EventKind::Modify(_) => "modified",
+                        notify::EventKind::Remove(_) => "deleted",
+                        _ => continue,
+                    };
+                    for p in event.paths {
+                        pending.insert(p, (kind_str.to_string(), Instant::now()));
+                    }
+                }
+                Ok(Err(_)) | Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+            }
+
+            let now = Instant::now();
+            let ready: Vec<_> = pending
+                .iter()
+                .filter(|(_, (_, t))| now.duration_since(*t) >= DEBOUNCE)
+                .map(|(p, (k, _))| (p.clone(), k.clone()))
+                .collect();
+
+            for (p, k) in ready {
+                pending.remove(&p);
+                let _ = app.emit(
+                    "whim://fs-changed",
+                    serde_json::json!({ "path": p.to_string_lossy(), "kind": k }),
+                );
+            }
+        }
+    });
+
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Git diff commands — list_changed_files, get_file_diff, reject_hunk
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HunkLine {
+    #[serde(rename = "type")]
+    pub kind: String, // "add" | "rem" | "ctx"
+    pub content: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GitHunk {
+    pub id: String,
+    pub header: String,
+    pub lines: Vec<HunkLine>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChangedFile {
+    pub path: String,
+    pub additions: u32,
+    pub deletions: u32,
+    pub why: String,
+    pub hunks: Vec<GitHunk>,
+}
+
+/// Parse `@@ -old_start[,old_count] +new_start[,new_count] @@` without regex.
+fn parse_hunk_header(line: &str) -> Option<(u32, u32)> {
+    let rest = line.strip_prefix("@@ -")?;
+    let (old_part, rest) = rest.split_once(' ')?;
+    let old_start: u32 = old_part.split(',').next()?.parse().ok()?;
+    let rest = rest.strip_prefix('+')?;
+    let (new_part, _) = rest.split_once(' ').unwrap_or((rest, ""));
+    let new_start: u32 = new_part.split(',').next()?.parse().ok()?;
+    Some((old_start, new_start))
+}
+
+fn parse_hunks_from_diff(path: &str, diff_text: &str) -> Vec<GitHunk> {
+    let mut hunks: Vec<GitHunk> = Vec::new();
+    let mut cur_id = String::new();
+    let mut cur_header = String::new();
+    let mut cur_lines: Vec<HunkLine> = Vec::new();
+    let mut in_hunk = false;
+
+    for line in diff_text.lines() {
+        if line.starts_with("@@ ") {
+            if in_hunk {
+                hunks.push(GitHunk { id: cur_id.clone(), header: cur_header.clone(), lines: cur_lines.clone() });
+            }
+            if let Some((old_start, new_start)) = parse_hunk_header(line) {
+                cur_id = format!("{path}:{old_start}:{new_start}");
+            } else {
+                cur_id = format!("{path}:?:?");
+            }
+            cur_header = line.to_string();
+            cur_lines = Vec::new();
+            in_hunk = true;
+        } else if in_hunk {
+            if line.starts_with('+') && !line.starts_with("+++") {
+                cur_lines.push(HunkLine { kind: "add".to_string(), content: line[1..].to_string() });
+            } else if line.starts_with('-') && !line.starts_with("---") {
+                cur_lines.push(HunkLine { kind: "rem".to_string(), content: line[1..].to_string() });
+            } else if line.starts_with(' ') {
+                cur_lines.push(HunkLine { kind: "ctx".to_string(), content: line[1..].to_string() });
+            }
+        }
+    }
+
+    if in_hunk {
+        hunks.push(GitHunk { id: cur_id, header: cur_header, lines: cur_lines });
+    }
+
+    hunks
+}
+
+#[tauri::command]
+async fn list_changed_files(repo_root: String) -> Result<Vec<ChangedFile>, String> {
+    use tokio::process::Command;
+
+    let status_out = Command::new("git")
+        .args(["status", "--porcelain=v1", "-z"])
+        .current_dir(&repo_root)
+        .output()
+        .await
+        .map_err(|e| format!("git status: {e}"))?;
+
+    if !status_out.status.success() {
+        return Err(format!(
+            "git status failed: {}",
+            String::from_utf8_lossy(&status_out.stderr)
+        ));
+    }
+
+    // Parse NUL-separated records: "XY path" with renames producing an extra NUL entry.
+    let raw = String::from_utf8_lossy(&status_out.stdout);
+    let records: Vec<&str> = raw.split('\0').collect();
+    let mut file_entries: Vec<(String, String)> = Vec::new(); // (path, status_code)
+    let mut i = 0;
+    while i < records.len() {
+        let rec = records[i];
+        if rec.len() < 3 {
+            i += 1;
+            continue;
+        }
+        let xy = rec[..2].to_string();
+        let path = rec[3..].to_string();
+        // Renames/copies: old path is the next NUL record — skip it.
+        if xy.contains('R') || xy.contains('C') {
+            i += 2;
+        } else {
+            i += 1;
+        }
+        file_entries.push((path, xy));
+    }
+
+    if file_entries.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    // Gather additions/deletions from unstaged and staged diffs.
+    let mut stats: std::collections::HashMap<String, (u32, u32)> = std::collections::HashMap::new();
+    for args in [
+        vec!["diff", "--numstat"],
+        vec!["diff", "--numstat", "--cached"],
+    ] {
+        let out = Command::new("git")
+            .args(&args)
+            .current_dir(&repo_root)
+            .output()
+            .await
+            .map_err(|e| format!("git diff --numstat: {e}"))?;
+        if out.status.success() {
+            for line in String::from_utf8_lossy(&out.stdout).lines() {
+                let parts: Vec<&str> = line.splitn(3, '\t').collect();
+                if parts.len() == 3 {
+                    let add: u32 = parts[0].parse().unwrap_or(0);
+                    let del: u32 = parts[1].parse().unwrap_or(0);
+                    let entry = stats.entry(parts[2].to_string()).or_insert((0, 0));
+                    entry.0 += add;
+                    entry.1 += del;
+                }
+            }
+        }
+    }
+
+    let files = file_entries
+        .into_iter()
+        .map(|(path, why)| {
+            let (additions, deletions) = stats.get(&path).copied().unwrap_or((0, 0));
+            ChangedFile { additions, deletions, why, hunks: Vec::new(), path }
+        })
+        .collect();
+
+    Ok(files)
+}
+
+#[tauri::command]
+async fn get_file_diff(
+    repo_root: String,
+    path: String,
+    base: Option<String>,
+) -> Result<Vec<GitHunk>, String> {
+    use tokio::process::Command;
+
+    // Default base is HEAD so we capture both staged and unstaged changes.
+    let base_ref = base.as_deref().unwrap_or("HEAD");
+    let out = Command::new("git")
+        .args(["diff", "--unified=3", base_ref, "--", &path])
+        .current_dir(&repo_root)
+        .output()
+        .await
+        .map_err(|e| format!("git diff: {e}"))?;
+
+    if !out.status.success() {
+        return Err(format!(
+            "git diff failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        ));
+    }
+
+    let diff_text = String::from_utf8_lossy(&out.stdout);
+    Ok(parse_hunks_from_diff(&path, &diff_text))
+}
+
+#[tauri::command]
+async fn reject_hunk(hunk_id: String) -> Result<(), String> {
+    eprintln!("[dust] reject_hunk: {hunk_id}");
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
@@ -681,17 +1073,85 @@ fn center_on_active_monitor(handle: &tauri::AppHandle, window: &tauri::WebviewWi
 // App entry point
 // ---------------------------------------------------------------------------
 
+/// Best-effort removal of stale `*.sock` files in the registry runtime
+/// directory.  Mirrors `dust_registry::runtime_dir()` (TRANSPORT-01/02): the
+/// directory is `$XDG_RUNTIME_DIR/nanika/plugins/` when set, otherwise
+/// `~/.alluka/run/plugins/`.
+fn cleanup_runtime_sockets() {
+    use std::path::PathBuf;
+    let dir = if let Some(xdg) =
+        std::env::var_os("XDG_RUNTIME_DIR").filter(|v| !v.is_empty())
+    {
+        PathBuf::from(xdg).join("nanika").join("plugins")
+    } else if let Some(home) = std::env::var_os("HOME") {
+        PathBuf::from(home).join(".alluka").join("run").join("plugins")
+    } else {
+        eprintln!(
+            "[dust] cleanup_runtime_sockets: neither XDG_RUNTIME_DIR nor HOME set"
+        );
+        return;
+    };
+    let entries = match std::fs::read_dir(&dir) {
+        Ok(it) => it,
+        Err(e) => {
+            eprintln!(
+                "[dust] cleanup_runtime_sockets: read_dir {} failed: {e}",
+                dir.display()
+            );
+            return;
+        }
+    };
+    for entry in entries.flatten() {
+        let p = entry.path();
+        if p.extension().and_then(|e| e.to_str()) == Some("sock") {
+            eprintln!("[dust] removing stale socket {}", p.display());
+            let _ = std::fs::remove_file(&p);
+        }
+    }
+}
+
+/// Stale-socket symptoms: bind/connect failures with EADDRINUSE-class messages.
+/// Permission-denied or unknown errors must NOT trigger the retry.
+fn is_stale_socket_error(err: &dust_registry::RegistryError) -> bool {
+    let msg = err.to_string();
+    msg.contains("Address already in use")
+        || msg.contains("EADDRINUSE")
+        || msg.contains("File exists")
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // Read the legacy-launcher toggle once at startup so the global-shortcut
+    // closure can branch without re-reading the env on every key press.
+    let legacy_launcher = std::env::var("DUST_LEGACY_LAUNCHER").is_ok();
+
     let registry = tauri::async_runtime::block_on(async {
-        Registry::new().await.unwrap_or_else(|e| {
-            eprintln!("[dust] registry init failed: {e}");
-            panic!("cannot start without registry: {e}");
-        })
+        match Registry::new().await {
+            Ok(r) => r,
+            Err(e) if is_stale_socket_error(&e) => {
+                eprintln!(
+                    "[dust] registry init failed (stale-socket symptoms, retrying after cleanup): {e}"
+                );
+                cleanup_runtime_sockets();
+                match Registry::new().await {
+                    Ok(r) => r,
+                    Err(e2) => {
+                        eprintln!(
+                            "[dust] registry init failed on retry: {e2}; returning original error: {e}"
+                        );
+                        panic!("cannot start without registry: {e}");
+                    }
+                }
+            }
+            Err(e) => {
+                eprintln!("[dust] registry init failed (no retry): {e}");
+                panic!("cannot start without registry: {e}");
+            }
+        }
     });
 
     tauri::Builder::default()
-        .setup(|app| {
+        .setup(move |app| {
             use tauri_plugin_global_shortcut::{
                 Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState,
             };
@@ -715,13 +1175,21 @@ pub fn run() {
                         if event.state() != ShortcutState::Pressed { return; }
                         let Some(window) = handle.get_webview_window("main") else { return; };
                         let visible = window.is_visible().unwrap_or(false);
-                        if visible {
-                            // Let the frontend animate out before the OS hides the window
-                            let _ = window.emit("dust://hide-request", ());
+                        if legacy_launcher {
+                            // Legacy collapse-mode launcher: animate out via the
+                            // frontend on hide, recenter on the active monitor on show.
+                            if visible {
+                                let _ = window.emit("dust://hide-request", ());
+                            } else {
+                                center_on_active_monitor(&handle, &window);
+                                let _ = window.show();
+                                let _ = window.set_focus();
+                            }
+                        } else if visible {
+                            window.set_focus().unwrap();
                         } else {
-                            center_on_active_monitor(&handle, &window);
-                            let _ = window.show();
-                            let _ = window.set_focus();
+                            window.show().unwrap();
+                            window.set_focus().unwrap();
                         }
                     })
                     .build(),
@@ -740,6 +1208,8 @@ pub fn run() {
         .manage(AppState {
             registry: Arc::new(registry),
             chat_sub: TokioMutex::new(None),
+            fs_watcher: std::sync::Mutex::new(None),
+            mission_watcher: std::sync::Mutex::new(None),
         })
         .invoke_handler(tauri::generate_handler![
             search_capabilities,
@@ -754,6 +1224,40 @@ pub fn run() {
             set_window_mode,
             chat_subscribe,
             chat_unsubscribe,
+            list_directory,
+            search_files,
+            watch_repo,
+            list_changed_files,
+            get_file_diff,
+            reject_hunk,
+            mission::list_missions,
+            mission::get_mission,
+            mission::get_phase,
+            mission::mission_approve_gate,
+            mission::mission_cancel,
+            mission::phase_rerun,
+            mission::start_mission_run_watcher,
+            // rail commands
+            rail::list_projects,
+            rail::list_routines,
+            rail::read_pins,
+            rail::write_pins,
+            // git commands
+            git::get_repo_status,
+            git::git_stage_all,
+            git::git_commit,
+            git::git_push,
+            git::reveal_in_finder,
+            git::open_external_url,
+            // commit_summary commands
+            commit_summary::get_commit_summary,
+            commit_summary::get_pr_metadata,
+            commit_summary::create_pr,
+            // notifications commands
+            notifications::list_notifications,
+            notifications::notification_dismiss,
+            notifications::notification_dismiss_all,
+            notifications::start_routines_watcher,
         ])
         .run(tauri::generate_context!())
         .expect("error while running dust desktop");

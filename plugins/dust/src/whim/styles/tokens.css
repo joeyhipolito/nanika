@@ -1,0 +1,80 @@
+/* Whim Desktop — design tokens */
+@font-face {
+  font-family: 'Inter Tight';
+  src: url('./fonts/inter-tight-400.woff2') format('woff2');
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: 'Inter Tight';
+  src: url('./fonts/inter-tight-500.woff2') format('woff2');
+  font-weight: 500;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: 'Inter Tight';
+  src: url('./fonts/inter-tight-600.woff2') format('woff2');
+  font-weight: 600;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: 'JetBrains Mono';
+  src: url('./fonts/jetbrains-mono-400.woff2') format('woff2');
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: 'JetBrains Mono';
+  src: url('./fonts/jetbrains-mono-500.woff2') format('woff2');
+  font-weight: 500;
+  font-style: normal;
+  font-display: swap;
+}
+
+:root {
+  --s0: #0C0D10;
+  --s1: #14151A;
+  --s2: #1C1D24;
+  --s3: #24252E;
+  --border: #26272D;
+  --border-soft: #1E1F26;
+  --rim: rgba(255,255,255,0.06);
+  --text: #E8E8EC;
+  --muted: #8A8A94;
+  --faint: #5E5F68;
+  --ghost: #3E3F48;
+  --accent: #D47856;
+  --accent-2: #E8B464;
+  --accent-soft: rgba(212,120,86,0.14);
+  --accent-rim: rgba(212,120,86,0.35);
+  --blue: #3B82F6;
+  --blue-soft: rgba(59,130,246,0.14);
+  --green: #22C55E;
+  --green-soft: rgba(34,197,94,0.14);
+  --red: #EF4444;
+  --red-soft: rgba(239,68,68,0.12);
+  --glass: rgba(22,22,26,0.72);
+  --sans: "Inter Tight", "Inter", ui-sans-serif, system-ui, -apple-system, sans-serif;
+  --mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
+}
+
+/* ---------------- keycap ---------------- */
+.K {
+  display: inline-flex; align-items: center; justify-content: center;
+  min-width: 22px; height: 22px; padding: 0 7px;
+  font-family: var(--mono); font-size: 11.5px; font-weight: 500;
+  color: var(--text); background: var(--s2);
+  border: 0.5px solid var(--border);
+  border-radius: 5px;
+  box-shadow: inset 0 -1px 0 rgba(0,0,0,0.3), 0 1px 0 rgba(0,0,0,0.35);
+  line-height: 1; letter-spacing: 0.02em;
+  vertical-align: 1px;
+}
+.K.add { color: var(--green); border-color: rgba(34,197,94,0.35); background: var(--green-soft); }
+.K.rem { color: var(--red); border-color: rgba(239,68,68,0.4); background: var(--red-soft); }
+.K.acc { color: var(--accent-2); border-color: var(--accent-rim); background: var(--accent-soft); }
+.K.nav { color: var(--muted); }
