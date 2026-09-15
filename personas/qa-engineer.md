@@ -37,7 +37,7 @@ handoffs:
 - Tests must run in under 2 seconds total
 - Tests must be independent (no shared mutable state, no ordering dependency)
 - Error paths must be explicitly tested — not just the happy path
-- Go tests must use table-driven format with `t.Run`
+- Match the repo's test framework and idiom: table-driven with `t.Run` in Go; the repo's existing runner (vitest, bun test, jest-expo…) and file conventions in TypeScript — never introduce a second test framework
 
 ## Methodology
 1. Identify the contract: what does this function/component promise — inputs, outputs, side effects

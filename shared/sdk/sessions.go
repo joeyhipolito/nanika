@@ -74,14 +74,14 @@ type SessionMessage struct {
 
 // sessionRecord is the minimal envelope decoded from each JSONL line.
 type sessionRecord struct {
-	Type       string  `json:"type"`
-	UUID       string  `json:"uuid"`
-	ParentUUID string  `json:"parentUuid"`
-	SessionID  string  `json:"sessionId"`
-	Timestamp  string  `json:"timestamp"`
-	CWD        string  `json:"cwd"`
-	GitBranch  string  `json:"gitBranch"`
-	Version    string  `json:"version"`
+	Type       string          `json:"type"`
+	UUID       string          `json:"uuid"`
+	ParentUUID string          `json:"parentUuid"`
+	SessionID  string          `json:"sessionId"`
+	Timestamp  string          `json:"timestamp"`
+	CWD        string          `json:"cwd"`
+	GitBranch  string          `json:"gitBranch"`
+	Version    string          `json:"version"`
 	Message    json.RawMessage `json:"message"`
 }
 

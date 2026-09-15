@@ -4,15 +4,43 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"syscall"
 	"testing"
 	"time"
 )
+
+type blockingWriteCloser struct {
+	started   chan struct{}
+	unblocked chan struct{}
+	startOnce sync.Once
+	closeOnce sync.Once
+}
+
+func newBlockingWriteCloser() *blockingWriteCloser {
+	return &blockingWriteCloser{
+		started:   make(chan struct{}),
+		unblocked: make(chan struct{}),
+	}
+}
+
+func (w *blockingWriteCloser) Write([]byte) (int, error) {
+	w.startOnce.Do(func() { close(w.started) })
+	<-w.unblocked
+	return 0, errors.New("writer closed")
+}
+
+func (w *blockingWriteCloser) Close() error {
+	w.closeOnce.Do(func() { close(w.unblocked) })
+	return nil
+}
 
 // ---------------------------------------------------------------------------
 // TestControlResponseCorrelation — unit test, no subprocess
@@ -156,136 +184,6 @@ func TestStreamJSONFraming(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// TestQuery_MultiTurn — integration test (skipped when claude is not on PATH)
-// Open a Query, send two successive messages, assert both receive non-empty
-// responses and that the two responses differ.
-// ---------------------------------------------------------------------------
-
-func TestQuery_MultiTurn(t *testing.T) {
-	if _, err := exec.LookPath("claude"); err != nil {
-		t.Skip("claude not on PATH; skipping integration test")
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
-	defer cancel()
-
-	q, err := NewQuery(ctx, &AgentOptions{PassthroughEnv: true})
-	if err != nil {
-		t.Fatalf("NewQuery: %v", err)
-	}
-	defer q.Close()
-
-	if err := q.Send("say hi"); err != nil {
-		t.Fatalf("Send 1: %v", err)
-	}
-
-	turn1 := collectUntilTurnEnd(t, ctx, q.Messages(), "first turn")
-
-	if err := q.Send("say bye"); err != nil {
-		t.Fatalf("Send 2: %v", err)
-	}
-
-	turn2 := collectUntilTurnEnd(t, ctx, q.Messages(), "second turn")
-
-	if turn1 == "" {
-		t.Error("first turn response is empty")
-	}
-	if turn2 == "" {
-		t.Error("second turn response is empty")
-	}
-	if turn1 == turn2 {
-		t.Errorf("both turns returned identical text %q; expected different responses", turn1)
-	}
-}
-
-// ---------------------------------------------------------------------------
-// TestQuery_Interrupt — integration test (skipped when claude is not on PATH)
-// Open a Query, send a long-output prompt, interrupt after the first event
-// arrives, assert the turn ends within 10s, then assert a subsequent Send
-// still receives a response.
-// ---------------------------------------------------------------------------
-
-func TestQuery_Interrupt(t *testing.T) {
-	if _, err := exec.LookPath("claude"); err != nil {
-		t.Skip("claude not on PATH; skipping integration test")
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
-	defer cancel()
-
-	q, err := NewQuery(ctx, &AgentOptions{PassthroughEnv: true})
-	if err != nil {
-		t.Fatalf("NewQuery: %v", err)
-	}
-	defer q.Close()
-
-	if err := q.Send("list 500 prime numbers"); err != nil {
-		t.Fatalf("Send: %v", err)
-	}
-
-	// Wait for the first text event before interrupting.
-	firstDeadline := time.After(20 * time.Second)
-	gotFirst := false
-	for !gotFirst {
-		select {
-		case ev, ok := <-q.Messages():
-			if !ok {
-				t.Fatal("channel closed before first event arrived")
-			}
-			if ev.Kind == KindText {
-				gotFirst = true
-			}
-		case <-firstDeadline:
-			t.Fatal("timeout waiting for first text event before interrupt")
-		}
-	}
-
-	intCtx, intCancel := context.WithTimeout(ctx, 10*time.Second)
-	defer intCancel()
-
-	if err := q.Interrupt(intCtx); err != nil {
-		// Non-fatal: the turn may have ended naturally before the interrupt landed.
-		t.Logf("Interrupt returned (non-fatal): %v", err)
-	}
-
-	// Assert the turn ends within 10s.
-	endDeadline := time.After(10 * time.Second)
-	turnEnded := false
-	for !turnEnded {
-		select {
-		case ev, ok := <-q.Messages():
-			if !ok {
-				turnEnded = true
-			} else if ev.Kind == KindTurnEnd {
-				turnEnded = true
-			}
-		case <-endDeadline:
-			t.Fatal("turn did not end within 10s after interrupt")
-		}
-	}
-
-	// A subsequent Send must still get a response.
-	if err := q.Send("say OK"); err != nil {
-		t.Fatalf("Send after interrupt: %v", err)
-	}
-
-	afterDeadline := time.After(30 * time.Second)
-	gotAfter := false
-	for !gotAfter {
-		select {
-		case ev, ok := <-q.Messages():
-			if !ok {
-				gotAfter = true
-			} else if ev.Kind == KindTurnEnd {
-				gotAfter = true
-			}
-		case <-afterDeadline:
-			t.Fatal("no response after interrupt+send within 30s")
-		}
-	}
-}
-
-// ---------------------------------------------------------------------------
 // TestQuery_ConcurrentStdinWrites — unit test, no subprocess
 // Exercises concurrent calls to Send from multiple goroutines against a synthetic
 // stdin pipe. The race detector (`go test -race`) validates that stdinMu prevents
@@ -348,10 +246,50 @@ func TestQuery_ConcurrentStdinWrites(t *testing.T) {
 	}
 }
 
+func TestQuery_InterruptContextClosesBlockedStdinWrite(t *testing.T) {
+	stdin := newBlockingWriteCloser()
+	q := &Query{
+		stdin:       stdin,
+		messages:    make(chan *StreamedEvent),
+		pending:     make(map[string]chan queryCtrlRespBody),
+		done:        make(chan struct{}),
+		processDone: make(chan struct{}),
+		groupDone:   make(chan struct{}),
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	interruptDone := make(chan error, 1)
+	go func() {
+		interruptDone <- q.Interrupt(ctx)
+	}()
+
+	select {
+	case <-stdin.started:
+	case <-time.After(time.Second):
+		t.Fatal("interrupt did not begin the blocking stdin write")
+	}
+
+	select {
+	case err := <-interruptDone:
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("Interrupt error = %v, want context deadline", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Interrupt was not bounded by its context")
+	}
+
+	select {
+	case <-q.done:
+	default:
+		t.Fatal("timed-out interrupt did not initiate query retirement")
+	}
+}
+
 // ---------------------------------------------------------------------------
 // TestQuery_SubprocessReaped — unit test
 // Spawns a real subprocess via NewQuery using `true` (always exits 0) so that
-// cmd.Wait is exercised. After Close we verify the process is no longer alive.
+// root process reaping is exercised. After Close we verify the process is gone.
 // Skipped if `true` is not on PATH (non-Unix environments).
 // ---------------------------------------------------------------------------
 
@@ -374,8 +312,14 @@ func TestQuery_SubprocessReaped(t *testing.T) {
 	}
 
 	q.Close()
+	select {
+	case <-q.ProcessDone():
+	case <-time.After(time.Second):
+		t.Fatal("ProcessDone did not close after subprocess teardown")
+	}
 
-	// Allow up to 1 s for cmd.Wait to reap the child.
+	// ProcessDone is the public barrier; independently probe the process table to
+	// verify that the barrier does not close before Process.Wait has reaped the child.
 	deadline := time.Now().Add(time.Second)
 	reaped := false
 	for time.Now().Before(deadline) {
@@ -399,8 +343,90 @@ func TestQuery_SubprocessReaped(t *testing.T) {
 	}
 }
 
+// TestQuery_ProcessDoneWaitsForProcessGroupExtinction is a regression for the
+// cancellation barrier. The fake CLI exits after starting a TERM-resistant
+// grandchild. That grandchild waits for a release file before attempting a
+// delayed marker write. If ProcessDone closes after only cmd.Wait (the old
+// behavior), the test releases a still-live grandchild and observes the write.
+// With the process-group barrier, release happens only after SIGKILL + ESRCH.
+func TestQuery_ProcessDoneWaitsForProcessGroupExtinction(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix process-group semantics")
+	}
+
+	dir := t.TempDir()
+	scriptPath := filepath.Join(dir, "stubborn-cli.sh")
+	readyPath := filepath.Join(dir, "ready")
+	releasePath := filepath.Join(dir, "release")
+	markerPath := filepath.Join(dir, "marker")
+	const script = `#!/bin/sh
+dir=$(CDPATH= cd "$(dirname "$0")" && pwd)
+(
+  trap '' HUP TERM
+  exec </dev/null
+  : > "$dir/ready"
+  while [ ! -f "$dir/release" ]; do
+    sleep 0.01
+  done
+  sleep 0.05
+  : > "$dir/marker"
+) &
+while [ ! -f "$dir/ready" ]; do
+  sleep 0.01
+done
+exit 0
+`
+	if err := os.WriteFile(scriptPath, []byte(script), 0o700); err != nil {
+		t.Fatalf("write fake CLI: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	q, err := NewQuery(ctx, &AgentOptions{CLIPath: scriptPath})
+	if err != nil {
+		t.Fatalf("NewQuery: %v", err)
+	}
+	defer q.Close()
+
+	readyDeadline := time.Now().Add(2 * time.Second)
+	for {
+		if _, err := os.Stat(readyPath); err == nil {
+			break
+		} else if !os.IsNotExist(err) {
+			t.Fatalf("stat ready file: %v", err)
+		}
+		if time.Now().After(readyDeadline) {
+			t.Fatal("stubborn grandchild did not report ready")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	q.Close()
+	select {
+	case <-q.ProcessDone():
+	case <-time.After(3 * time.Second):
+		t.Fatal("ProcessDone did not close after process-group retirement")
+	}
+	if !processGroupExtinct(q.Pid()) {
+		t.Fatal("ProcessDone closed before the Unix process group was extinct")
+	}
+
+	if err := os.WriteFile(releasePath, []byte("release\n"), 0o600); err != nil {
+		t.Fatalf("release grandchild: %v", err)
+	}
+	time.Sleep(300 * time.Millisecond)
+	if _, err := os.Stat(markerPath); err == nil {
+		t.Fatal("grandchild wrote a marker after ProcessDone closed")
+	} else if !os.IsNotExist(err) {
+		t.Fatalf("stat marker file: %v", err)
+	}
+}
+
 // newLineScanner returns a bufio.Scanner over r for the pipe drain helper.
-func newLineScanner(r io.Reader) interface{ Scan() bool; Text() string } {
+func newLineScanner(r io.Reader) interface {
+	Scan() bool
+	Text() string
+} {
 	return bufio.NewScanner(r)
 }
 

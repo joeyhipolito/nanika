@@ -225,19 +225,16 @@ func TestStartReturnsErrConflictingResumeFlags(t *testing.T) {
 	}
 }
 
-func TestCommandEnvIncludesExplicitEffortLevel(t *testing.T) {
-	t.Setenv("CLAUDE_CODE_EFFORT_LEVEL", "")
+// TestCommandEnvOmitsEffortLevelEnv pins design §6-G: effort reaches the CLI
+// via the --effort flag only. The retired CLAUDE_CODE_EFFORT_LEVEL env var must
+// not reappear as a second source of truth.
+func TestCommandEnvOmitsEffortLevelEnv(t *testing.T) {
 	env := commandEnv(&AgentOptions{EffortLevel: "high"})
 
-	found := false
 	for _, kv := range env {
-		if kv == "CLAUDE_CODE_EFFORT_LEVEL=high" {
-			found = true
-			break
+		if strings.HasPrefix(kv, "CLAUDE_CODE_EFFORT_LEVEL=") {
+			t.Fatalf("CLAUDE_CODE_EFFORT_LEVEL must not be set (effort rides --effort); got %q", kv)
 		}
-	}
-	if !found {
-		t.Fatal("CLAUDE_CODE_EFFORT_LEVEL=high not found in command env")
 	}
 }
 
@@ -249,5 +246,20 @@ func TestCommandEnvDoesNotLeakArbitraryVars(t *testing.T) {
 		if strings.HasPrefix(kv, "SHOULD_NOT_LEAK=") {
 			t.Fatal("commandEnv leaked a non-allowlisted variable")
 		}
+	}
+}
+
+func TestCommandEnvPassesAnthropicBaseURL(t *testing.T) {
+	t.Setenv("ANTHROPIC_BASE_URL", "http://127.0.0.1:47821")
+	env := commandEnv(&AgentOptions{})
+	found := false
+	for _, kv := range env {
+		if kv == "ANTHROPIC_BASE_URL=http://127.0.0.1:47821" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatal("ANTHROPIC_BASE_URL was stripped by commandEnv — it must be in baseAllowedEnvVars for proxy support")
 	}
 }

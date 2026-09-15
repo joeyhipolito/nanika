@@ -1,0 +1,37 @@
+name: Shared SDK
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "shared/sdk/**"
+      - ".github/workflows/sdk.yml"
+  pull_request:
+    paths:
+      - "shared/sdk/**"
+      - ".github/workflows/sdk.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  sdk:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    env:
+      GOWORK: "off"
+    defaults:
+      run:
+        working-directory: shared/sdk
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: shared/sdk/go.mod
+          cache: false
+      - run: go vet ./...
+      - run: go test -race -count=1 -timeout=2m ./...
+      - run: go build ./...

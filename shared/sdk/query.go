@@ -18,24 +18,70 @@ func queryBuildArgs(opts *AgentOptions) []string {
 		"--print",
 		"--verbose",
 		"--include-partial-messages",
-		"--dangerously-skip-permissions",
 	}
+	// Preventive one-shot calls are rejected by QueryText before spawning.
+	args = append(args, permissionArgs(opts, false)...)
+	args = append(args, queryOptFlags(opts)...)
+	if opts != nil && opts.ContinueConversation {
+		args = append(args, "--continue")
+	}
+	return args
+}
+
+// permissionArgs preserves the historical Query permission defaults. Preventive
+// mode requires the duplex return channel; one-shot entrypoints reject it.
+func permissionArgs(opts *AgentOptions, duplex bool) []string {
+	mode := ""
 	if opts != nil {
-		if opts.Model != "" {
-			args = append(args, "--model", opts.Model)
+		mode = opts.PermissionMode
+	}
+	if mode == PermissionPreventive {
+		if !duplex {
+			return nil
 		}
-		if opts.MaxTurns > 0 {
-			args = append(args, "--max-turns", fmt.Sprintf("%d", opts.MaxTurns))
-		}
-		if opts.SystemPrompt != "" {
-			args = append(args, "--system-prompt", opts.SystemPrompt)
-		}
-		for _, dir := range opts.AddDirs {
-			args = append(args, "--add-dir", dir)
-		}
-		if opts.ContinueConversation {
-			args = append(args, "--continue")
-		}
+		return []string{"--permission-mode", "default", "--permission-prompt-tool", "stdio"}
+	}
+	// "" (zero value) and "bypass" → historical behavior, byte-identical.
+	return []string{"--dangerously-skip-permissions"}
+}
+
+// queryOptFlags renders the AgentOptions-driven flags shared by every claude
+// argv builder (one-shot queryBuildArgs and streaming NewQuery), so the two
+// paths cannot drift on which options reach the CLI.
+func queryOptFlags(opts *AgentOptions) []string {
+	if opts == nil {
+		return nil
+	}
+	var args []string
+	if opts.Model != "" {
+		args = append(args, "--model", opts.Model)
+	}
+	if opts.MaxTurns > 0 {
+		args = append(args, "--max-turns", fmt.Sprintf("%d", opts.MaxTurns))
+	}
+	// --append-system-prompt carries the persona/briefing without replacing
+	// the CLI's default system prompt. When it is set it is mutually
+	// exclusive with --system-prompt (append wins) so the harness's own
+	// context assembly is never silently disabled.
+	if opts.AppendSystemPrompt != "" {
+		args = append(args, "--append-system-prompt", opts.AppendSystemPrompt)
+	} else if opts.SystemPrompt != "" {
+		args = append(args, "--system-prompt", opts.SystemPrompt)
+	}
+	if opts.EffortLevel != "" {
+		args = append(args, "--effort", opts.EffortLevel)
+	}
+	if opts.DisableBuiltinTools {
+		args = append(args, "--tools", "")
+	}
+	if opts.DisableMCP {
+		// --strict-mcp-config makes the empty --mcp-config authoritative
+		// instead of merging with the user's ~/.claude.json servers, so no MCP
+		// subprocesses are spawned at all (TRK-1135).
+		args = append(args, "--strict-mcp-config", "--mcp-config", `{"mcpServers":{}}`)
+	}
+	for _, dir := range opts.AddDirs {
+		args = append(args, "--add-dir", dir)
 	}
 	return args
 }
@@ -68,6 +114,9 @@ func queryStartCmd(ctx context.Context, cliPath string, args []string, opts *Age
 // If the subprocess fails to start with those flags, it falls back to a fresh start.
 // Returns ErrConflictingResumeFlags if both ContinueConversation and ResumeSessionID are set.
 func QueryText(ctx context.Context, prompt string, opts *AgentOptions) (string, error) {
+	if opts != nil && opts.PermissionMode == PermissionPreventive {
+		return "", ErrPreventiveRequiresDuplex
+	}
 	if opts != nil && opts.ContinueConversation && opts.ResumeSessionID != "" {
 		return "", ErrConflictingResumeFlags
 	}
@@ -138,10 +187,10 @@ func QueryText(ctx context.Context, prompt string, opts *AgentOptions) (string, 
 	}()
 
 	var (
-		waitErr      error
+		waitErr       error
 		processExited bool
-		messages     = transport.messages
-		drainTimer   <-chan time.Time
+		messages      = transport.messages
+		drainTimer    <-chan time.Time
 	)
 
 consumeLoop:
@@ -277,6 +326,13 @@ func extractEvents(msg Message) []*StreamedEvent {
 					ToolInput: block.Input,
 				})
 			}
+		}
+		// Carry the per-message usage on the first extracted event so callers
+		// can track "tokens in context as of the last API call" without
+		// re-parsing the raw message. Setting it once per message is
+		// sufficient — consumers only need the most recent value.
+		if len(events) > 0 && m.Message != nil && m.Message.Usage != nil {
+			events[0].Usage = m.Message.Usage
 		}
 		return events
 

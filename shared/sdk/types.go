@@ -12,6 +12,10 @@ import (
 // ErrConflictingResumeFlags is returned when both ContinueConversation and ResumeSessionID
 // are set simultaneously. They are mutually exclusive: ContinueConversation resumes the most
 // recent conversation while ResumeSessionID targets a specific session by ID.
+// ErrPreventiveRequiresDuplex prevents a one-shot call from bypassing an
+// explicitly requested permission gate.
+var ErrPreventiveRequiresDuplex = errors.New("sdk: preventive permissions require NewQuery duplex sessions")
+
 var ErrConflictingResumeFlags = errors.New("sdk: ContinueConversation and ResumeSessionID are mutually exclusive")
 
 // ExitError is returned by QueryText when the claude subprocess exits with a non-zero code.
@@ -67,6 +71,11 @@ type AssistantMessage struct {
 type AssistantMessageInner struct {
 	Content    []ContentBlock `json:"content"`
 	StopReason string         `json:"stop_reason,omitempty"`
+	// Usage carries the per-message token usage the claude CLI stream-json
+	// format emits on every assistant message. Without an explicit field,
+	// encoding/json silently drops undeclared wire keys — the Go-side twin
+	// of the TRK-1139 zod strip that hid this same data on the TS side.
+	Usage *UsageInfo `json:"usage,omitempty"`
 }
 
 func (m *AssistantMessage) GetType() string { return MessageTypeAssistant }
@@ -236,7 +245,51 @@ const (
 	KindToolResult StreamedEventKind = "tool_result"
 	// KindTurnEnd marks the boundary of a completed assistant turn.
 	KindTurnEnd StreamedEventKind = "turn_end"
+	// KindPermissionRequest is an out-of-band control_request the CLI emits
+	// under preventive permission mode (--permission-prompt-tool stdio) for
+	// every "ask"-tier tool. The consumer must answer via Query.RespondPermission
+	// before the CLI proceeds. Only produced on the duplex NewQuery path; the
+	// default (bypass) path runs with --dangerously-skip-permissions and never
+	// emits it. Additive; old consumers ignore the kind.
+	KindPermissionRequest StreamedEventKind = "permission_request"
 )
+
+// PermissionMode values for AgentOptions.PermissionMode. The zero value ("")
+// retains historical Query defaults: the CLI runs with
+// --dangerously-skip-permissions. SubprocessTransport instead preserves CLI
+// permission checks by default and requires the literal "bypass" to skip them.
+const (
+	// PermissionBypass ("") runs the CLI with --dangerously-skip-permissions:
+	// the CLI owns tool execution and never asks the client. This is the
+	// zero-value behavior for QueryText and NewQuery. The literal
+	// "bypass" is accepted as a loud alias for the same behavior.
+	PermissionBypass = ""
+	// PermissionPreventive activates the control-protocol gate: the CLI emits a
+	// can_use_tool control_request for every "ask"-tier tool and blocks until the
+	// client answers with a control_response. Valid ONLY on the duplex NewQuery
+	// path (it needs --input-format stream-json for the return channel); the
+	// one-shot QueryText and SubprocessTransport paths reject it.
+	PermissionPreventive = "preventive"
+)
+
+// PermissionRequest carries a can_use_tool control_request surfaced to the
+// caller as a KindPermissionRequest StreamedEvent. The caller inspects it,
+// decides, and answers via Query.RespondPermission keyed on RequestID.
+type PermissionRequest struct {
+	RequestID string          // control_request.request_id — correlation key for the response
+	ToolName  string          // request.tool_name, e.g. "Bash"
+	ToolUseID string          // request.tool_use_id
+	Input     json.RawMessage // request.input (verbatim; carries {"command","description",...})
+	Reason    string          // request.decision_reason, e.g. "This command requires approval"
+}
+
+// PermissionDecision is the caller's answer to a PermissionRequest. Allow=false
+// denies the tool and surfaces Message to the model as the tool_result error.
+type PermissionDecision struct {
+	Allow        bool            // true → behavior:"allow"; false → behavior:"deny"
+	Message      string          // deny message surfaced to the model (behavior:"deny")
+	UpdatedInput json.RawMessage // allow only; nil → the CLI keeps the original input unchanged
+}
 
 // StreamedEvent is a typed, parsed event extracted from the Claude CLI NDJSON stream.
 // The sdk message loop produces these; worker.Execute consumes them via OnEvent.
@@ -268,6 +321,18 @@ type StreamedEvent struct {
 	ErrorMsg   string
 	SessionID  string    // populated from ResultMessage.SessionID on KindTurnEnd
 	Cost       *CostInfo // populated from ResultMessage.Cost on KindTurnEnd; nil when unavailable
+
+	// KindPermissionRequest field. Nil for every other kind. Carries the
+	// can_use_tool control_request the caller must answer via RespondPermission.
+	Permission *PermissionRequest
+
+	// Usage carries the per-message token usage from the AssistantMessage
+	// this event was extracted from, when the CLI supplied one. Set only on
+	// the first event extracted from a given message; nil when the engine
+	// surfaces no per-message usage (e.g. codex/glm). Consumers track the
+	// last non-nil value seen during a turn to compute a truthful
+	// context_pct instead of the cumulative session ledger.
+	Usage *UsageInfo
 }
 
 // GenericMessage wraps unknown message types
@@ -302,19 +367,26 @@ type CostInfo struct {
 
 // AgentOptions configures agent behavior
 type AgentOptions struct {
-	Model           string        `json:"model,omitempty"`
-	EffortLevel     string        `json:"effort_level,omitempty"`
-	MaxTurns        int           `json:"max_turns,omitempty"`
-	PermissionMode  string        `json:"permission_mode,omitempty"`
-	SystemPrompt    string        `json:"system_prompt,omitempty"`
-	Cwd             string        `json:"cwd,omitempty"`
-	CLIPath         string        `json:"-"`
-	Timeout         time.Duration `json:"-"`
-	ResumeSessionID string        `json:"-"` // if set, inject --resume <id> --fork-session; falls back to fresh on start failure
-	AllowedEnvVars  []string              `json:"-"` // additional env vars to pass (skill-declared)
-	AddDirs         []string              `json:"-"` // additional directories for CLAUDE.md discovery (--add-dir)
-	OnChunk         func(string)          `json:"-"` // called with text chunks only; deprecated: prefer OnEvent
-	OnEvent         func(*StreamedEvent)  `json:"-"` // called for every typed stream event; may be nil
+	Model          string `json:"model,omitempty"`
+	EffortLevel    string `json:"effort_level,omitempty"`
+	MaxTurns       int    `json:"max_turns,omitempty"`
+	PermissionMode string `json:"permission_mode,omitempty"`
+	SystemPrompt   string `json:"system_prompt,omitempty"`
+	// AppendSystemPrompt carries a persona/briefing appended to the CLI's default
+	// system prompt via --append-system-prompt. Unlike SystemPrompt (which
+	// --system-prompt REPLACES the default with, disabling the harness's own
+	// CLAUDE.md/skills/settings assembly), append preserves that assembly. When
+	// set, the builder does not emit --system-prompt even if SystemPrompt is also
+	// set — append wins.
+	AppendSystemPrompt string               `json:"append_system_prompt,omitempty"`
+	Cwd                string               `json:"cwd,omitempty"`
+	CLIPath            string               `json:"-"`
+	Timeout            time.Duration        `json:"-"`
+	ResumeSessionID    string               `json:"-"` // if set, inject --resume <id> --fork-session; falls back to fresh on start failure
+	AllowedEnvVars     []string             `json:"-"` // additional env vars to pass (skill-declared)
+	AddDirs            []string             `json:"-"` // additional directories for CLAUDE.md discovery (--add-dir)
+	OnChunk            func(string)         `json:"-"` // called with text chunks only; deprecated: prefer OnEvent
+	OnEvent            func(*StreamedEvent) `json:"-"` // called for every typed stream event; may be nil
 	// PassthroughEnv, when true, forwards the full parent environment to the Claude subprocess
 	// instead of the strict base allowlist. Use when the subprocess needs credentials or
 	// toolchain paths beyond the base set. AllowedEnvVars are merged idempotently on top.
@@ -322,4 +394,15 @@ type AgentOptions struct {
 	// ContinueConversation, when true, appends --continue to the Claude CLI invocation so
 	// the subprocess resumes the most recent conversation. Mutually exclusive with ResumeSessionID.
 	ContinueConversation bool `json:"-"`
+	// DisableBuiltinTools, when true, appends --tools "" so the subprocess runs with
+	// no built-in tools and can only reply as text. Callers that drive their own
+	// text-based action protocol (e.g. daemon chat) set this so the model never
+	// attempts a built-in tool call that the runtime would reject.
+	DisableBuiltinTools bool `json:"-"`
+	// DisableMCP, when true, appends --strict-mcp-config --mcp-config
+	// '{"mcpServers":{}}' so the subprocess skips loading the user's configured
+	// MCP servers entirely. Tool-less spawns (advisors, arbiters, detached
+	// advisor jobs) set this: they cannot call tools, so MCP server init is
+	// pure spawn latency (~3s measured against a large server set, TRK-1135).
+	DisableMCP bool `json:"-"`
 }

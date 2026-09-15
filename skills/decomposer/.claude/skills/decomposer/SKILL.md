@@ -50,13 +50,20 @@ GOOD: PHASE: implement-auth | OBJECTIVE: Build auth with schema, handlers, and t
 ### Rule 3: Keep Plans Tight
 Aim for 2-8 phases. Maximum 12. Single-capability tasks may only need 1-2 phases.
 
-### Rule 4: Objectives Must Be Concrete
-State the actual deliverable.
+### Rule 4: Objectives Must Be Verifiable, Not Just Concrete
+Vague objectives cause avoidable retries. An objective passes only if a *different* worker could decide success without re-reading the whole codebase.
+
+Every implementation/verification OBJECTIVE must contain all three:
+1. **The deliverable, named** — the file, command, endpoint, or behavior that will exist (`mobile/src/api/contracts.ts`, `orchestrator discipline status`), not an activity ("improve", "verify", "handle")
+2. **The check that proves it** — the exact command(s) and expected result (`cd mobile && bun run typecheck && bun run test` green; `tracker list` shows status=done)
+3. **A negative assertion where gaming is possible** — what must NOT happen (root `bun run build` behaves identically to before; no new dependency added; no test skipped with t.Skip). Workers game positive checklists; negative assertions are how the gate catches it.
 
 ```text
-BAD:  OBJECTIVE: Research the topic
-GOOD: OBJECTIVE: Compare three deployment options with operational trade-offs and a recommendation
+BAD:  OBJECTIVE: Verify the implementation and close out tracker issues
+GOOD: OBJECTIVE: Verify by (1) running <binary> and confirming the three behaviors listed in TRK-XXX, (2) closing via `tracker update TRK-XXX --status done`. Success = tracker list shows status=done AND binary output matches the checklist. Must NOT mark done if any behavior fails or is skipped.
 ```
+
+Research/writing objectives follow the same rule with artifacts: name the output file, the questions it must answer, and what disqualifies it (e.g. "no recommendation without a comparison table of all three options").
 
 ### Rule 5: Pick the Right Persona Boundary
 Use the narrowest current persona that fits.
@@ -66,7 +73,7 @@ Use the narrowest current persona that fits.
 - `data-analyst` for logs, metrics, usage, trends, and quantitative before/after analysis
 - `technical-writer` for docs, developer explainers, ADRs, and article-style technical synthesis
 - `senior-backend-engineer` for backend implementation, CLIs, APIs, storage, and service code
-- `senior-frontend-engineer` for React, Next.js, TypeScript, and UI work
+- `senior-frontend-engineer` for React, React Native/Expo, Next.js, TanStack, TypeScript, and UI work
 - `staff-code-reviewer`, `security-auditor`, and `qa-engineer` stay in review/test/audit lanes
 
 ### Rule 6: Assign Skills Only When Needed
@@ -90,6 +97,30 @@ Use `security-auditor` instead only when security is the primary concern.
 
 ### Rule 10: Do Not Pad the Plan
 No filler phases. Add only the work needed to reach the deliverable, plus the required review phase for implementation.
+### Rule 11: Decompose Into Bounded, Reviewable Chunks
+Each implementation phase should produce output that can be reviewed and merged independently — think "one PR per phase," not "one mega-phase that touches everything." If a phase would produce a diff too large to review in one sitting, split it.
+
+```text
+BAD:  PHASE: implement-migration | OBJECTIVE: Migrate the database schema, update all queries, and flip the read path | PERSONA: senior-backend-engineer
+GOOD: PHASE: dual-write-schema | OBJECTIVE: Add new schema alongside old, write to both | PERSONA: senior-backend-engineer
+      PHASE: read-path-flip | OBJECTIVE: Switch reads to the new schema, verify correctness | PERSONA: senior-backend-engineer | DEPENDS: dual-write-schema
+      PHASE: drop-old-schema | OBJECTIVE: Remove old columns and dead code after verification | PERSONA: senior-backend-engineer | DEPENDS: read-path-flip
+```
+
+### Rule 12: Match Tier to Problem, Not to Habit
+Do not default every coding task to think-tier (Opus) "just to be safe." Over-tiering wastes budget and triggers over-reasoning. Reserve think-tier for genuine architecture, security, and complex design decisions. Most implementation is work-tier. Quick formatting is quick-tier.
+
+Choose effort alongside the tier. Start routine implementation at work-tier and adjust based on observed results. Escalating to think-tier or xhigh effort can increase cost without improving results.
+
+### Rule 13: Plan Before You Build
+For multi-phase implementation work, add a design/planning phase that produces a concrete spec (interface definitions, data flow, decomposition into bounded units) *before* any implementation phase begins. The model is far more reliable when it reviews a plan before writing code than when it plans and codes in one pass.
+
+```text
+PHASE: design-plugin-system | OBJECTIVE: Define the plugin discovery model, interfaces, lifecycle, and compatibility constraints | PERSONA: architect
+PHASE: implement-plugin-system | OBJECTIVE: Build plugin discovery, loading, and validation for the CLI according to the design | PERSONA: senior-backend-engineer | DEPENDS: design-plugin-system
+PHASE: review-plugin-system | OBJECTIVE: Review the implementation for correctness, regressions, and maintainability | PERSONA: staff-code-reviewer | DEPENDS: implement-plugin-system
+```
+
 
 ## Dependency Rules
 
@@ -139,7 +170,7 @@ Only add it when the task benefits from the chain.
 | qa-engineer | Test strategy, regression coverage, fixtures, validation, flaky-test diagnosis |
 | security-auditor | Threat modeling, vulnerability review, auth/secret handling, trust-boundary analysis |
 | senior-backend-engineer | Backend implementation, CLIs, APIs, storage, migrations, service code |
-| senior-frontend-engineer | React/Next.js/TypeScript UI implementation and accessibility fixes |
+| senior-frontend-engineer | React/React Native/Expo/Next.js/TanStack UI implementation and accessibility fixes |
 | staff-code-reviewer | Code review, hidden regression detection, API compatibility, maintainability review |
 | technical-writer | READMEs, docs, ADRs, guides, technical explainers, article-style synthesis |
 

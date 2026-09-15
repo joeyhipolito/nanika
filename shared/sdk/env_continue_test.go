@@ -118,8 +118,8 @@ func TestConflictingResumeFlags(t *testing.T) {
 	}
 
 	tests := []struct {
-		name    string
-		callFn  func() error
+		name   string
+		callFn func() error
 	}{
 		{
 			name: "QueryText returns ErrConflictingResumeFlags",

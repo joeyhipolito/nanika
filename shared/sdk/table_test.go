@@ -21,9 +21,9 @@ import (
 
 func TestStallThresholdTable(t *testing.T) {
 	tests := []struct {
-		name    string
-		envVal  string
-		want    time.Duration
+		name   string
+		envVal string
+		want   time.Duration
 	}{
 		{
 			name:   "empty env uses default 15m",
@@ -292,9 +292,9 @@ func TestResumeFlagsTable(t *testing.T) {
 	prompt := "do the thing"
 
 	tests := []struct {
-		name         string
-		resumeID     string
-		wantResume   bool
+		name            string
+		resumeID        string
+		wantResume      bool
 		wantForkSession bool
 	}{
 		{
@@ -358,20 +358,20 @@ func TestResumeFlagsTable(t *testing.T) {
 
 func TestQueryBuildArgsMaxTurnsTable(t *testing.T) {
 	tests := []struct {
-		name         string
-		maxTurns     int
-		wantFlag     bool
-		wantValue    string
+		name      string
+		maxTurns  int
+		wantFlag  bool
+		wantValue string
 	}{
 		{
-			name:      "zero MaxTurns omits the flag",
-			maxTurns:  0,
-			wantFlag:  false,
+			name:     "zero MaxTurns omits the flag",
+			maxTurns: 0,
+			wantFlag: false,
 		},
 		{
-			name:      "negative MaxTurns omits the flag",
-			maxTurns:  -1,
-			wantFlag:  false,
+			name:     "negative MaxTurns omits the flag",
+			maxTurns: -1,
+			wantFlag: false,
 		},
 		{
 			name:      "default engine guardrail value (50) emits the flag",

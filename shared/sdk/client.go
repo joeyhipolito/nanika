@@ -49,6 +49,25 @@ type queryCtrlBody struct {
 	Subtype string `json:"subtype"`
 }
 
+// queryInboundCtrlReq is the INBOUND control_request the CLI emits under
+// preventive permission mode. subtype=="can_use_tool" carries the tool the
+// classifier flagged "ask"; the client answers with a control_response via
+// RespondPermission. Wire shape captured in
+// internal/tui/shell/testdata/claude-control-protocol/claude-allow.jsonl.
+type queryInboundCtrlReq struct {
+	Type      string                  `json:"type"`
+	RequestID string                  `json:"request_id"`
+	Request   queryInboundCtrlReqBody `json:"request"`
+}
+
+type queryInboundCtrlReqBody struct {
+	Subtype        string          `json:"subtype"`
+	ToolName       string          `json:"tool_name"`
+	ToolUseID      string          `json:"tool_use_id"`
+	Input          json.RawMessage `json:"input"`
+	DecisionReason string          `json:"decision_reason"`
+}
+
 // ---- stdout wire types ------------------------------------------------------
 
 // queryCtrlResp is the control_response envelope (§4e of wire schema).
@@ -87,8 +106,11 @@ type Query struct {
 	mu      sync.Mutex
 	pending map[string]chan queryCtrlRespBody
 
-	done      chan struct{}
-	closeOnce sync.Once
+	done        chan struct{}
+	processDone chan struct{}
+	groupDone   chan struct{}
+	closeOnce   sync.Once
+	retireOnce  sync.Once
 }
 
 // NewQuery spawns the Claude CLI in bidirectional stream-json mode and returns
@@ -98,6 +120,9 @@ type Query struct {
 // Returns ErrConflictingResumeFlags if both ContinueConversation and
 // ResumeSessionID are set.
 func NewQuery(ctx context.Context, opts *AgentOptions) (*Query, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	if opts != nil && opts.ContinueConversation && opts.ResumeSessionID != "" {
 		return nil, ErrConflictingResumeFlags
 	}
@@ -115,22 +140,14 @@ func NewQuery(ctx context.Context, opts *AgentOptions) (*Query, error) {
 		"--print",
 		"--verbose",
 		"--include-partial-messages",
-		"--dangerously-skip-permissions",
 	}
+	// This is the duplex path: --input-format stream-json above gives the return
+	// channel preventive mode needs. The zero value still emits exactly
+	// --dangerously-skip-permissions in this same slot, byte-identical to before.
+	args = append(args, permissionArgs(opts, true)...)
 
+	args = append(args, queryOptFlags(opts)...)
 	if opts != nil {
-		if opts.Model != "" {
-			args = append(args, "--model", opts.Model)
-		}
-		if opts.MaxTurns > 0 {
-			args = append(args, "--max-turns", fmt.Sprintf("%d", opts.MaxTurns))
-		}
-		if opts.SystemPrompt != "" {
-			args = append(args, "--system-prompt", opts.SystemPrompt)
-		}
-		for _, dir := range opts.AddDirs {
-			args = append(args, "--add-dir", dir)
-		}
 		if opts.ContinueConversation {
 			args = append(args, "--continue")
 		}
@@ -139,7 +156,11 @@ func NewQuery(ctx context.Context, opts *AgentOptions) (*Query, error) {
 		}
 	}
 
-	cmd := exec.CommandContext(ctx, cliPath, args...)
+	// Query owns context cancellation itself so it can retire the entire process
+	// group. exec.CommandContext only kills the root process and also requires
+	// cmd.Wait, whose pipe-closing behavior cannot safely represent our stronger
+	// root-reap + reader-drain + group-extinction barrier.
+	cmd := exec.Command(cliPath, args...)
 	if opts != nil && opts.Cwd != "" {
 		cmd.Dir = opts.Cwd
 	}
@@ -169,11 +190,13 @@ func NewQuery(ctx context.Context, opts *AgentOptions) (*Query, error) {
 	}
 
 	q := &Query{
-		cmd:      cmd,
-		stdin:    stdin,
-		messages: make(chan *StreamedEvent, 100),
-		pending:  make(map[string]chan queryCtrlRespBody),
-		done:     make(chan struct{}),
+		cmd:         cmd,
+		stdin:       stdin,
+		messages:    make(chan *StreamedEvent, 100),
+		pending:     make(map[string]chan queryCtrlRespBody),
+		done:        make(chan struct{}),
+		processDone: make(chan struct{}),
+		groupDone:   make(chan struct{}),
 	}
 
 	var wg sync.WaitGroup
@@ -188,10 +211,36 @@ func NewQuery(ctx context.Context, opts *AgentOptions) (*Query, error) {
 		q.drainStderr(stderr)
 	}()
 
-	// Reap the child once both pipes are drained so it never becomes a zombie.
+	// exec.CommandContext only targets the root process. Mirror context
+	// cancellation through Close so descendants in Claude's dedicated process
+	// group enter the same verified retirement path.
+	go func() {
+		select {
+		case <-ctx.Done():
+			_ = q.Close()
+		case <-q.processDone:
+		}
+	}()
+
+	readersDone := make(chan struct{})
 	go func() {
 		wg.Wait()
-		cmd.Wait() //nolint:errcheck // exit status captured by pump via channel close
+		close(readersDone)
+	}()
+
+	// Reap the root independently from pipe EOF. A descendant may inherit the
+	// stdout/stderr descriptors after Claude exits; waiting for readers first
+	// would prevent retirement from ever starting. Once the root is reaped, its
+	// group is retired, inherited descriptors reach EOF, and only then does the
+	// public barrier close.
+	go func() {
+		state, _ := cmd.Process.Wait()
+		cmd.ProcessState = state
+		_ = q.stdin.Close()
+		q.beginProcessGroupRetirement()
+		<-q.groupDone
+		<-readersDone
+		close(q.processDone)
 	}()
 
 	return q, nil
@@ -213,10 +262,7 @@ func (q *Query) Send(text string) error {
 		return fmt.Errorf("marshal user message: %w", err)
 	}
 	data = append(data, '\n')
-	q.stdinMu.Lock()
-	_, err = q.stdin.Write(data)
-	q.stdinMu.Unlock()
-	if err != nil {
+	if err := q.writeStdin(data); err != nil {
 		return fmt.Errorf("write user message: %w", err)
 	}
 	return nil
@@ -228,9 +274,27 @@ func (q *Query) Messages() <-chan *StreamedEvent {
 	return q.messages
 }
 
-// Interrupt sends a control_request with subtype=interrupt and waits up to 5 seconds
-// for the correlated control_response. Returns an error if the CLI reports a failure,
-// the session is already closed, or the 5-second deadline is exceeded.
+// ProcessDone is closed only after both output pumps have drained and the
+// Claude subprocess has been reaped. On supported Unix platforms it additionally
+// proves that Claude's dedicated process group is extinct. Process-group
+// extinction does not prove that a descendant which deliberately changed its
+// session or process group is gone.
+// Close initiates teardown and returns immediately.
+func (q *Query) ProcessDone() <-chan struct{} {
+	return q.processDone
+}
+
+// ProcessGroupRetirementSupported reports whether this build can signal and
+// prove extinction of the subprocess's dedicated process group. Unsupported
+// platforms still reap the root and drain its pipes. No platform implementation
+// in this package claims proof for descendants that escape that group.
+func ProcessGroupRetirementSupported() bool {
+	return processGroupRetirementSupported()
+}
+
+// Interrupt sends a control_request with subtype=interrupt and waits up to five
+// seconds for the correlated control_response. An earlier context cancellation
+// bounds a blocked stdin write and closes the query so retirement can proceed.
 //
 // Wire format: §3b of shared/artifacts/b2-stream-json-wire-schema.md.
 // The request_id is echoed back inside response.request_id for correlation (§4e).
@@ -258,10 +322,7 @@ func (q *Query) Interrupt(ctx context.Context) error {
 		return fmt.Errorf("marshal control_request: %w", err)
 	}
 	data = append(data, '\n')
-	q.stdinMu.Lock()
-	_, err = q.stdin.Write(data)
-	q.stdinMu.Unlock()
-	if err != nil {
+	if err := q.writeStdinWithContext(ctx, data); err != nil {
 		return fmt.Errorf("write control_request: %w", err)
 	}
 
@@ -283,17 +344,65 @@ func (q *Query) Interrupt(ctx context.Context) error {
 	}
 }
 
+// writeStdinWithContext bounds a potentially blocked pipe write. On context
+// cancellation it closes the query, which interrupts an os.File pipe write and
+// starts the same process-group retirement path used by explicit shutdown.
+func (q *Query) writeStdinWithContext(ctx context.Context, data []byte) error {
+	select {
+	case <-ctx.Done():
+		_ = q.Close()
+		return ctx.Err()
+	case <-q.done:
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		return fmt.Errorf("session closed")
+	default:
+	}
+
+	writeDone := make(chan error, 1)
+	go func() {
+		writeDone <- q.writeStdin(data)
+	}()
+
+	select {
+	case err := <-writeDone:
+		return err
+	case <-ctx.Done():
+		_ = q.Close()
+		return ctx.Err()
+	case <-q.done:
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		return fmt.Errorf("session closed")
+	}
+}
+
+func (q *Query) writeStdin(data []byte) error {
+	q.stdinMu.Lock()
+	n, err := q.stdin.Write(data)
+	q.stdinMu.Unlock()
+	if err != nil {
+		return err
+	}
+	if n != len(data) {
+		return io.ErrShortWrite
+	}
+	return nil
+}
+
 // Close shuts down the subprocess and frees internal resources.
 //
 // Shutdown order:
 //
 //  1. Signal `q.done` and close stdin — this is the friendly shutdown
 //     path; claude is supposed to drain pending writes and exit.
-//  2. After a short grace window, syscall.Kill(-pgid, SIGTERM) so any
-//     subprocess claude itself spawned (MCP servers, tool helpers) also
-//     dies. Without this, smoke testing showed claude grandchildren
-//     reparenting to PID 1 (impl-smoke.md Step 9, PIDs 30101/31667/32030).
-//  3. SIGKILL the group as a final backstop.
+//  2. On supported Unix platforms, after a short grace window,
+//     syscall.Kill(-pgid, SIGTERM) so subprocesses Claude spawned (MCP
+//     servers, tool helpers) also die. Without this, smoke testing showed
+//     Claude grandchildren reparenting to PID 1.
+//  3. On those platforms, SIGKILL the group as a final backstop.
 //
 // Close is safe to call multiple times.
 func (q *Query) Close() error {
@@ -302,10 +411,7 @@ func (q *Query) Close() error {
 		if q.stdin != nil {
 			q.stdin.Close()
 		}
-		// Best-effort group teardown. We do not Wait here — pump's reaper
-		// goroutine already calls cmd.Wait. The signals are advisory:
-		// claude that has already exited will not see them.
-		go q.killGroupAfter(250 * time.Millisecond)
+		q.beginProcessGroupRetirement()
 	})
 	return nil
 }
@@ -320,20 +426,125 @@ func (q *Query) Pid() int {
 	return q.cmd.Process.Pid
 }
 
-// killGroupAfter waits for grace so claude can drain its stdin pipe and
-// exit naturally, then SIGTERMs the process group, and finally SIGKILLs
-// it after another grace window. Both signals are best-effort: a kill on
-// an already-dead pgid returns ESRCH which we ignore. The shutdown path
-// cannot surface errors anyway.
-func (q *Query) killGroupAfter(grace time.Duration) {
-	pid := q.Pid()
-	if pid <= 0 {
+const (
+	queryFriendlyShutdownGrace = 250 * time.Millisecond
+	queryTerminateGrace        = 250 * time.Millisecond
+	queryGroupProbeInterval    = 10 * time.Millisecond
+)
+
+// beginProcessGroupRetirement starts the single teardown owner for the process
+// group. Close and the parent reaper may race to call it; retireOnce prevents
+// duplicate signal sequences against the same group.
+func (q *Query) beginProcessGroupRetirement() {
+	q.retireOnce.Do(func() {
+		go q.retireProcessGroup()
+	})
+}
+
+// retireProcessGroup gives the friendly stdin-close path time to finish, then
+// escalates to SIGTERM and SIGKILL. groupDone closes only after signal 0 reports
+// ESRCH for the dedicated Unix process group. If the group cannot be retired, this
+// goroutine intentionally keeps groupDone (and therefore ProcessDone) open: a
+// caller must never mistake a still-capable process-group member for a completed
+// process-group cancellation barrier.
+func (q *Query) retireProcessGroup() {
+	if !processGroupRetirementSupported() {
+		// Unsupported platforms still own and terminate the root process.
+		if q.cmd != nil && q.cmd.Process != nil {
+			_ = q.cmd.Process.Kill()
+		}
+		close(q.groupDone)
 		return
 	}
-	time.Sleep(grace)
+
+	pid := q.Pid()
+	if pid <= 0 || waitForProcessGroupExtinction(pid, 0) {
+		close(q.groupDone)
+		return
+	}
+
+	if waitForProcessGroupExtinction(pid, queryFriendlyShutdownGrace) {
+		close(q.groupDone)
+		return
+	}
+
 	_ = killProcessGroup(pid, syscall.SIGTERM)
-	time.Sleep(grace)
+	if waitForProcessGroupExtinction(pid, queryTerminateGrace) {
+		close(q.groupDone)
+		return
+	}
+
 	_ = killProcessGroup(pid, syscall.SIGKILL)
+	for !waitForProcessGroupExtinction(pid, time.Second) {
+		// Fail closed. SIGKILL is retried in case the first signal raced with a
+		// just-forked group member; ProcessDone stays open until ESRCH.
+		_ = killProcessGroup(pid, syscall.SIGKILL)
+	}
+	close(q.groupDone)
+}
+
+// waitForProcessGroupExtinction polls the process-group existence probe for up
+// to timeout. A zero timeout is a single non-blocking probe.
+func waitForProcessGroupExtinction(pid int, timeout time.Duration) bool {
+	if processGroupExtinct(pid) {
+		return true
+	}
+	if timeout <= 0 {
+		return false
+	}
+
+	deadline := time.Now().Add(timeout)
+	for {
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			return processGroupExtinct(pid)
+		}
+		pause := queryGroupProbeInterval
+		if remaining < pause {
+			pause = remaining
+		}
+		time.Sleep(pause)
+		if processGroupExtinct(pid) {
+			return true
+		}
+	}
+}
+
+// RespondPermission answers a KindPermissionRequest by writing a control_response
+// back through the same stdin+mutex the Send/Interrupt paths use. reqID must be
+// the PermissionRequest.RequestID being answered.
+//
+// Allow → {"behavior":"allow"} (with "updatedInput" only when d.UpdatedInput is
+// non-nil — the CLI keeps the original input when it is omitted). Deny →
+// {"behavior":"deny","message":d.Message}, surfaced to the model as the
+// tool_result error. Wire shape: claude-allow.jsonl / claude-deny.jsonl.
+func (q *Query) RespondPermission(reqID string, d PermissionDecision) error {
+	var inner map[string]any
+	if d.Allow {
+		inner = map[string]any{"behavior": "allow"}
+		if d.UpdatedInput != nil {
+			inner["updatedInput"] = json.RawMessage(d.UpdatedInput)
+		}
+	} else {
+		inner = map[string]any{"behavior": "deny", "message": d.Message}
+	}
+	env := map[string]any{
+		"type": "control_response",
+		"response": map[string]any{
+			"subtype":    "success",
+			"request_id": reqID,
+			"response":   inner,
+		},
+	}
+	data, err := json.Marshal(env)
+	if err != nil {
+		return fmt.Errorf("marshal control_response: %w", err)
+	}
+	data = append(data, '\n')
+	if err := q.writeStdin(data); err != nil {
+		return fmt.Errorf("write control_response: %w", err)
+	}
+	return nil
 }
 
 // pump is the goroutine-owned stdout reader. It routes control_response lines to
@@ -372,6 +583,31 @@ func (q *Query) pump(stdout io.ReadCloser) {
 				select {
 				case ch <- resp.Response:
 				default:
+				}
+			}
+			continue
+		}
+
+		if peek.Type == "control_request" {
+			// Preventive permission mode: the CLI is asking whether a tool may
+			// run. Surface it as an event and keep reading — the consumer answers
+			// asynchronously via RespondPermission. Blocking the pump here would
+			// deadlock Interrupt (its control_response could never be read).
+			var req queryInboundCtrlReq
+			if json.Unmarshal(line, &req) == nil && req.Request.Subtype == "can_use_tool" {
+				select {
+				case q.messages <- &StreamedEvent{
+					Kind: KindPermissionRequest,
+					Permission: &PermissionRequest{
+						RequestID: req.RequestID,
+						ToolName:  req.Request.ToolName,
+						ToolUseID: req.Request.ToolUseID,
+						Input:     req.Request.Input,
+						Reason:    req.Request.DecisionReason,
+					},
+				}:
+				case <-q.done:
+					return
 				}
 			}
 			continue

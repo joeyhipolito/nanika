@@ -17,13 +17,22 @@ import (
 // Claude CLI subprocesses. Everything else is stripped to prevent credential
 // leakage. Skills may declare additional vars via AgentOptions.AllowedEnvVars.
 var baseAllowedEnvVars = map[string]bool{
-	"HOME":   true,
-	"PATH":   true,
-	"LANG":   true,
-	"TERM":   true,
-	"USER":   true,
-	"SHELL":  true,
-	"TMPDIR": true,
+	"HOME":                 true,
+	"PATH":                 true,
+	"LANG":                 true,
+	"TERM":                 true,
+	"USER":                 true,
+	"SHELL":                true,
+	"TMPDIR":               true,
+	"ANTHROPIC_BASE_URL":   true, // proxy passthrough (e.g. pxpipe benchmark)
+	"ANTHROPIC_API_KEY":    true, // explicit key override for proxy auth
+	"ANTHROPIC_AUTH_TOKEN": true, // OAuth token passthrough for proxy auth
+	// CLAUDE_CONFIG_DIR is a PATH, not a secret (TRK-1118 pt1, design §8): a
+	// user who runs Claude Code with a non-default config dir must keep that dir
+	// when nanika spawns the SDK, else custom settings/credentials are ignored.
+	// Forwarded verbatim when present in the parent env. This is an allowlist
+	// addition ONLY — PassthroughEnv stays unset (security-parity Decision 1).
+	"CLAUDE_CONFIG_DIR": true,
 }
 
 // filteredEnv returns an environment slice for the Claude subprocess.
@@ -65,9 +74,9 @@ func commandEnv(opts *AgentOptions) []string {
 		passthrough = opts.PassthroughEnv
 	}
 	env := filteredEnv(extraVars, passthrough)
-	if opts != nil && opts.EffortLevel != "" {
-		env = append(env, "CLAUDE_CODE_EFFORT_LEVEL="+opts.EffortLevel)
-	}
+	// EffortLevel rides the --effort flag (queryOptFlags), not an env var —
+	// one source of truth per design tui-engines-wave1.md §6-G; the old
+	// CLAUDE_CODE_EFFORT_LEVEL duplicate was dropped when the flag landed.
 	if opts != nil && len(opts.AddDirs) > 0 {
 		env = append(env, "CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD=1")
 	}
@@ -87,7 +96,7 @@ type SubprocessTransport struct {
 	closed         bool
 	exitError      error
 	stderrBuf      []byte
-	lastOutputTime atomic.Int64    // unix nanos; updated on every stdout line received
+	lastOutputTime atomic.Int64       // unix nanos; updated on every stdout line received
 	stallCancel    context.CancelFunc // cancels the subprocess context on stall detection
 }
 
@@ -140,7 +149,7 @@ func (t *SubprocessTransport) Start(ctx context.Context, opts *AgentOptions) err
 		resumeID = opts.ResumeSessionID
 	}
 	if err := t.doStart(ctx, opts, resumeID); err != nil {
-		if resumeID != "" && err != ErrConflictingResumeFlags {
+		if resumeID != "" && err != ErrConflictingResumeFlags && err != ErrPreventiveRequiresDuplex {
 			fmt.Fprintf(os.Stderr, "[transport] session resume %s failed (%v); retrying without resume\n", resumeID, err)
 			return t.doStart(ctx, opts, "")
 		}
@@ -152,6 +161,9 @@ func (t *SubprocessTransport) Start(ctx context.Context, opts *AgentOptions) err
 // doStart is the inner implementation of Start. resumeID, when non-empty, appends
 // --resume <resumeID> --fork-session to the subprocess args.
 func (t *SubprocessTransport) doStart(ctx context.Context, opts *AgentOptions, resumeID string) error {
+	if opts != nil && opts.PermissionMode == PermissionPreventive {
+		return ErrPreventiveRequiresDuplex
+	}
 	if opts != nil && opts.ContinueConversation && resumeID != "" {
 		return ErrConflictingResumeFlags
 	}
@@ -167,21 +179,12 @@ func (t *SubprocessTransport) doStart(ctx context.Context, opts *AgentOptions, r
 		"--verbose",
 		"--include-partial-messages",
 	}
-
-	if opts != nil {
-		if opts.Model != "" {
-			args = append(args, "--model", opts.Model)
-		}
-		if opts.MaxTurns > 0 {
-			args = append(args, "--max-turns", fmt.Sprintf("%d", opts.MaxTurns))
-		}
-		if opts.PermissionMode == "bypass" {
-			args = append(args, "--dangerously-skip-permissions")
-		}
-		if opts.SystemPrompt != "" {
-			args = append(args, "--system-prompt", opts.SystemPrompt)
-		}
+	// Preserve this transport's historical permission default: only explicit
+	// bypass disables CLI permission checks.
+	if opts != nil && opts.PermissionMode == "bypass" {
+		args = append(args, "--dangerously-skip-permissions")
 	}
+	args = append(args, queryOptFlags(opts)...)
 
 	if resumeID != "" {
 		args = append(args, "--resume", resumeID, "--fork-session")
@@ -216,8 +219,9 @@ func (t *SubprocessTransport) doStart(ctx context.Context, opts *AgentOptions, r
 	// Only pass allowlisted env vars to prevent credential leakage, plus
 	// explicit runtime overrides like effort level.
 	t.cmd.Env = commandEnv(opts)
-	// Spawn in a dedicated process group so Close/Kill can take down
-	// claude's grandchildren too. See client.go and impl-smoke.md Step 9.
+	// Isolate the subprocess in a dedicated process group. This transport's
+	// Close and Kill methods do not provide a group-retirement barrier; callers
+	// that need verified group extinction must use Query instead.
 	setProcessGroup(t.cmd)
 
 	var err error
