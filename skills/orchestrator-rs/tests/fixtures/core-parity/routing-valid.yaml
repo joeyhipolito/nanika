@@ -1,0 +1,7 @@
+unknown_root: safely ignored
+model_tiers:
+  work:
+    provider: fixture-only
+    model: fixture-work-model
+    runtime: codex
+    unknown_tier_field: safely ignored

@@ -1,0 +1,220 @@
+use crate::budget::EnforcingPolicy;
+use crate::live_events::LiveEvents;
+
+use super::api::{ReaderSnippetContext, StrSnippetContext};
+use super::{Cfg, Error, Events, Options, YamlDeserializer};
+
+pub(crate) fn normalize_str_input(input: &str) -> &str {
+    // Normalize: ignore a single leading UTF-8 BOM if present.
+    input.strip_prefix('\u{FEFF}').unwrap_or(input)
+}
+
+pub(crate) fn run_with_document_scope<'de, R, F, W, P>(
+    src: &mut LiveEvents<'de>,
+    f: F,
+    wrap_err: W,
+    synthesized_null_should_be_eof: P,
+) -> Result<R, Error>
+where
+    F: FnOnce(&mut LiveEvents<'de>) -> Result<R, Error>,
+    W: Fn(Error, &LiveEvents<'de>) -> Error,
+    P: Fn(&Error) -> bool,
+{
+    let value_res = crate::anchor_store::with_document_scope(|| {
+        crate::properties_redaction::with_interp_redaction_scope(|| f(src))
+    });
+    match value_res {
+        Ok(v) => Ok(v),
+        Err(e) => {
+            if src.synthesized_null_emitted() && synthesized_null_should_be_eof(&e) {
+                // If the only thing in the input was an empty document (synthetic null),
+                // surface this as an EOF error to preserve expected error semantics
+                // for incompatible target types (e.g., bool).
+                Err(wrap_err(
+                    Error::eof().with_location(src.last_location()),
+                    src,
+                ))
+            } else {
+                Err(wrap_err(e, src))
+            }
+        }
+    }
+}
+
+pub(crate) fn deserialize_with_scope_and_null_policy<'de, R, F, W, P>(
+    src: &mut LiveEvents<'de>,
+    cfg: Cfg,
+    f: F,
+    wrap_err: W,
+    synthesized_null_should_be_eof: P,
+) -> Result<R, Error>
+where
+    for<'e> F: FnOnce(crate::Deserializer<'de, 'e>) -> Result<R, Error>,
+    W: Fn(Error, &LiveEvents<'de>) -> Error,
+    P: Fn(&Error) -> bool,
+{
+    run_with_document_scope(
+        src,
+        |src| super::with_root_redaction(YamlDeserializer::new(src, cfg), f),
+        wrap_err,
+        synthesized_null_should_be_eof,
+    )
+}
+
+pub(crate) fn deserialize_with_scope<'de, R, F, W>(
+    src: &mut LiveEvents<'de>,
+    cfg: Cfg,
+    f: F,
+    wrap_err: W,
+) -> Result<R, Error>
+where
+    for<'e> F: FnOnce(crate::Deserializer<'de, 'e>) -> Result<R, Error>,
+    W: Fn(Error, &LiveEvents<'de>) -> Error,
+{
+    deserialize_with_scope_and_null_policy(src, cfg, f, wrap_err, |_| true)
+}
+
+pub(crate) fn enforce_single_document_and_finish<'de, W>(
+    src: &mut LiveEvents<'de>,
+    multiple_docs_hint: &'static str,
+    wrap_err: W,
+) -> Result<(), Error>
+where
+    W: Fn(Error, &LiveEvents<'de>) -> Error,
+{
+    // After finishing first document, peek ahead to detect either another document/content
+    // or trailing garbage. If a scan error occurs but we have seen a DocumentEnd ("..."),
+    // ignore the trailing garbage. Otherwise, surface the error.
+    match src.peek() {
+        Ok(Some(_)) => {
+            return Err(wrap_err(
+                Error::multiple_documents(multiple_docs_hint).with_location(src.last_location()),
+                src,
+            ));
+        }
+        Ok(None) => {}
+        Err(e) => {
+            if src.seen_doc_end() {
+                // Trailing garbage after a proper document end marker is ignored.
+            } else {
+                return Err(wrap_err(e, src));
+            }
+        }
+    }
+
+    src.finish().map_err(|e| wrap_err(e, src))
+}
+
+/// Create a streaming [`crate::Deserializer`] for a YAML string and run a closure against it.
+///
+/// This is useful for tooling that needs access to the underlying Serde deserializer,
+/// such as wrappers that report unknown/ignored fields (e.g. the `serde_ignored` crate)
+/// or wrappers that augment error paths.
+///
+/// The deserializer borrows internal parsing state, so it cannot be returned directly.
+/// Instead, you provide a closure `f` that performs the desired deserialization.
+#[allow(deprecated)]
+pub fn with_deserializer_from_str_with_options<'de, R, F>(
+    input: &'de str,
+    options: Options,
+    f: F,
+) -> Result<R, Error>
+where
+    for<'e> F: FnOnce(crate::Deserializer<'de, 'e>) -> Result<R, Error>,
+{
+    let input = normalize_str_input(input);
+
+    let with_snippet = options.with_snippet;
+    let crop_radius = options.crop_radius;
+
+    let cfg = Cfg::from_options(&options);
+    // Do not stop at DocumentEnd; we'll probe for trailing content/errors explicitly.
+    let mut src = LiveEvents::from_str(input, options);
+    let snippet_ctx = StrSnippetContext::new(input, with_snippet, crop_radius);
+
+    let wrap_err = |e, src: &LiveEvents<'de>| snippet_ctx.attach_snippet(e, src);
+
+    let value = deserialize_with_scope(&mut src, cfg, f, wrap_err)?;
+    enforce_single_document_and_finish(
+        &mut src,
+        "use from_multiple or from_multiple_with_options",
+        wrap_err,
+    )?;
+    Ok(value)
+}
+
+/// Convenience wrapper around [`with_deserializer_from_str_with_options`] using
+/// [`Options::default`].
+pub fn with_deserializer_from_str<'de, R, F>(input: &'de str, f: F) -> Result<R, Error>
+where
+    for<'e> F: FnOnce(crate::Deserializer<'de, 'e>) -> Result<R, Error>,
+{
+    with_deserializer_from_str_with_options(input, Options::default(), f)
+}
+
+/// Create a streaming [`crate::Deserializer`] for a UTF-8 byte slice and run a closure against it.
+///
+/// This is equivalent to [`with_deserializer_from_str`], but validates the input is UTF-8.
+pub fn with_deserializer_from_slice<'de, R, F>(bytes: &'de [u8], f: F) -> Result<R, Error>
+where
+    for<'e> F: FnOnce(crate::Deserializer<'de, 'e>) -> Result<R, Error>,
+{
+    with_deserializer_from_slice_with_options(bytes, Options::default(), f)
+}
+
+/// Create a streaming [`crate::Deserializer`] for a UTF-8 byte slice with configurable [`Options`]
+/// and run a closure against it.
+pub fn with_deserializer_from_slice_with_options<'de, R, F>(
+    bytes: &'de [u8],
+    options: Options,
+    f: F,
+) -> Result<R, Error>
+where
+    for<'e> F: FnOnce(crate::Deserializer<'de, 'e>) -> Result<R, Error>,
+{
+    let s = std::str::from_utf8(bytes).map_err(|_| Error::InvalidUtf8Input)?;
+    with_deserializer_from_str_with_options(s, options, f)
+}
+
+/// Create a streaming [`crate::Deserializer`] for any [`std::io::Read`] and run a closure against it.
+///
+/// This is the reader-based counterpart to [`with_deserializer_from_str`]. It consumes a
+/// byte-oriented reader and streams events into the deserializer. The reader accepts BOM-marked
+/// UTF-8, UTF-16LE, and UTF-16BE. If no recognized BOM is present, the input bytes are
+/// treated as UTF-8.
+pub fn with_deserializer_from_reader<R, Out, F>(reader: R, f: F) -> Result<Out, Error>
+where
+    for<'de, 'e> F: FnOnce(crate::Deserializer<'de, 'e>) -> Result<Out, Error>,
+    R: std::io::Read,
+{
+    with_deserializer_from_reader_with_options(reader, Options::default(), f)
+}
+
+/// Create a streaming [`crate::Deserializer`] for any [`std::io::Read`] with configurable [`Options`]
+/// and run a closure against it.
+#[allow(deprecated)]
+pub fn with_deserializer_from_reader_with_options<R, Out, F>(
+    reader: R,
+    options: Options,
+    f: F,
+) -> Result<Out, Error>
+where
+    for<'de, 'e> F: FnOnce(crate::Deserializer<'de, 'e>) -> Result<Out, Error>,
+    R: std::io::Read,
+{
+    let with_snippet = options.with_snippet;
+    let crop_radius = options.crop_radius;
+    let cfg = Cfg::from_options(&options);
+    let (snippet_ctx, ring_handle) = ReaderSnippetContext::new(reader, with_snippet, crop_radius);
+    let mut src = LiveEvents::from_reader(ring_handle, options, EnforcingPolicy::AllContent);
+
+    let wrap_err = |e, src: &LiveEvents<'_>| snippet_ctx.attach_snippet(e, src);
+
+    let value = deserialize_with_scope(&mut src, cfg, f, wrap_err)?;
+    enforce_single_document_and_finish(
+        &mut src,
+        "use read or read_with_options to obtain the iterator",
+        wrap_err,
+    )?;
+    Ok(value)
+}

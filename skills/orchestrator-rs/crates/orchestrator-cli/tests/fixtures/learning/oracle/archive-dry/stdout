@@ -1,0 +1,6 @@
+dry-run: would recompute quality scores
+would archive l-002: never injected, older than 90 days
+would archive l-005: never injected, older than 90 days
+would archive l-003: chronic non-compliance (injection_count >= 5, compliance_rate < 0.10)
+
+dry-run: 3 learnings would be archived (use --apply to write)

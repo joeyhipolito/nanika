@@ -24,6 +24,8 @@ personas/*/MEMORY.md
 # Installed skills — core is tracked, everything else is user-installed
 skills/*/
 !skills/orchestrator/
+!skills/orchestrator-rs/
+!skills/orchestrator-rs/**/bin/
 !skills/decomposer/
 !skills/channels/
 !skills/article/
@@ -102,3 +104,6 @@ plugins/nen_mcp/nen-mcp
 .nanika-lock
 skills/orchestrator/internal/engine/checkpoint.json
 skills/orchestrator/internal/engine/workers/
+
+# Python helper bytecode
+__pycache__/

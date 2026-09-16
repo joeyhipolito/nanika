@@ -1,0 +1,152 @@
+{
+  "total_audits": 3,
+  "date_range": "2026-07-16 to 2026-07-14",
+  "trends": [
+    {
+      "metric": "decomposition",
+      "current": 5,
+      "average": 3.7,
+      "min": 2,
+      "max": 5,
+      "delta": 3,
+      "trend": "improving",
+      "history": [
+        4,
+        2,
+        5
+      ]
+    },
+    {
+      "metric": "persona_fit",
+      "current": 5,
+      "average": 3.7,
+      "min": 1,
+      "max": 5,
+      "delta": 4,
+      "trend": "stable",
+      "history": [
+        5,
+        1,
+        5
+      ]
+    },
+    {
+      "metric": "skill_usage",
+      "current": 5,
+      "average": 3.3,
+      "min": 2,
+      "max": 5,
+      "delta": 3,
+      "trend": "improving",
+      "history": [
+        3,
+        2,
+        5
+      ]
+    },
+    {
+      "metric": "output_quality",
+      "current": 5,
+      "average": 4,
+      "min": 3,
+      "max": 5,
+      "delta": 2,
+      "trend": "improving",
+      "history": [
+        4,
+        3,
+        5
+      ]
+    },
+    {
+      "metric": "rule_compliance",
+      "current": 5,
+      "average": 3.7,
+      "min": 1,
+      "max": 5,
+      "delta": 4,
+      "trend": "stable",
+      "history": [
+        5,
+        1,
+        5
+      ]
+    },
+    {
+      "metric": "overall",
+      "current": 5,
+      "average": 3.7,
+      "min": 2,
+      "max": 5,
+      "delta": 3,
+      "trend": "improving",
+      "history": [
+        4,
+        2,
+        5
+      ]
+    }
+  ],
+  "regressions": [
+    {
+      "metric": "decomposition",
+      "workspace_id": "ws-beta",
+      "audited_at": "2026-07-15T01:02:03Z",
+      "prev_score": 4,
+      "new_score": 2,
+      "drop": 2,
+      "domain": "work",
+      "top_issues": null
+    },
+    {
+      "metric": "persona_fit",
+      "workspace_id": "ws-beta",
+      "audited_at": "2026-07-15T01:02:03Z",
+      "prev_score": 5,
+      "new_score": 1,
+      "drop": 4,
+      "domain": "work",
+      "top_issues": null
+    },
+    {
+      "metric": "skill_usage",
+      "workspace_id": "ws-beta",
+      "audited_at": "2026-07-15T01:02:03Z",
+      "prev_score": 3,
+      "new_score": 2,
+      "drop": 1,
+      "domain": "work",
+      "top_issues": null
+    },
+    {
+      "metric": "output_quality",
+      "workspace_id": "ws-beta",
+      "audited_at": "2026-07-15T01:02:03Z",
+      "prev_score": 4,
+      "new_score": 3,
+      "drop": 1,
+      "domain": "work",
+      "top_issues": null
+    },
+    {
+      "metric": "rule_compliance",
+      "workspace_id": "ws-beta",
+      "audited_at": "2026-07-15T01:02:03Z",
+      "prev_score": 5,
+      "new_score": 1,
+      "drop": 4,
+      "domain": "work",
+      "top_issues": null
+    },
+    {
+      "metric": "overall",
+      "workspace_id": "ws-beta",
+      "audited_at": "2026-07-15T01:02:03Z",
+      "prev_score": 4,
+      "new_score": 2,
+      "drop": 2,
+      "domain": "work",
+      "top_issues": null
+    }
+  ]
+}

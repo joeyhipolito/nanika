@@ -1,0 +1,107 @@
+{
+  "schema_version": 1,
+  "policy": {
+    "policy_version": 1,
+    "maximum_snapshot_age_ms": 1000,
+    "provider_reserves": [],
+    "score_weights": {
+      "task_fit_bps": 2500,
+      "usable_headroom_bps": 2500,
+      "reset_proximity_bps": 1000,
+      "recent_capacity_bps": 1000,
+      "latency_bps": 1000,
+      "health_bps": 1000,
+      "configured_preference_bps": 1000
+    },
+    "switch_margin_bps": 500,
+    "unknown_usage_policy": "static_fallback",
+    "evaluation_mode": "shadow"
+  },
+  "input": {
+    "schema_version": 1,
+    "mission_id": "mission_replay",
+    "phase_id": "phase_fixed",
+    "attempt": 4,
+    "evaluated_at_utc_ms": 1721000000000,
+    "authority": {
+      "resolved_fixed_route": {
+        "composition_version": 1,
+        "provenances": ["authored_runtime", "model_flag"],
+        "route": {
+          "candidate_id": "fixed-composed",
+          "provider": "claude",
+          "usage_account_id": "primary",
+          "runtime": "claude",
+          "model": "forced-model",
+          "effort": "high"
+        }
+      },
+      "legacy_route": {
+        "candidate_id": "legacy",
+        "provider": "codex",
+        "usage_account_id": "primary",
+        "runtime": "codex",
+        "model": "legacy-model",
+        "effort": "medium"
+      }
+    },
+    "requirements": {
+      "priority": "p1",
+      "required_capabilities": [],
+      "minimum_quality": "standard"
+    },
+    "candidates": [],
+    "usage_snapshots": [],
+    "incumbent_candidate_id": null,
+    "existing_session_runtime": "codex"
+  },
+  "expected_decision": {
+    "schema_version": 1,
+    "applied_policy": null,
+    "evaluated_at_utc_ms": 1721000000000,
+    "mission_id": "mission_replay",
+    "phase_id": "phase_fixed",
+    "attempt": 4,
+    "applied_authority": {
+      "kind": "fixed",
+      "provenances": ["authored_runtime", "model_flag"]
+    },
+    "requirements": {
+      "priority": "p1",
+      "required_capabilities": [],
+      "minimum_quality": "standard"
+    },
+    "incumbent_candidate_id": null,
+    "existing_session_runtime": "codex",
+    "legacy_route": null,
+    "candidate_evaluations": [],
+    "referenced_snapshots": [],
+    "recommended_outcome": {
+      "status": "route",
+      "route": {
+        "candidate_id": "fixed-composed",
+        "provider": "claude",
+        "usage_account_id": "primary",
+        "runtime": "claude",
+        "model": "forced-model",
+        "effort": "high"
+      }
+    },
+    "dispatch_outcome": {
+      "status": "route",
+      "route": {
+        "candidate_id": "fixed-composed",
+        "provider": "claude",
+        "usage_account_id": "primary",
+        "runtime": "claude",
+        "model": "forced-model",
+        "effort": "high"
+      }
+    },
+    "switch_reason": "fixed_authority",
+    "continuation": "fresh_session_required",
+    "decision_mode": {
+      "kind": "fixed"
+    }
+  }
+}

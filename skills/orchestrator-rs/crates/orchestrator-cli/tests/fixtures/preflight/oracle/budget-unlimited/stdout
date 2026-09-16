@@ -1,0 +1,16 @@
+## Operational Pre-flight
+
+### Active Mission
+
+id: ws-preflight
+status: in_progress
+last_event: <MASKED>
+
+### Knowledge Search (kb)
+
+`kb search "<query>" [--mode hybrid] [--sources tracker,claude_history,...]` — federated search across vault, second-brain, learnings, evidence, tracker, and session histories.
+MCP tools (Claude/Codex): search, search_vault, search_learnings, search_evidence, search_tracker, search_history, read_note, read_claim.
+HTTP: 127.0.0.1:7345/api/search · same-origin proxy for the dashboard: :7331/api/kb/search
+status: kb daemon NOT reachable — `launchctl kickstart -k gui/$UID/com.nanika.kb`
+freshness: mirror MISSING · vectors MISSING · job-tracker MISSING
+

@@ -1,0 +1,8 @@
+phase                     persona                       status    duration  parsed_skills
+----------------------------------------------------------------------------------------------------
+design                    architect                     success   10     s  rust-best-practices, domain-modeling
+implement                 developer                     success   20     s  golang-testing
+polish                    developer                     success   5      s  
+review                    reviewer                      success   7      s  
+gate                      reviewer                      success   3      s  
+orphan                                                  success   1      s  

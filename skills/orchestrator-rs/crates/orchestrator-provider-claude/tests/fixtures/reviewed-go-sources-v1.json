@@ -1,0 +1,137 @@
+{
+  "schema_version": 1,
+  "scope": "Historical source pins and sanitized protocol fixtures. Personal paths, identifiers, hook output and assistant prose have been replaced with synthetic fixture values for public distribution. Historical source-provenance campaigns are not shipped or claimed by this snapshot.",
+  "driver": "not-shipped-historical-provenance-driver",
+  "source_commit": "f39aefcc48610be6040fc686b3a72188948bcbab",
+  "sources": [
+    {
+      "path": "shared/sdk/query.go",
+      "git_blob": "cf643daaab549905f420c7f1d198933f8988d8cd",
+      "anchors_present": [
+        "\"--output-format\", \"stream-json\"",
+        "\"--append-system-prompt\", opts.AppendSystemPrompt",
+        "\"--effort\", opts.EffortLevel",
+        "\"--tools\", \"\"",
+        "`{\"mcpServers\":{}}`",
+        "return append(args, \"-p\", prompt)"
+      ],
+      "anchors_absent": [
+        "queryStdoutMaxBytes",
+        "queryMaxLineBytes"
+      ]
+    },
+    {
+      "path": "shared/sdk/transport.go",
+      "git_blob": "6d800f89775fb4a4206fb29580fb201d74a4f5da",
+      "anchors_present": [
+        "\"ANTHROPIC_AUTH_TOKEN\": true",
+        "\"CLAUDE_CONFIG_DIR\": true",
+        "CLAUDE_CODE_ENTRYPOINT=orchestrator-cli",
+        "CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD=1"
+      ],
+      "anchors_absent": []
+    },
+    {
+      "path": "shared/sdk/query_append_effort_test.go",
+      "git_blob": "cc302698c14909a35273c66b7cc9ece072f99a3a",
+      "anchors_present": [],
+      "anchors_absent": []
+    },
+    {
+      "path": "shared/sdk/query_disable_mcp_test.go",
+      "git_blob": "0e0f3f8465513fcb90ed8c93918cb8243efa9836",
+      "anchors_present": [],
+      "anchors_absent": []
+    },
+    {
+      "path": "shared/sdk/query_test.go",
+      "git_blob": "29e9f57004ccd597bb11324669a384c269fdea4d",
+      "anchors_present": [],
+      "anchors_absent": []
+    },
+    {
+      "path": "shared/sdk/env_allowlist_test.go",
+      "git_blob": "6ad44fbb266be6f6438c406eecd135802b936ef4",
+      "anchors_present": [],
+      "anchors_absent": []
+    },
+    {
+      "path": "shared/sdk/types.go",
+      "git_blob": "5977bc077b72807398c2e221014c1fbde653fad9",
+      "anchors_present": [],
+      "anchors_absent": []
+    },
+    {
+      "path": "skills/orchestrator/internal/worker/execute.go",
+      "git_blob": "e07780f43e6127a6f4541e7277fb404f9aa55204",
+      "anchors_present": [
+        "const maxPriorLen = 8000",
+        "<prior_phase_output>\\n",
+        "Task: "
+      ],
+      "anchors_absent": []
+    },
+    {
+      "path": "skills/orchestrator/internal/worker/execute_test.go",
+      "git_blob": "5d6516c556bb67a45553feae0f8afab8b965c303",
+      "anchors_present": [],
+      "anchors_absent": []
+    },
+    {
+      "path": "cmd/nanika/internal/tui/shell/testdata/claude-control-protocol/claude-allow.jsonl",
+      "git_blob": "2e00def0a99cea19591980718bb6a315cbfe2f1b",
+      "anchors_present": [
+        "{\\\"type\\\":\\\"assistant\\\",\\\"message\\\":{\\\"model\\\":",
+        "\\\"content\\\":[{\\\"type\\\":\\\"thinking\\\"",
+        "\\\"parent_tool_use_id\\\":null,\\\"session_id\\\":"
+      ],
+      "anchors_absent": []
+    }
+  ],
+  "capture": {
+    "path": "cmd/nanika/internal/tui/shell/testdata/claude-control-protocol/claude-allow.jsonl",
+    "shape": {
+      "system_subtypes": [
+        "hook_response",
+        "hook_started",
+        "init",
+        "thinking_tokens"
+      ],
+      "hook_started_precedes_init": true
+    },
+    "records": [
+      {
+        "name": "system_hook_started",
+        "raw": "{\"type\":\"system\",\"subtype\":\"hook_started\",\"hook_id\":\"fixture-hook_id\",\"hook_name\":\"SessionStart:startup\",\"hook_event\":\"SessionStart\",\"uuid\":\"fixture-uuid\",\"session_id\":\"fixture-session_id\"}"
+      },
+      {
+        "name": "system_hook_response",
+        "raw": "{\"type\":\"system\",\"subtype\":\"hook_response\",\"hook_id\":\"fixture-hook_id\",\"hook_name\":\"SessionStart:startup\",\"hook_event\":\"SessionStart\",\"output\":\"Fixture content.\",\"stdout\":\"Fixture content.\",\"stderr\":\"\",\"exit_code\":0,\"outcome\":\"success\",\"uuid\":\"fixture-uuid\",\"session_id\":\"fixture-session_id\"}"
+      },
+      {
+        "name": "system_init",
+        "raw": "{\"type\":\"system\",\"subtype\":\"init\",\"cwd\":\"/tmp/fixture\",\"session_id\":\"fixture-session_id\",\"tools\":[\"Bash\"],\"mcp_servers\":[],\"model\":\"claude-haiku-4-5-20251001\",\"permissionMode\":\"default\",\"slash_commands\":[],\"apiKeySource\":\"none\",\"claude_code_version\":\"2.1.207\",\"output_style\":\"default\",\"agents\":[],\"skills\":[],\"plugins\":[],\"capabilities\":[\"interrupt_receipt_v1\",\"msg_lifecycle_v1\"],\"analytics_disabled\":false,\"product_feedback_disabled\":false,\"uuid\":\"fixture-uuid\",\"memory_paths\":{\"auto\":\"/tmp/fixture/memory\"},\"fast_mode_state\":\"off\"}"
+      },
+      {
+        "name": "system_thinking_tokens",
+        "raw": "{\"type\":\"system\",\"subtype\":\"thinking_tokens\",\"estimated_tokens\":1,\"estimated_tokens_delta\":1,\"uuid\":\"fixture-uuid\",\"session_id\":\"fixture-session_id\"}"
+      },
+      {
+        "name": "assistant_thinking",
+        "raw": "{\"type\":\"assistant\",\"message\":{\"model\":\"claude-haiku-4-5-20251001\",\"id\":\"fixture-id\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"thinking\",\"thinking\":\"Fixture content.\",\"signature\":\"Fixture content.\"}],\"stop_reason\":null,\"stop_sequence\":null,\"stop_details\":null,\"usage\":{\"input_tokens\":10,\"cache_creation_input_tokens\":11549,\"cache_read_input_tokens\":20133,\"cache_creation\":{\"ephemeral_5m_input_tokens\":0,\"ephemeral_1h_input_tokens\":11549},\"output_tokens\":1,\"service_tier\":\"standard\",\"inference_geo\":\"not_available\"},\"diagnostics\":null,\"context_management\":null},\"parent_tool_use_id\":null,\"session_id\":\"fixture-session_id\",\"uuid\":\"fixture-uuid\",\"request_id\":\"fixture-request_id\"}"
+      },
+      {
+        "name": "assistant_tool_use",
+        "raw": "{\"type\":\"assistant\",\"message\":{\"model\":\"claude-haiku-4-5-20251001\",\"id\":\"fixture-id\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"tool_use\",\"id\":\"fixture-id\",\"name\":\"Bash\",\"input\":{\"command\":\"printf fixture\"},\"caller\":{\"type\":\"direct\"}}],\"stop_reason\":null,\"stop_sequence\":null,\"stop_details\":null,\"usage\":{\"input_tokens\":10,\"cache_creation_input_tokens\":11549,\"cache_read_input_tokens\":20133,\"cache_creation\":{\"ephemeral_5m_input_tokens\":0,\"ephemeral_1h_input_tokens\":11549},\"output_tokens\":1,\"service_tier\":\"standard\",\"inference_geo\":\"not_available\"},\"diagnostics\":null,\"context_management\":null},\"parent_tool_use_id\":null,\"session_id\":\"fixture-session_id\",\"uuid\":\"fixture-uuid\",\"request_id\":\"fixture-request_id\"}"
+      },
+      {
+        "name": "assistant_text",
+        "raw": "{\"type\":\"assistant\",\"message\":{\"model\":\"claude-haiku-4-5-20251001\",\"id\":\"fixture-id\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"Fixture content.\"}],\"stop_reason\":null,\"stop_sequence\":null,\"stop_details\":null,\"usage\":{\"input_tokens\":8,\"cache_creation_input_tokens\":552,\"cache_read_input_tokens\":31682,\"cache_creation\":{\"ephemeral_5m_input_tokens\":0,\"ephemeral_1h_input_tokens\":552},\"output_tokens\":2,\"service_tier\":\"standard\",\"inference_geo\":\"not_available\"},\"diagnostics\":null,\"context_management\":null},\"parent_tool_use_id\":null,\"session_id\":\"fixture-session_id\",\"uuid\":\"fixture-uuid\",\"request_id\":\"fixture-request_id\"}"
+      },
+      {
+        "name": "result",
+        "raw": "{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"api_error_status\":null,\"duration_ms\":8818,\"duration_api_ms\":7674,\"ttft_ms\":5403,\"ttft_stream_ms\":1948,\"time_to_request_ms\":18,\"num_turns\":2,\"result\":\"Fixture content.\",\"stop_reason\":\"end_turn\",\"session_id\":\"fixture-session_id\",\"total_cost_usd\":0.0314665,\"usage\":{\"input_tokens\":18,\"cache_creation_input_tokens\":12101,\"cache_read_input_tokens\":51815,\"output_tokens\":413,\"server_tool_use\":{\"web_search_requests\":0,\"web_fetch_requests\":0},\"service_tier\":\"standard\",\"cache_creation\":{\"ephemeral_1h_input_tokens\":12101,\"ephemeral_5m_input_tokens\":0},\"inference_geo\":\"not_available\",\"iterations\":[{\"input_tokens\":8,\"output_tokens\":64,\"cache_read_input_tokens\":31682,\"cache_creation_input_tokens\":552,\"cache_creation\":{\"ephemeral_5m_input_tokens\":0,\"ephemeral_1h_input_tokens\":552},\"type\":\"message\"}],\"speed\":\"standard\"},\"modelUsage\":{\"claude-haiku-4-5-20251001\":{\"inputTokens\":18,\"outputTokens\":413,\"cacheReadInputTokens\":51815,\"cacheCreationInputTokens\":12101,\"webSearchRequests\":0,\"costUSD\":0.0314665,\"contextWindow\":200000,\"maxOutputTokens\":32000}},\"permission_denials\":[],\"terminal_reason\":\"completed\",\"fast_mode_state\":\"off\",\"uuid\":\"fixture-uuid\"}"
+      }
+    ]
+  }
+}

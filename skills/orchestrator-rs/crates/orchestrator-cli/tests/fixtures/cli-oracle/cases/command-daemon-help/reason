@@ -1,0 +1,5 @@
+Rust's daemon help documents the B1 subset deliberately: it ships authenticated
+private-UDS ingress/events plus loopback HTTP health, ingress and SSE, and says
+so, while Go's help advertises the legacy dashboard/mission REST routes and the
+backfill-vectors subcommand that Rust does not implement. Both exit 0 and both
+print a daemon help block; only the enumerated surface differs.

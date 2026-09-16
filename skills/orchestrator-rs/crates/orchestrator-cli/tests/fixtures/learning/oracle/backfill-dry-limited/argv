@@ -1,0 +1,7 @@
+backfill-embeddings
+--limit
+2
+--batch-size
+1
+--rpm
+30

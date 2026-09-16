@@ -1,0 +1,62 @@
+[package]
+name = "orchestrator-app"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+build = "build.rs"
+
+[features]
+default = []
+test-support = []
+verification-process-canary = []
+
+[[bin]]
+name = "orchestrator-owned-process-fixture"
+path = "tests/fixtures/owned_process_helper.rs"
+test = false
+bench = false
+doc = false
+
+[[bin]]
+name = "orchestrator-r0-process-broker-fixture"
+path = "tests/fixtures/process_broker.rs"
+test = false
+bench = false
+doc = false
+
+[[bin]]
+name = "orchestrator-lifecycle-resource-fixture"
+path = "tests/fixtures/lifecycle_resource_fixture.rs"
+test = false
+bench = false
+doc = false
+
+[dev-dependencies]
+# Self-referencing dev-dependency: unifies this crate's `test-support` feature
+# into the library build that `tests/*.rs` integration binaries link against,
+# so out-of-crate tests can reach the fixture-only journal surface
+# (`JournalCommit::for_fixture`, `JournalIntent::{kind, payload}`) without
+# every downstream consumer needing to opt in via `--features`.
+orchestrator-app = { path = ".", features = ["test-support"] }
+
+[dependencies]
+cap-std.workspace = true
+getrandom.workspace = true
+cap-primitives.workspace = true
+orchestrator-core = { path = "../orchestrator-core" }
+orchestrator-exec = { path = "../orchestrator-exec" }
+orchestrator-git = { path = "../orchestrator-git" }
+orchestrator-knowledge = { path = "../orchestrator-knowledge" }
+orchestrator-process = { path = "../orchestrator-process" }
+orchestrator-provider-claude = { path = "../orchestrator-provider-claude" }
+serde.workspace = true
+serde_json.workspace = true
+serde-saphyr.workspace = true
+thiserror.workspace = true
+rustix.workspace = true
+rusqlite.workspace = true
+sha2.workspace = true
+
+[lints]
+workspace = true

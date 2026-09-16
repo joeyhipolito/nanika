@@ -1,0 +1,519 @@
+//! Source location utilities.
+
+pub use crate::span::Span;
+#[cfg(feature = "deserialize")]
+use granit_parser::Span as ParserSpan;
+use serde_core::de::{self, IgnoredAny, MapAccess, Visitor};
+
+/// Row/column location within the source YAML document (1-indexed, character-based).
+///
+/// This type is used for both:
+/// - deserialization error reporting ([`crate::Error`])
+/// - span-aware values ([`crate::Spanned`])
+///
+/// # Example
+///
+/// ```
+/// # #[cfg(feature = "deserialize")]
+/// # {
+/// use serde::Deserialize;
+///
+/// #[derive(Deserialize, Debug)]
+/// struct Doc {
+///     val: String,
+/// }
+///
+/// // 1. Parse invalid YAML (type mismatch: expected string, found sequence)
+/// // Due emoji character and byte offsets are different.
+/// let yaml = "val🔑: [1, 2]";
+/// let err: Result<Doc, _> = serde_saphyr::from_str(yaml);
+///
+/// // 2. Obtain the error and its location
+/// if let Err(e) = err {
+///     if let Some(loc) = e.location() {
+///         // 3. Print row, column, and byte offsets
+///         // Output: Error at line 1, col 7. Byte offset: 9
+///         println!("Error at line {}, col {}", loc.line(), loc.column());
+///         if let Some(byte_off) = loc.span().byte_offset() {
+///             println!("Byte offset: {}", byte_off);
+///         }
+///     }
+/// }
+/// # }
+/// ```
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct Location {
+    /// 1-indexed row number in the input stream.
+    pub(crate) line: u32,
+    /// 1-indexed column number in the input stream.
+    pub(crate) column: u32,
+    /// Character-based span within the document
+    /// Byte offsets are available for string source but not from the reader.
+    pub(crate) span: Span,
+    /// Numeric id of the source where this location is from.
+    pub(crate) source_id: u32,
+}
+
+// As we do not use serde here (serde core only), we need manual implementation.
+impl<'de> serde_core::Deserialize<'de> for Location {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde_core::Deserializer<'de>,
+    {
+        enum Field {
+            Line,
+            Column,
+            Span,
+            SourceId,
+            Ignore,
+        }
+
+        impl<'de> serde_core::Deserialize<'de> for Field {
+            fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+            where
+                D: serde_core::Deserializer<'de>,
+            {
+                struct FieldVisitor;
+
+                impl<'a> Visitor<'a> for FieldVisitor {
+                    type Value = Field;
+
+                    fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                        f.write_str("a Location field")
+                    }
+
+                    fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+                    where
+                        E: de::Error,
+                    {
+                        Ok(match value {
+                            "line" => Field::Line,
+                            "column" => Field::Column,
+                            "span" => Field::Span,
+                            "source_id" => Field::SourceId,
+                            _ => Field::Ignore,
+                        })
+                    }
+                }
+
+                deserializer.deserialize_identifier(FieldVisitor)
+            }
+        }
+
+        struct LocationVisitor;
+
+        impl<'de> Visitor<'de> for LocationVisitor {
+            type Value = Location;
+
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str("a source location")
+            }
+
+            fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+            where
+                A: MapAccess<'de>,
+            {
+                let mut line = None;
+                let mut column = None;
+                let mut span = None;
+                let mut source_id = None;
+
+                while let Some(field) = map.next_key::<Field>()? {
+                    match field {
+                        Field::Line => {
+                            if line.is_some() {
+                                return Err(de::Error::duplicate_field("line"));
+                            }
+                            line = Some(map.next_value()?);
+                        }
+                        Field::Column => {
+                            if column.is_some() {
+                                return Err(de::Error::duplicate_field("column"));
+                            }
+                            column = Some(map.next_value()?);
+                        }
+                        Field::Span => {
+                            if span.is_some() {
+                                return Err(de::Error::duplicate_field("span"));
+                            }
+                            span = Some(map.next_value()?);
+                        }
+                        Field::SourceId => {
+                            if source_id.is_some() {
+                                return Err(de::Error::duplicate_field("source_id"));
+                            }
+                            source_id = Some(map.next_value()?);
+                        }
+                        Field::Ignore => {
+                            let _ = map.next_value::<IgnoredAny>()?;
+                        }
+                    }
+                }
+
+                let line = line.ok_or_else(|| de::Error::missing_field("line"))?;
+                let column = column.ok_or_else(|| de::Error::missing_field("column"))?;
+                let span = span.unwrap_or_default();
+                let source_id = source_id.unwrap_or_default();
+
+                Ok(Location {
+                    line,
+                    column,
+                    span,
+                    source_id,
+                })
+            }
+        }
+
+        const FIELDS: &[&str] = &["line", "column", "span", "source_id"];
+        deserializer.deserialize_struct("Location", FIELDS, LocationVisitor)
+    }
+}
+
+impl Location {
+    /// serde_yaml-compatible line information.
+    #[inline]
+    pub fn line(&self) -> u64 {
+        self.line as u64
+    }
+
+    /// serde_yaml-compatible column information.
+    #[inline]
+    pub fn column(&self) -> u64 {
+        self.column as u64
+    }
+
+    /// Character-based span within the source document.
+    /// For string source, it also can provide byte offsets.
+    #[inline]
+    pub fn span(&self) -> Span {
+        self.span
+    }
+
+    /// Numeric id of the source.
+    #[inline]
+    pub fn source_id(&self) -> u32 {
+        self.source_id
+    }
+}
+
+impl Location {
+    /// Sentinel value meaning "location unknown".
+    ///
+    /// Used when a precise position is not yet available at error creation time.
+    pub const UNKNOWN: Self = Self {
+        line: 0,
+        column: 0,
+        span: Span::UNKNOWN,
+        source_id: 0,
+    };
+
+    /// Create a new location record.
+    ///
+    /// Arguments:
+    /// - `line`: 1-indexed line.
+    /// - `column`: 1-indexed column.
+    #[cfg(feature = "deserialize")]
+    pub(crate) const fn new(line: usize, column: usize) -> Self {
+        Self {
+            line: if line > u32::MAX as usize {
+                u32::MAX
+            } else {
+                line as u32
+            },
+            column: if column > u32::MAX as usize {
+                u32::MAX
+            } else {
+                column as u32
+            },
+            span: Span::UNKNOWN,
+            source_id: 0,
+        }
+    }
+
+    #[cfg(feature = "deserialize")]
+    pub(crate) const fn with_span(mut self, span: Span) -> Self {
+        self.span = span;
+        self
+    }
+
+    #[cfg(feature = "deserialize")]
+    pub(crate) const fn with_source_id(mut self, source_id: u32) -> Self {
+        self.source_id = source_id;
+        self
+    }
+}
+
+/// Convert a `granit_parser::Span` to a 1-indexed [`Location`].
+///
+/// Called by:
+/// - The live events adapter for each raw parser event.
+///
+/// The resulting [`Location::span`] carries character offsets/lengths (not bytes),
+/// matching what the parser reports.
+#[cfg(feature = "deserialize")]
+pub(crate) fn location_from_span(span: &ParserSpan) -> Location {
+    let start = &span.start;
+    let end = &span.end;
+
+    let mut out = Span::new(start.index() as u64, span.len() as u64);
+
+    if let (Some(start_byte), Some(end_byte)) = (start.byte_offset(), end.byte_offset()) {
+        let byte_len = end_byte.saturating_sub(start_byte);
+
+        #[cfg(not(feature = "huge_documents"))]
+        {
+            // If byte offsets exceed 4 GiB on non-huge builds, mark byte info as unavailable.
+            if start_byte <= (u32::MAX as usize) && byte_len <= (u32::MAX as usize) {
+                out = out.with_byte_info(start_byte as u64, byte_len as u64);
+            }
+        }
+
+        #[cfg(feature = "huge_documents")]
+        {
+            out = out.with_byte_info(start_byte as u64, byte_len as u64);
+        }
+    }
+
+    Location::new(start.line(), start.col() + 1).with_span(out)
+}
+
+/// Pair of locations for values that may come indirectly from YAML anchors.
+///
+/// - `reference_location`: where the value is *used* (alias/merge site).
+/// - `defined_location`: where the value is *defined* (anchor definition site).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct Locations {
+    pub reference_location: Location,
+    pub defined_location: Location,
+}
+
+impl Locations {
+    #[cfg_attr(not(any(feature = "garde", feature = "validator")), allow(dead_code))]
+    pub(crate) const UNKNOWN: Locations = Locations {
+        reference_location: Location::UNKNOWN,
+        defined_location: Location::UNKNOWN,
+    };
+
+    #[inline]
+    #[cfg(feature = "deserialize")]
+    pub(crate) fn same(location: &Location) -> Option<Locations> {
+        if location == &Location::UNKNOWN {
+            None
+        } else {
+            Some(Locations {
+                reference_location: *location,
+                defined_location: *location,
+            })
+        }
+    }
+
+    #[inline]
+    pub fn primary_location(self) -> Option<Location> {
+        if self.reference_location != Location::UNKNOWN {
+            Some(self.reference_location)
+        } else if self.defined_location != Location::UNKNOWN {
+            Some(self.defined_location)
+        } else {
+            None
+        }
+    }
+}
+
+#[cfg(all(test, feature = "deserialize"))]
+mod tests {
+    use super::*;
+    use granit_parser::{Event, Parser};
+
+    #[test]
+    fn test_location_from_span() {
+        let input = "foo";
+        let mut parser = Parser::new_from_str(input);
+
+        // StreamStart
+        parser.next().unwrap().unwrap();
+        // DocumentStart
+        parser.next().unwrap().unwrap();
+
+        // Scalar "foo"
+        let (event, parser_span) = parser.next().unwrap().unwrap();
+        assert!(matches!(event, Event::Scalar(..)));
+
+        let loc = location_from_span(&parser_span);
+
+        // "foo" starts at line 1, col 1
+        assert_eq!(loc.line(), 1);
+        assert_eq!(loc.column(), 1);
+
+        let span = loc.span();
+        assert_eq!(span.offset(), 0);
+        assert_eq!(span.len(), 3);
+        assert!(!span.is_empty());
+
+        // "foo" is 3 bytes
+        assert_eq!(span.byte_offset(), Some(0));
+        assert_eq!(span.byte_len(), Some(3));
+    }
+
+    #[test]
+    fn test_location_from_span_offset() {
+        let input = "  bar";
+        let mut parser = Parser::new_from_str(input);
+
+        parser.next().unwrap().unwrap();
+        parser.next().unwrap().unwrap();
+
+        let (event, parser_span) = parser.next().unwrap().unwrap();
+        assert!(matches!(event, Event::Scalar(..)));
+
+        let loc = location_from_span(&parser_span);
+
+        // "  bar" -> "bar" starts at line 1, col 3
+        // Wait, does granit-parser count columns 0-indexed or 1-indexed?
+        // location_from_span does `start.col() + 1`. So if parser is 0-indexed, loc is 1-indexed.
+        // col 0: ' ', col 1: ' ', col 2: 'b'.
+        // So start.col() should be 2. location.column() should be 3.
+        assert_eq!(loc.line(), 1);
+        assert_eq!(loc.column(), 3);
+
+        let span = loc.span();
+        assert_eq!(span.offset(), 2);
+        assert_eq!(span.len(), 3);
+    }
+
+    #[test]
+    fn test_span_methods() {
+        let span = Span::new(10, 5).with_byte_info(20, 5);
+
+        assert_eq!(span.offset(), 10);
+        assert_eq!(span.len(), 5);
+        assert!(!span.is_empty());
+        assert_eq!(span.byte_offset(), Some(20));
+        assert_eq!(span.byte_len(), Some(5));
+
+        let empty_span = Span::new(10, 0).with_byte_info(20, 0);
+        assert!(empty_span.is_empty());
+    }
+
+    #[test]
+    fn test_location_methods() {
+        let loc = Location::new(5, 10);
+        assert_eq!(loc.line(), 5);
+        assert_eq!(loc.column(), 10);
+        assert_eq!(loc.span(), Span::UNKNOWN);
+
+        let span = Span::new(100, 20).with_byte_info(100, 20);
+        let loc_with_span = loc.with_span(span);
+
+        assert_eq!(loc_with_span.line(), 5);
+        assert_eq!(loc_with_span.column(), 10);
+        assert_eq!(loc_with_span.span(), span);
+    }
+
+    #[test]
+    fn location_new_saturates_line_and_column() {
+        let loc = Location::new(usize::MAX, usize::MAX);
+
+        assert_eq!(loc.line(), u64::from(u32::MAX));
+        assert_eq!(loc.column(), u64::from(u32::MAX));
+    }
+
+    #[test]
+    fn deserialize_location_accepts_optional_and_unknown_fields() {
+        let loc: Location = serde_json::from_str(
+            r#"{
+                "ignored": true,
+                "line": 5,
+                "column": 10,
+                "span": { "offset": 20, "len": 3, "byte_info": [40, 3] },
+                "source_id": 7
+            }"#,
+        )
+        .unwrap();
+
+        assert_eq!(loc.line(), 5);
+        assert_eq!(loc.column(), 10);
+        assert_eq!(loc.span().offset(), 20);
+        assert_eq!(loc.span().len(), 3);
+        assert_eq!(loc.span().byte_offset(), Some(40));
+        assert_eq!(loc.span().byte_len(), Some(3));
+        assert_eq!(loc.source_id(), 7);
+    }
+
+    #[test]
+    fn deserialize_location_defaults_span_and_source_id() {
+        let loc: Location = serde_json::from_str(r#"{ "line": 1, "column": 2 }"#).unwrap();
+
+        assert_eq!(loc.line(), 1);
+        assert_eq!(loc.column(), 2);
+        assert_eq!(loc.span(), Span::default());
+        assert_eq!(loc.source_id(), 0);
+    }
+
+    #[test]
+    fn deserialize_location_rejects_duplicate_required_fields() {
+        let err = serde_json::from_str::<Location>(r#"{ "line": 1, "line": 2, "column": 3 }"#)
+            .unwrap_err();
+
+        assert!(err.to_string().contains("duplicate field `line`"));
+    }
+
+    #[test]
+    fn deserialize_location_rejects_duplicate_defaulted_fields() {
+        let duplicate_span = serde_json::from_str::<Location>(
+            r#"{
+                "line": 1,
+                "column": 2,
+                "span": { "offset": 1, "len": 1, "byte_info": [0, 0] },
+                "span": { "offset": 2, "len": 2, "byte_info": [0, 0] }
+            }"#,
+        )
+        .unwrap_err();
+        assert!(
+            duplicate_span
+                .to_string()
+                .contains("duplicate field `span`")
+        );
+
+        let duplicate_source_id = serde_json::from_str::<Location>(
+            r#"{ "line": 1, "column": 2, "source_id": 1, "source_id": 2 }"#,
+        )
+        .unwrap_err();
+        assert!(
+            duplicate_source_id
+                .to_string()
+                .contains("duplicate field `source_id`")
+        );
+    }
+
+    #[test]
+    fn deserialize_location_rejects_missing_required_fields() {
+        let err = serde_json::from_str::<Location>(r#"{ "line": 1 }"#).unwrap_err();
+
+        assert!(err.to_string().contains("missing field `column`"));
+    }
+
+    #[test]
+    fn test_locations_methods() {
+        let l1 = Location::new(1, 1);
+        let locations = Locations::same(&l1).unwrap();
+        assert_eq!(locations.reference_location, l1);
+        assert_eq!(locations.defined_location, l1);
+
+        assert_eq!(locations.primary_location(), Some(l1));
+
+        let l2 = Location::new(2, 2);
+        let locations_diff = Locations {
+            reference_location: l1,
+            defined_location: l2,
+        };
+        assert_eq!(locations_diff.primary_location(), Some(l1));
+
+        let locations_unknown = Locations {
+            reference_location: Location::UNKNOWN,
+            defined_location: l2,
+        };
+        assert_eq!(locations_unknown.primary_location(), Some(l2));
+
+        assert!(Locations::same(&Location::UNKNOWN).is_none());
+    }
+}

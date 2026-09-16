@@ -1,0 +1,99 @@
+fn main() {
+    let formatter = serde_saphyr::UserMessageFormatter;
+
+    // Disable serde-saphyr snippet as miette snippet is used.
+    let no_snippet = serde_saphyr::options! { with_snippet: false };
+
+    eprintln!("Miette alone:");
+    //   cargo run --example miette --features miette
+    let yaml = "definitely\n";
+
+    let err = serde_saphyr::from_str_with_options::<bool>(yaml, no_snippet.clone())
+        .expect_err("bool parse error expected");
+    let report = serde_saphyr::miette::to_miette_report_with_formatter(
+        &err,
+        yaml,
+        "config.yaml",
+        &formatter,
+    );
+
+    // `Debug` formatting uses miette's graphical reporter.
+    eprintln!("{report:?}");
+
+    // Show a garde validation error too.
+    // cargo run --example miette --features "garde miette"
+    #[cfg(feature = "garde")]
+    {
+        use garde::Validate;
+        use serde::Deserialize;
+
+        #[derive(Debug, Deserialize, Validate)]
+        #[allow(dead_code)]
+        struct Cfg {
+            #[serde(rename = "firstString")]
+            #[garde(skip)]
+            first_string: String,
+
+            #[serde(rename = "secondString")]
+            #[garde(length(min = 2))]
+            second_string: String,
+        }
+
+        // The second value is an alias to the first, so the error can label both:
+        // - where the value is used (`secondString: *A`)
+        // - where it is defined (`firstString: &A "x"`)
+        let yaml = r#"
+firstString: &A "x"
+secondString: *A
+"#;
+
+        eprintln!("Garde validation:");
+        let err = serde_saphyr::from_str_with_options_valid::<Cfg>(yaml, no_snippet.clone())
+            .expect_err("validation error expected");
+        let report = serde_saphyr::miette::to_miette_report_with_formatter(
+            &err,
+            yaml,
+            "config.yaml",
+            &formatter,
+        );
+        eprintln!("{report:?}");
+    }
+
+    // Show a validator validation error too.
+    // cargo run --example miette --features "validator miette"
+    #[cfg(feature = "validator")]
+    {
+        use serde::Deserialize;
+        use validator::Validate;
+
+        #[derive(Debug, Deserialize, Validate)]
+        #[allow(dead_code)]
+        struct Cfg {
+            #[serde(rename = "firstString")]
+            first_string: String,
+
+            #[serde(rename = "secondString")]
+            #[validate(length(min = 2))]
+            second_string: String,
+        }
+
+        // The second value is an alias to the first, so the error can label both:
+        // - where the value is used (`secondString: *A`)
+        // - where it is defined (`firstString: &A "x"`)
+        let yaml = r#"
+firstString: &A "x"
+secondString: *A
+"#;
+
+        eprintln!("Validator validation:");
+        let err = serde_saphyr::from_str_with_options_validate::<Cfg>(yaml, no_snippet)
+            .expect_err("validation error expected");
+        let report = serde_saphyr::miette::to_miette_report_with_formatter(
+            &err,
+            yaml,
+            "config.yaml",
+            &formatter,
+        );
+        eprintln!("{report:?}");
+    }
+}

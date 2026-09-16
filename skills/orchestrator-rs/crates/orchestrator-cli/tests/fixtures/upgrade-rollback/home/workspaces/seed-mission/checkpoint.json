@@ -1,0 +1,38 @@
+{
+  "version": 1,
+  "payload": {
+    "version": 2,
+    "workspace_id": "seed-mission",
+    "domain": "dev",
+    "status": "completed",
+    "started_at": "2026-07-13T00:00:00Z",
+    "plan": {
+      "id": "plan-seed-mission",
+      "task": "the seeded pre-state",
+      "execution_mode": "sequential",
+      "decomp_source": "predecomposed",
+      "created_at": "2026-07-13T00:00:00Z",
+      "phases": [
+        {
+          "id": "phase-1",
+          "name": "build",
+          "objective": "compile the crate",
+          "persona": "senior-backend-engineer",
+          "model_tier": "work",
+          "runtime": "codex",
+          "status": "completed"
+        },
+        {
+          "id": "phase-2",
+          "name": "verify",
+          "objective": "run the gates",
+          "persona": "senior-backend-engineer",
+          "model_tier": "work",
+          "runtime": "codex",
+          "dependencies": ["phase-1"],
+          "status": "completed"
+        }
+      ]
+    }
+  }
+}

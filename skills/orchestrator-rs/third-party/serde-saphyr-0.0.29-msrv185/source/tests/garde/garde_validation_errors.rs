@@ -1,0 +1,884 @@
+use garde::Validate;
+use serde::Deserialize;
+use serde_saphyr::{Error, ValidationSource};
+
+#[cfg(feature = "include")]
+use std::{cell::RefCell, rc::Rc};
+
+#[derive(Debug, Deserialize, Validate)]
+struct Root {
+    #[garde(length(min = 1))]
+    a: String,
+}
+
+#[derive(Debug, Deserialize, Validate)]
+struct CommentedRoot {
+    #[garde(dive)]
+    item: serde_saphyr::Commented<CommentedLeaf>,
+}
+
+#[derive(Debug, Deserialize, Validate)]
+struct CommentedLeaf {
+    #[garde(length(min = 1))]
+    value: String,
+}
+
+fn reject_empty_document(value: &Option<String>, _ctx: &()) -> garde::Result {
+    if value.is_none() {
+        Err(garde::Error::new("empty document is not valid"))
+    } else {
+        Ok(())
+    }
+}
+
+#[derive(Debug, Deserialize, Validate)]
+#[allow(dead_code)]
+struct NullableTopLevel(#[garde(custom(reject_empty_document))] Option<String>);
+
+fn assert_empty_document_validation_error(err: Error) {
+    match &err {
+        Error::ValidationError { .. } => {}
+        Error::WithSnippet { error, .. } if matches!(**error, Error::ValidationError { .. }) => {}
+        other => panic!("expected ValidationError, got: {other:?}"),
+    }
+
+    let rendered = err.to_string();
+    assert!(
+        rendered.contains("empty document is not valid"),
+        "expected validation message, got: {rendered}"
+    );
+    assert!(
+        !rendered.contains("unexpected end of file"),
+        "validation error was rewritten to EOF: {rendered}"
+    );
+}
+
+#[test]
+fn validation_error_inside_commented_subtree_uses_child_location() {
+    let yaml = "item:\n  value: \"\"\n";
+
+    let err = serde_saphyr::from_str_with_options_valid::<CommentedRoot>(yaml, Default::default())
+        .expect_err("must fail validation");
+
+    let location = err
+        .location()
+        .expect("garde error inside Commented<T> should expose a location");
+    assert_eq!(location.line(), 2);
+    assert_eq!(location.column(), 10);
+
+    let rendered = err.to_string();
+    assert!(
+        rendered.contains("for `item.value`"),
+        "expected nested commented path in output, got: {rendered}"
+    );
+}
+
+#[derive(Debug, Deserialize, Validate)]
+#[allow(dead_code)]
+struct AnchorRoot {
+    // Just defined here
+    #[garde(skip)]
+    a: String,
+    #[garde(length(min = 2))]
+    b: String,
+}
+
+#[derive(Debug, Deserialize, Validate)]
+#[allow(dead_code)]
+struct NestedAnchorRoot {
+    #[garde(dive)]
+    outer: Outer,
+}
+
+#[derive(Debug, Deserialize, Validate)]
+#[allow(dead_code)]
+struct Outer {
+    #[garde(dive)]
+    inner: Inner,
+}
+
+#[derive(Debug, Deserialize, Validate)]
+#[allow(dead_code)]
+struct Inner {
+    // Just defined here
+    #[garde(skip)]
+    a: String,
+    #[garde(length(min = 2))]
+    b: String,
+}
+
+#[derive(Debug, Deserialize, Validate)]
+#[allow(dead_code)]
+struct RenamedFieldRoot {
+    #[serde(rename = "renamed_a")]
+    #[garde(length(min = 1))]
+    a: String,
+}
+
+// Nested maps for testing garde error path rendering through map entries.
+#[derive(Debug, Deserialize, Validate)]
+#[allow(dead_code)]
+struct MapLeaf {
+    #[garde(length(min = 2))]
+    v: String,
+}
+
+#[derive(Debug, Deserialize, Validate)]
+#[allow(dead_code)]
+struct InnerMap {
+    #[garde(dive)]
+    inner: std::collections::HashMap<String, MapLeaf>,
+}
+
+#[derive(Debug, Deserialize, Validate)]
+#[allow(dead_code)]
+struct NestedMapRoot {
+    #[garde(dive)]
+    outer: std::collections::HashMap<String, InnerMap>,
+}
+
+#[cfg(feature = "include")]
+#[derive(Debug, Deserialize, Validate)]
+struct IncludeValidationRoot {
+    #[garde(dive)]
+    a: IncludeValidationLeaf,
+}
+
+#[cfg(feature = "include")]
+#[derive(Debug, Deserialize, Validate)]
+struct IncludeValidationLeaf {
+    #[garde(length(min = 1))]
+    value: String,
+}
+
+#[test]
+fn from_str_with_options_valid_runs_garde_validation() {
+    let yaml = "a: \"\"\n";
+
+    let err = serde_saphyr::from_str_with_options_valid::<Root>(yaml, Default::default())
+        .expect_err("must fail validation");
+
+    let rendered = err.to_string();
+
+    let expected = concat!(
+        "error: line 1 column 4: validation error: length is lower than 1 for `a`\n",
+        " --> (defined):1:4\n",
+        "  |\n",
+        "1 | a: \"\"\n",
+        "  |    ^ validation error: length is lower than 1 for `a`",
+    );
+    assert_eq!(rendered, expected);
+}
+
+#[test]
+fn from_str_with_options_valid_preserves_validation_error_after_synthetic_null() {
+    let err = serde_saphyr::from_str_with_options_valid::<NullableTopLevel>("", Default::default())
+        .expect_err("empty document must fail validation");
+
+    assert_empty_document_validation_error(err);
+}
+
+#[test]
+fn from_reader_with_options_valid_preserves_validation_error_after_synthetic_null() {
+    let reader = std::io::Cursor::new(Vec::<u8>::new());
+    let err = serde_saphyr::from_reader_with_options_valid::<_, NullableTopLevel>(
+        reader,
+        Default::default(),
+    )
+    .expect_err("empty document must fail validation");
+
+    assert_empty_document_validation_error(err);
+}
+
+#[test]
+fn serde_rename() {
+    #[derive(Debug, Deserialize, Validate)]
+    #[serde(rename_all = "camelCase")]
+    struct StyleRenamedRoot {
+        // External key is camelCase, but garde path is Rust field `my_field`.
+        #[garde(length(min = 1))]
+        my_field: String,
+    }
+
+    let yaml = "myField: \"\"\n";
+
+    let err =
+        serde_saphyr::from_str_with_options_valid::<StyleRenamedRoot>(yaml, Default::default())
+            .expect_err("must fail validation");
+    let rendered = err.to_string();
+
+    // We print the resolved leaf name (YAML spelling) when location lookup bridges a rename.
+    assert!(
+        rendered.contains("for `myField`"),
+        "expected resolved leaf name `myField` in output, got: {rendered}"
+    );
+
+    // Location lookup should still find the YAML location of `myField`'s value.
+    let expected = concat!(
+        "error: line 1 column 10: validation error: length is lower than 1 for `myField`\n",
+        " --> (defined):1:10\n",
+        "  |\n",
+        "1 | myField: \"\"\n",
+        "  |          ^ validation error: length is lower than 1 for `myField`",
+    );
+    assert_eq!(rendered, expected);
+}
+
+#[test]
+fn from_str_validated_converts_garde_report_into_error() {
+    let yaml = "a: \"\"\n";
+
+    let err = serde_saphyr::from_str_valid::<Root>(yaml).expect_err("must fail validation");
+
+    let rendered = err.to_string();
+
+    // Default options enable snippet wrapping.
+    match &err {
+        serde_saphyr::Error::WithSnippet { error, .. } => {
+            assert!(matches!(
+                **error,
+                serde_saphyr::Error::ValidationError { .. }
+            ));
+        }
+        serde_saphyr::Error::ValidationError { .. } => {}
+        other => panic!("expected validation error, got: {other:?}"),
+    }
+    assert!(
+        rendered.contains("defined"),
+        "expected snippet output, got: {rendered}"
+    );
+}
+
+#[test]
+fn from_multiple_with_options_valid_returns_all_validation_errors() {
+    // Two documents; both fail the same `garde` constraint.
+    // Locations are relative to the whole YAML stream.
+    let yaml = "a: \"\"\n---\na: \"\"\n";
+
+    let err = serde_saphyr::from_multiple_with_options_valid::<Root>(yaml, Default::default())
+        .expect_err("must fail validation");
+
+    let Error::ValidationErrors {
+        source: ValidationSource::Garde,
+        errors,
+    } = &err
+    else {
+        panic!("expected ValidationErrors, got: {err:?}");
+    };
+    assert_eq!(errors.len(), 2);
+
+    let rendered = err.to_string();
+    assert!(
+        rendered.contains("line 1 column 4"),
+        "expected first document error location, got: {rendered}"
+    );
+    assert!(
+        rendered.contains("line 3 column 4"),
+        "expected second document error location, got: {rendered}"
+    );
+}
+
+#[test]
+fn from_slice_multiple_with_options_valid_validates_each_document() {
+    // Same as `from_multiple_with_options_valid_validates_each_document`, but through the bytes API.
+    let yaml = concat!("a: \"ok\"\n", "---\n", "a: \"\"\n",);
+
+    let err = serde_saphyr::from_slice_multiple_with_options_valid::<Root>(
+        yaml.as_bytes(),
+        Default::default(),
+    )
+    .expect_err("second document must fail validation");
+
+    let rendered = err.to_string();
+    assert!(
+        rendered.contains("line 3 column 4"),
+        "expected validation error location in second document, got: {rendered}"
+    );
+    assert!(
+        rendered.contains("for `a`"),
+        "expected garde path in output, got: {rendered}"
+    );
+}
+
+#[test]
+fn validation_error_shows_referenced_and_defined_snippets_for_aliases() {
+    // `b` is an alias of `a`. For `b`, garde path-to-location recording captures:
+    // - referenced: location of the alias token `*A`
+    // - defined: location of the anchored scalar value (the `""` under `&A`)
+    // Use a non-empty string to avoid it being treated as null-like by any YAML adapters.
+    // Insert many comment lines between the anchor definition and the alias reference,
+    // so a single cropped snippet window cannot cover both locations.
+    let mut yaml = String::new();
+    yaml.push_str("a: &A \"x\"\n");
+    for _ in 0..32 {
+        yaml.push_str("#\n");
+    }
+    yaml.push_str("b: *A\n");
+
+    let err = serde_saphyr::from_str_with_options_valid::<AnchorRoot>(&yaml, Default::default())
+        .expect_err("must fail validation");
+    let rendered = err.to_string();
+
+    // We want to see the primary (use-site) diagnostic.
+    assert!(
+        rendered.contains(" --> <input>:34:4"),
+        "expected use-site snippet header, got: {rendered}"
+    );
+    assert!(
+        rendered.contains("the value is used here"),
+        "expected use-site snippet label, got: {rendered}"
+    );
+
+    // And we want the secondary anchor context rendered as a custom message + a bare snippet
+    // window (no `note:` / `defined:` report header).
+    assert!(
+        rendered.contains("This value comes indirectly from the anchor at line 1 column 7:"),
+        "expected anchor context line, got: {rendered}"
+    );
+
+    // And ensure the failing path is mentioned.
+    assert!(
+        rendered.contains("for `b`"),
+        "expected failing path `b` in output, got: {rendered}"
+    );
+}
+
+#[test]
+fn validation_error_shows_longer_garde_path_for_nested_structures() {
+    // Same anchor/alias scenario as `validation_error_shows_referenced_and_defined_snippets_for_aliases`,
+    // but nested inside structures so garde produces a longer path like `outer.inner.b`.
+    let mut yaml = String::new();
+    yaml.push_str("outer:\n");
+    yaml.push_str("  inner:\n");
+    yaml.push_str("    a: &A \"x\"\n");
+    for _ in 0..32 {
+        yaml.push_str("    #\n");
+    }
+    yaml.push_str("    b: *A\n");
+
+    let err =
+        serde_saphyr::from_str_with_options_valid::<NestedAnchorRoot>(&yaml, Default::default())
+            .expect_err("must fail validation");
+    let rendered = err.to_string();
+
+    // Primary use-site snippet.
+    assert!(
+        rendered.contains(" --> <input>:36:8"),
+        "expected use-site snippet header, got: {rendered}"
+    );
+    assert!(
+        rendered.contains("the value is used here"),
+        "expected use-site snippet label, got: {rendered}"
+    );
+
+    // Anchor context line should include the definition coordinates.
+    assert!(
+        rendered.contains("This value comes indirectly from the anchor at line 3 column 11:"),
+        "expected anchor context line, got: {rendered}"
+    );
+
+    // And ensure we see the longer failing path.
+    assert!(
+        rendered.contains("for `outer.inner.b`"),
+        "expected failing path `outer.inner.b` in output, got: {rendered}"
+    );
+}
+
+#[test]
+fn validation_error_shows_path_for_nested_map_entry() {
+    // A nested map structure where an inner entry fails garde validation.
+    // Expected failing path should include both map keys and the leaf field name.
+    let yaml = concat!(
+        "outer:\n",
+        "  group1:\n",
+        "    inner:\n",
+        "      itemA:\n",
+        "        v: \"x\"\n", // length 1 < min 2
+    );
+
+    let err = serde_saphyr::from_str_with_options_valid::<NestedMapRoot>(yaml, Default::default())
+        .expect_err("must fail validation");
+    let rendered = err.to_string();
+
+    // Ensure the failing garde path shows nested map keys and the leaf field.
+    assert!(
+        rendered.contains(
+            "^ validation error: length is lower than 2 for `outer.group1.inner.itemA.v`"
+        ),
+        "expected failing path `outer.group1.inner.itemA.v` in output, got: {rendered}"
+    );
+}
+
+#[test]
+fn from_multiple_with_options_valid_validates_each_document() {
+    let yaml = concat!("a: \"ok\"\n", "---\n", "a: \"\"\n",);
+
+    let err = serde_saphyr::from_multiple_with_options_valid::<Root>(yaml, Default::default())
+        .expect_err("second document must fail validation");
+    let rendered = err.to_string();
+
+    // The failure should be attributed to the second document.
+    assert!(
+        rendered.contains("line 3 column 4"),
+        "expected validation error location in second document, got: {rendered}"
+    );
+    assert!(
+        rendered.contains("for `a`"),
+        "expected garde path in output, got: {rendered}"
+    );
+}
+
+#[test]
+fn reader_validation_root_snapshot_out_of_range_has_no_incorrect_snippet() {
+    let mut yaml = String::new();
+    for i in 0..9000 {
+        yaml.push_str(&format!("skip_{i}: x\n"));
+    }
+    yaml.push_str("a: \"\"\n");
+
+    let reader = std::io::Cursor::new(yaml.into_bytes());
+
+    let err = serde_saphyr::from_reader_with_options_valid::<_, Root>(reader, Default::default())
+        .expect_err("must fail validation");
+
+    match &err {
+        Error::ValidationError { .. } => {}
+        Error::WithSnippet { error, .. } if matches!(**error, Error::ValidationError { .. }) => {}
+        other => panic!("expected ValidationError, got: {other:?}"),
+    }
+
+    let rendered = err.to_string();
+    assert!(
+        rendered.contains("validation error"),
+        "expected validation message, got: {rendered}"
+    );
+    assert!(
+        rendered.contains("line 9001 column 4"),
+        "expected location, got: {rendered}"
+    );
+    assert!(
+        rendered.contains("9001 | a: \"\""),
+        "expected either a correct high-line snippet or no snippet, got: {rendered}"
+    );
+    assert!(
+        !rendered.contains("<input>:1:"),
+        "expected no incorrect line-1 snippet rendering, got: {rendered}"
+    );
+}
+
+#[test]
+fn read_with_options_valid_validates_each_document_in_iterator() {
+    let yaml = concat!("a: \"ok\"\n", "---\n", "a: \"\"\n",);
+    let mut reader = std::io::Cursor::new(yaml.as_bytes());
+
+    let mut it = serde_saphyr::read_with_options_valid::<_, Root>(&mut reader, Default::default());
+
+    let first = it
+        .next()
+        .expect("must yield first document")
+        .expect("first doc should be valid");
+    assert_eq!(first.a, "ok");
+
+    let err = it
+        .next()
+        .expect("must yield second document")
+        .expect_err("second document must fail validation");
+    match &err {
+        Error::ValidationError { .. } => {}
+        Error::WithSnippet { error, .. } if matches!(**error, Error::ValidationError { .. }) => {}
+        other => panic!("expected ValidationError, got: {other:?}"),
+    }
+
+    let rendered = err.to_string();
+    assert!(
+        rendered.contains("validation error"),
+        "expected validation message, got: {rendered}"
+    );
+    assert!(
+        rendered.contains("line 3 column 4"),
+        "expected second-doc location, got: {rendered}"
+    );
+    assert!(
+        rendered.contains(":3:4"),
+        "expected reader snippet location, got: {rendered}"
+    );
+    assert!(
+        rendered.contains("3 | a: \"\""),
+        "expected second-doc snippet contents, got: {rendered}"
+    );
+
+    assert!(it.next().is_none(), "iterator must end after an error");
+}
+
+#[cfg(feature = "include")]
+#[test]
+fn reader_garde_validation_in_text_include_has_snippet() {
+    let yaml = "a: !include child.yaml\n";
+    let reader = std::io::Cursor::new(yaml.as_bytes());
+    let options = serde_saphyr::options! {}.with_include_resolver(
+        |req: serde_saphyr::IncludeRequest| -> Result<serde_saphyr::ResolvedInclude, serde_saphyr::IncludeResolveError> {
+            if req.spec == "child.yaml" {
+                Ok(serde_saphyr::ResolvedInclude {
+                    id: req.spec.to_string(),
+                    name: req.spec.to_string(),
+                    source: serde_saphyr::InputSource::from_string("\"\"\n".to_string()),
+                })
+            } else {
+                Err(serde_saphyr::IncludeResolveError::Message("not found".to_string()))
+            }
+        },
+    );
+
+    let err = serde_saphyr::from_reader_with_options_valid::<_, Root>(reader, options)
+        .expect_err("included value must fail garde rule");
+    match &err {
+        Error::ValidationError { .. } => {}
+        Error::WithSnippet { error, .. } if matches!(**error, Error::ValidationError { .. }) => {}
+        other => panic!("expected ValidationError, got: {other:?}"),
+    }
+
+    let location = err
+        .location()
+        .expect("garde validation error should expose a location");
+    assert_eq!(
+        location.source_id(),
+        2,
+        "expected included source id, got: {location:?}"
+    );
+
+    let rendered = err.to_string();
+    assert!(
+        rendered.contains("| \"\""),
+        "expected snippet to render included content, got: {rendered}"
+    );
+}
+
+#[cfg(feature = "include")]
+#[test]
+fn from_str_with_options_valid_reports_garde_error_from_included_input() {
+    let yaml = "a: !include child.yaml\n";
+    let options = serde_saphyr::options! {}.with_include_resolver(
+        |req: serde_saphyr::IncludeRequest| -> Result<serde_saphyr::ResolvedInclude, serde_saphyr::IncludeResolveError> {
+            if req.spec == "child.yaml" {
+                Ok(serde_saphyr::ResolvedInclude {
+                    id: req.spec.to_string(),
+                    name: req.spec.to_string(),
+                    source: serde_saphyr::InputSource::from_string("\"\"\n".to_string()),
+                })
+            } else {
+                Err(serde_saphyr::IncludeResolveError::Message("not found".to_string()))
+            }
+        },
+    );
+
+    let err = serde_saphyr::from_str_with_options_valid::<Root>(yaml, options)
+        .expect_err("included value must fail garde rule");
+    match &err {
+        Error::ValidationError { .. } => {}
+        Error::WithSnippet { error, .. } if matches!(**error, Error::ValidationError { .. }) => {}
+        other => panic!("expected ValidationError, got: {other:?}"),
+    }
+    let location = err
+        .location()
+        .expect("garde validation error should expose a location");
+    assert_eq!(
+        location.source_id(),
+        2,
+        "expected included source id, got: {location:?}"
+    );
+
+    let rendered = err.to_string();
+    assert!(
+        rendered.contains("| \"\""),
+        "expected snippet to render included content, got: {rendered}"
+    );
+}
+
+#[cfg(feature = "include")]
+#[test]
+fn validation_does_not_replay_include_resolver() {
+    let calls = Rc::new(RefCell::new(Vec::new()));
+    let calls_for_resolver = Rc::clone(&calls);
+    let options = serde_saphyr::options! {}.with_include_resolver(
+        move |req: serde_saphyr::IncludeRequest| {
+            calls_for_resolver.borrow_mut().push(req.spec.to_string());
+            match req.spec {
+                "child.yaml" => Ok(serde_saphyr::ResolvedInclude {
+                    id: req.spec.to_string(),
+                    name: req.spec.to_string(),
+                    source: serde_saphyr::InputSource::from_string(
+                        "value: !include grandchild.yaml\n".to_string(),
+                    ),
+                }),
+                "grandchild.yaml" => Ok(serde_saphyr::ResolvedInclude {
+                    id: req.spec.to_string(),
+                    name: req.spec.to_string(),
+                    source: serde_saphyr::InputSource::from_string("\"\"\n".to_string()),
+                }),
+                other => Err(serde_saphyr::IncludeResolveError::Message(format!(
+                    "unexpected include: {other}"
+                ))),
+            }
+        },
+    );
+
+    let yaml = "a: !include child.yaml\n";
+
+    let err = serde_saphyr::from_str_with_options_valid::<IncludeValidationRoot>(yaml, options)
+        .expect_err("included value must fail garde rule");
+
+    match &err {
+        Error::ValidationError { .. } => {}
+        Error::WithSnippet { error, .. } if matches!(**error, Error::ValidationError { .. }) => {}
+        other => panic!("expected ValidationError, got: {other:?}"),
+    }
+    assert_eq!(
+        calls.borrow().as_slice(),
+        ["child.yaml", "grandchild.yaml"],
+        "validation failure must not replay the include resolver"
+    );
+}
+
+#[cfg(feature = "include")]
+#[test]
+fn validation_include_chain_built_from_recorded_sources() {
+    let yaml = "a: !include child.yaml\n";
+    let options = serde_saphyr::options! {}.with_include_resolver(
+        |req: serde_saphyr::IncludeRequest| -> Result<serde_saphyr::ResolvedInclude, serde_saphyr::IncludeResolveError> {
+            match req.spec {
+                "child.yaml" => Ok(serde_saphyr::ResolvedInclude {
+                    id: req.spec.to_string(),
+                    name: req.spec.to_string(),
+                    source: serde_saphyr::InputSource::from_string("value: !include grandchild.yaml\n".to_string()),
+                }),
+                "grandchild.yaml" => Ok(serde_saphyr::ResolvedInclude {
+                    id: req.spec.to_string(),
+                    name: req.spec.to_string(),
+                    source: serde_saphyr::InputSource::from_string("\"\"\n".to_string()),
+                }),
+                other => Err(serde_saphyr::IncludeResolveError::Message(format!("unexpected include: {other}"))),
+            }
+        },
+    );
+
+    let err = serde_saphyr::from_str_with_options_valid::<IncludeValidationRoot>(yaml, options)
+        .expect_err("included value must fail garde rule");
+    let rendered = err.to_string();
+
+    assert!(
+        rendered.contains("--> (defined):1:1"),
+        "expected deepest included source snippet, got: {rendered}"
+    );
+    assert!(
+        rendered.contains("included from here:"),
+        "expected include-chain notes, got: {rendered}"
+    );
+    assert!(
+        rendered.contains("--> child.yaml:1:17"),
+        "expected intermediate include-site snippet, got: {rendered}"
+    );
+    assert!(
+        rendered.contains("--> <input>:1:13"),
+        "expected root include-site snippet, got: {rendered}"
+    );
+}
+
+#[cfg(feature = "include")]
+#[test]
+fn garde_multidoc_validation_in_included_file_renders_included_snippet() {
+    let yaml = "a: \"ok\"\n---\na: !include child.yaml\n";
+    let options = serde_saphyr::options! {}.with_include_resolver(
+        |req: serde_saphyr::IncludeRequest| -> Result<serde_saphyr::ResolvedInclude, serde_saphyr::IncludeResolveError> {
+            match req.spec {
+                "child.yaml" => Ok(serde_saphyr::ResolvedInclude {
+                    id: req.spec.to_string(),
+                    name: req.spec.to_string(),
+                    source: serde_saphyr::InputSource::from_string("\"\"\n".to_string()),
+                }),
+                other => Err(serde_saphyr::IncludeResolveError::Message(format!("unexpected include: {other}"))),
+            }
+        },
+    );
+
+    let err = serde_saphyr::from_multiple_with_options_valid::<Root>(yaml, options)
+        .expect_err("included value in second document must fail garde rule");
+
+    let Error::ValidationErrors {
+        source: ValidationSource::Garde,
+        errors,
+    } = &err
+    else {
+        panic!("expected ValidationErrors, got: {err:?}");
+    };
+    assert_eq!(
+        errors.len(),
+        1,
+        "expected one failing document, got: {errors:?}"
+    );
+
+    let rendered = err.to_string();
+    assert!(
+        rendered.contains("--> (defined):1:1"),
+        "expected included file content as primary snippet, got: {rendered}"
+    );
+    assert!(
+        rendered.contains("| \"\""),
+        "expected included content in snippet, got: {rendered}"
+    );
+    assert!(
+        rendered.contains("--> <input>:3:13"),
+        "expected second document include-site snippet, got: {rendered}"
+    );
+}
+
+#[test]
+fn multidoc_validation_anchor_origin_renders_defined_here() {
+    let yaml = concat!(
+        "a: \"ok\"\n",
+        "b: \"ok\"\n",
+        "---\n",
+        "a: &A \"x\"\n",
+        "b: *A\n"
+    );
+
+    let err =
+        serde_saphyr::from_multiple_with_options_valid::<AnchorRoot>(yaml, Default::default())
+            .expect_err("anchored value in second document must fail garde rule");
+
+    let Error::ValidationErrors {
+        source: ValidationSource::Garde,
+        errors,
+    } = &err
+    else {
+        panic!("expected ValidationErrors, got: {err:?}");
+    };
+    assert_eq!(
+        errors.len(),
+        1,
+        "expected one failing document, got: {errors:?}"
+    );
+
+    let rendered = err.to_string();
+    assert!(
+        rendered.contains("--> <input>:5:4"),
+        "expected alias use-site from second document, got: {rendered}"
+    );
+    assert!(
+        rendered.contains("the value is used here"),
+        "expected alias use-site label, got: {rendered}"
+    );
+    assert!(
+        rendered.contains("This value comes indirectly from the anchor at line 4 column 7:"),
+        "expected anchor origin note, got: {rendered}"
+    );
+    assert!(
+        rendered.contains("line 4 column 7"),
+        "expected anchor definition location from second document, got: {rendered}"
+    );
+}
+
+#[test]
+fn from_str_with_options_context_valid_uses_custom_context() {
+    #[derive(Default)]
+    struct ValidationContext {
+        min_len: usize,
+    }
+
+    fn min_len_from_context(value: &str, context: &ValidationContext) -> garde::Result {
+        if value.len() >= context.min_len {
+            Ok(())
+        } else {
+            Err(garde::Error::new(format!(
+                "length is lower than {}",
+                context.min_len
+            )))
+        }
+    }
+
+    #[derive(Debug, Deserialize, Validate)]
+    #[garde(context(ValidationContext))]
+    struct ContextRoot {
+        #[garde(custom(min_len_from_context))]
+        a: String,
+    }
+
+    let context = ValidationContext { min_len: 3 };
+    let err = serde_saphyr::from_str_with_options_context_valid::<ContextRoot>(
+        "a: hi\n",
+        Default::default(),
+        &context,
+    )
+    .expect_err("context validation must fail");
+
+    let rendered = err.to_string();
+    assert!(
+        rendered.contains("length is lower than 3"),
+        "expected context-aware garde message, got: {rendered}"
+    );
+    assert!(
+        rendered.contains("for `a`"),
+        "expected failing path in output, got: {rendered}"
+    );
+}
+
+#[test]
+fn from_multiple_valid_uses_default_options() {
+    let values = serde_saphyr::from_multiple_valid::<Root>("a: ok\n---\na: still-ok\n").unwrap();
+
+    assert_eq!(values.len(), 2);
+    assert_eq!(values[0].a, "ok");
+    assert_eq!(values[1].a, "still-ok");
+}
+
+#[test]
+fn from_slice_valid_runs_garde_validation() {
+    let err = serde_saphyr::from_slice_valid::<Root>(b"a: \"\"\n")
+        .expect_err("empty string must fail garde validation");
+
+    assert!(
+        err.to_string().contains("validation error"),
+        "expected garde validation output, got: {err}"
+    );
+}
+
+#[test]
+fn from_slice_with_options_valid_rejects_invalid_utf8() {
+    let err = serde_saphyr::from_slice_with_options_valid::<Root>(&[0xff], Default::default())
+        .expect_err("invalid UTF-8 must be rejected");
+
+    assert!(matches!(err, Error::InvalidUtf8Input));
+}
+
+#[test]
+fn from_reader_valid_accepts_valid_document() {
+    let value = serde_saphyr::from_reader_valid::<_, Root>(std::io::Cursor::new(b"a: ok\n"))
+        .expect("valid document should deserialize");
+
+    assert_eq!(value.a, "ok");
+}
+
+#[test]
+fn read_valid_uses_default_options() {
+    let mut reader = std::io::Cursor::new("~\n---\na: ok\n".as_bytes());
+    let mut it = serde_saphyr::read_valid::<_, Root>(&mut reader);
+
+    let value = it
+        .next()
+        .expect("iterator must yield the non-null document")
+        .expect("document should be valid");
+    assert_eq!(value.a, "ok");
+    assert!(it.next().is_none(), "iterator must stop at end of input");
+}
+
+#[test]
+fn read_valid_skips_explicit_null_tagged_scalar_documents() {
+    let mut reader = std::io::Cursor::new("!!null not-null\n---\na: ok\n".as_bytes());
+    let mut it = serde_saphyr::read_valid::<_, Root>(&mut reader);
+
+    let value = it
+        .next()
+        .expect("iterator must yield the non-null document")
+        .expect("document should be valid");
+    assert_eq!(value.a, "ok");
+    assert!(it.next().is_none(), "iterator must stop at end of input");
+}

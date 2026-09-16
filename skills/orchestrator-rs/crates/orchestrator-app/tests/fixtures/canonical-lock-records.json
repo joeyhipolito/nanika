@@ -1,0 +1,25 @@
+{
+  "fixture_schema_version": 1,
+  "cases": [
+    {
+      "name": "go-html-sensitive-ascii",
+      "schema_version": 1,
+      "implementation": "go",
+      "binary_version": "go-v1.2.3+meta<&>",
+      "pid": 4242,
+      "process_start_identity": "darwin:1700000000:42<&>",
+      "acquired_at_unix_ms": 1700000000123,
+      "canonical": "{\"schema_version\":1,\"implementation\":\"go\",\"binary_version\":\"go-v1.2.3+meta<&>\",\"pid\":4242,\"process_start_identity\":\"darwin:1700000000:42<&>\",\"acquired_at_unix_ms\":1700000000123}\n"
+    },
+    {
+      "name": "rust-portable-ascii-boundary",
+      "schema_version": 1,
+      "implementation": "rust",
+      "binary_version": "rust-v0.1.0-alpha.1_+%:@[]{}!?$^*()-=,.;/|~#",
+      "pid": 7,
+      "process_start_identity": "linux:987654321",
+      "acquired_at_unix_ms": 0,
+      "canonical": "{\"schema_version\":1,\"implementation\":\"rust\",\"binary_version\":\"rust-v0.1.0-alpha.1_+%:@[]{}!?$^*()-=,.;/|~#\",\"pid\":7,\"process_start_identity\":\"linux:987654321\",\"acquired_at_unix_ms\":0}\n"
+    }
+  ]
+}

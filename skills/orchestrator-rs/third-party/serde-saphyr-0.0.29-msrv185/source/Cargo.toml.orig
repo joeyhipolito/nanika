@@ -1,0 +1,230 @@
+[package]
+name = "serde-saphyr"
+version = "0.0.29"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+description = "YAML (de)serializer for Serde, emphasizing panic-free parsing, fast builds and good error reporting. Supports properties, comments, include"
+documentation = "https://docs.rs/serde-saphyr/latest/serde-saphyr/"
+repository = "https://github.com/bourumir-wyngs/serde-saphyr"
+readme = "README.md"
+categories = ["encoding", "parser-implementations", "config", "command-line-utilities"]
+keywords = ["yaml", "serde", "config", "ros", "wasm"]
+exclude = ["Cargo.lock", ".github/**", ".idea/**"]
+
+[dependencies]
+granit-parser = { version = "0.0.7", optional = true }
+# granit-parser = { path = "/home/audrius/rust/granit-parser", optional = true }
+# granit-parser = { git = "https://github.com/bourumir-wyngs/granit-parser", optional = true }
+#granit-parser = {
+#    git = "https://github.com/bourumir-wyngs/granit-parser",
+#    branch = "master",
+#    optional = true
+#}
+
+# Normal builds use core only, to allow building serde-saphyr in parallel with serde.
+# Complete serde is only used when serde_derived_types is enabled (off by default)
+serde_core = "1"
+serde = { version = "1", default-features = false, features = ["derive"], optional = true }
+smallvec = {  version = ">= 1.0.0, < 1.16.0", optional = true }
+num-traits = { version = ">=0.2.0, <=0.2.19", optional = true }
+base64 = { version = ">=0.21.0, <=0.22.1", optional = true }
+zmij = { version = "1.0", optional = true }
+nohash-hasher = { version = "0.2", optional = true }
+encoding_rs_io = { version = "0.1", optional = true }
+ahash = { version = "0.8", optional = true }
+annotate-snippets = { version = "0.12", optional = true }
+figment = { version = "0.10", optional = true }
+figment2 = { version = "0.11", optional = true }
+garde = { version = ">= 0.19.0, < 0.24", optional = true, features = ["derive"] }
+miette = { version = "7", optional = true, features = ["fancy"] }
+validator = { version = ">= 0.11, < 0.21", optional = true, features = ["derive"] }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+# Some dependency stacks pull in `getrandom` (often via `ahash`). For `wasm32-unknown-unknown`,
+# `getrandom` needs the JS backend enabled. Adding it here ensures feature unification even when
+# `getrandom` is only a transitive dependency. ahash currently needs getrandom 0.3.
+getrandom = { version = "0.3", features = ["wasm_js"] }
+
+[features]
+default = ["serialize", "deserialize"]
+
+# Enables YAML serialization APIs.
+serialize = ["dep:base64", "dep:num-traits", "dep:zmij", "dep:nohash-hasher"]
+
+# Enables YAML deserialization APIs.
+deserialize = ["dep:num-traits", "dep:annotate-snippets", "dep:granit-parser", "dep:smallvec", "dep:encoding_rs_io", "dep:ahash"]
+
+# Enables Serde Serialize/Deserialize impls for serde-saphyr's own configuration,
+# budget, and report types. Disabled by default to avoid compiling serde_derive.
+serde_derived_types = ["dep:serde"]
+
+# Enables `${VAR}` property interpolation in plain scalar values.
+properties = ["deserialize"]
+
+# Enables !include tag processing (also resolver must be set)
+include = ["deserialize"]
+
+# Enables the filesystem-backed `SafeFileResolver` for `!include` processing.
+include_fs = ["include"]
+
+# Enables integration with the `garde` validation crate.
+garde = ["dep:garde", "deserialize"]
+
+# Enables integration with the `validator` validation crate.
+validator = ["dep:validator", "deserialize"]
+
+# Enables structured diagnostics via the `miette` crate.
+miette = ["dep:miette", "deserialize"]
+
+# Enables integration with the `figment` configuration crate.
+figment = ["dep:figment", "deserialize"]
+
+# Enables integration with the `figment2` configuration crate.
+figment2 = ["dep:figment2", "deserialize"]
+
+# Adds YAML conventions common in robotics: conversion functions (deg, rad) and simple mathematical expressions such
+# as deg(180), rad(pi), 1 + 2*(3 - 4/5), or rad(pi/2). angle_conversions must be set to true in the Options.
+robotics = ["deserialize"]
+
+# Enables byte-span reporting for YAML documents > 4 GiB using packed 48-bit internal indices
+# instead of the default `u32` representation. Public getters still return `u64`, and values
+# beyond the packed range saturate instead of wrapping.
+huge_documents = []
+
+[dev-dependencies]
+indoc = { version = ">= 2.0.6, < 2.1"}
+serde_bytes = "0.11"
+serde = { version = "1.0", features = ["derive", "rc"] }
+serde_repr = "0.1.20"
+anyhow = "1.0"
+chrono = "0.4"
+trybuild = "1.0"
+regex = ">= 1.0, < 1.13"
+
+serde-transcode = "1.1.1" # we only use in tests
+serde_ignored = "0.1"
+serde_path_to_error = "0.1"
+serde_json = { version = "1", features = ["preserve_order"] }
+miette = { version = "7", features = ["fancy"] }
+tempfile = "3.27.0"
+rstest = "0.26"
+
+[package.metadata]
+status = "actively developed"
+
+[[bin]]
+name = "serde-saphyr"
+required-features = ["serialize", "deserialize", "include", "include_fs"]
+
+[[example]]
+name = "garde_validate"
+required-features = ["garde"]
+
+[[example]]
+name = "garde_validate_context"
+required-features = ["garde"]
+
+[[example]]
+name = "miette"
+required-features = ["deserialize", "miette", "garde", "validator"]
+
+[[example]]
+name = "validator_validate"
+required-features = ["validator"]
+
+[[example]]
+name = "include_with_merge"
+required-features = ["include"]
+
+[[example]]
+name = "include_error"
+required-features = ["include"]
+
+[[example]]
+name = "include_filesystem"
+required-features = ["include_fs"]
+
+[[example]]
+name = "figment_yaml"
+required-features = ["deserialize", "figment", "figment2"]
+
+[[example]]
+name = "benchmark"
+required-features = ["serialize", "deserialize"]
+
+[[example]]
+name = "commented"
+required-features = ["serialize", "deserialize"]
+
+[[example]]
+name = "graph_swiss_trains"
+required-features = ["serialize", "deserialize"]
+
+[[example]]
+name = "ignore_binary_tag_for_str"
+required-features = ["serialize", "deserialize"]
+
+[[example]]
+name = "legacy_misplaced_bracket"
+required-features = ["serialize", "deserialize"]
+
+[[example]]
+name = "pirate_formatter"
+required-features = ["serialize", "deserialize"]
+
+[[example]]
+name = "polymorphism_tree_planting_robot"
+required-features = ["serialize", "deserialize"]
+
+[[example]]
+name = "polymorphism_tree_planting_robot_tuples"
+required-features = ["serialize", "deserialize"]
+
+[[example]]
+name = "print_transform"
+required-features = ["serialize"]
+
+[[example]]
+name = "recursive_yaml"
+required-features = ["serialize", "deserialize"]
+
+[[example]]
+name = "render_with_snippet"
+required-features = ["serialize", "deserialize"]
+
+[[example]]
+name = "serde_ignored"
+required-features = ["serialize", "deserialize"]
+
+[[example]]
+name = "serde_path_to_error"
+required-features = ["serialize", "deserialize"]
+
+[[example]]
+name = "spaced_yaml"
+required-features = ["serialize", "deserialize"]
+
+[[example]]
+name = "spanned"
+required-features = ["serialize", "deserialize"]
+
+[[example]]
+name = "streaming_reader"
+required-features = ["serialize", "deserialize"]
+
+[[example]]
+name = "transcoding"
+required-features = ["serialize"]
+
+[[example]]
+name = "wrapper_function"
+required-features = ["serialize", "deserialize"]
+
+[lints.rust]
+unsafe_code = "forbid"
+
+# `serde-saphyr` is moving away from struct literals. During the migration period, semver checks temporarily allow
+# adding fields to these structures, and the badge does not treat new fields as a breaking change
+# (which is correct when using the macros).
+[package.metadata.cargo-semver-checks.lints]
+constructible_struct_adds_field = "allow"

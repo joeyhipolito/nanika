@@ -1,0 +1,344 @@
+{
+  "schema_version": 1,
+  "policy": {
+    "policy_version": 1,
+    "maximum_snapshot_age_ms": 1000,
+    "provider_reserves": [
+      {
+        "provider": "claude",
+        "usage_account_id": "primary",
+        "reserve_bps": 1000
+      },
+      {
+        "provider": "codex",
+        "usage_account_id": "primary",
+        "reserve_bps": 1000
+      }
+    ],
+    "score_weights": {
+      "task_fit_bps": 5000,
+      "usable_headroom_bps": 5000,
+      "reset_proximity_bps": 0,
+      "recent_capacity_bps": 0,
+      "latency_bps": 0,
+      "health_bps": 0,
+      "configured_preference_bps": 0
+    },
+    "switch_margin_bps": 500,
+    "unknown_usage_policy": "static_fallback",
+    "evaluation_mode": "enforce"
+  },
+  "input": {
+    "schema_version": 1,
+    "mission_id": "mission-adaptive",
+    "phase_id": "phase-routing",
+    "attempt": 1,
+    "evaluated_at_utc_ms": 1000,
+    "authority": {
+      "resolved_fixed_route": null,
+      "legacy_route": {
+        "candidate_id": "legacy",
+        "provider": "claude",
+        "usage_account_id": "primary",
+        "runtime": "claude",
+        "model": "legacy-model",
+        "effort": "high"
+      }
+    },
+    "requirements": {
+      "priority": "p1",
+      "required_capabilities": ["tools"],
+      "minimum_quality": "standard"
+    },
+    "candidates": [
+      {
+        "route": {
+          "candidate_id": "adaptive-replay",
+          "provider": "codex",
+          "usage_account_id": "primary",
+          "runtime": "codex",
+          "model": "adaptive-replay-model",
+          "effort": "high"
+        },
+        "capabilities": ["tools"],
+        "automatic_eligibility": "automatic",
+        "quality": "premium",
+        "task_fit_bps": 8000,
+        "latency_bps": 5000,
+        "configured_preference_bps": 5000
+      },
+      {
+        "route": {
+          "candidate_id": "rejected-loser",
+          "provider": "claude",
+          "usage_account_id": "primary",
+          "runtime": "claude",
+          "model": "rejected-loser-model",
+          "effort": "high"
+        },
+        "capabilities": ["tools"],
+        "automatic_eligibility": "automatic",
+        "quality": "premium",
+        "task_fit_bps": 10000,
+        "latency_bps": 5000,
+        "configured_preference_bps": 5000
+      }
+    ],
+    "usage_snapshots": [
+      {
+        "schema_version": 1,
+        "snapshot_id": "adaptive-replay-usage",
+        "provider": "codex",
+        "usage_account_id": "primary",
+        "source": "fixture",
+        "observed_at_utc_ms": 900,
+        "received_at_utc_ms": 900,
+        "ttl_ms": 1000,
+        "confidence_bps": 10000,
+        "health": "healthy",
+        "reason_code": null,
+        "windows": [
+          {
+            "limit_id": "primary",
+            "kind": "rolling",
+            "applicable_models": [],
+            "used_bps": 1000,
+            "remaining_bps": 9000,
+            "recent_capacity_bps": 8000,
+            "resets_at_utc_ms": 2000,
+            "duration_ms": 18000000
+          }
+        ]
+      },
+      {
+        "schema_version": 1,
+        "snapshot_id": "rejected-loser-usage",
+        "provider": "claude",
+        "usage_account_id": "primary",
+        "source": "fixture",
+        "observed_at_utc_ms": 900,
+        "received_at_utc_ms": 900,
+        "ttl_ms": 1000,
+        "confidence_bps": 10000,
+        "health": "healthy",
+        "reason_code": null,
+        "windows": [
+          {
+            "limit_id": "primary",
+            "kind": "rolling",
+            "applicable_models": [],
+            "used_bps": 10000,
+            "remaining_bps": 0,
+            "recent_capacity_bps": 8000,
+            "resets_at_utc_ms": 2000,
+            "duration_ms": 18000000
+          }
+        ]
+      }
+    ],
+    "incumbent_candidate_id": null,
+    "existing_session_runtime": null
+  },
+  "expected_decision": {
+    "schema_version": 1,
+    "applied_policy": {
+      "policy_version": 1,
+      "maximum_snapshot_age_ms": 1000,
+      "provider_reserves": [
+        {
+          "provider": "claude",
+          "usage_account_id": "primary",
+          "reserve_bps": 1000
+        },
+        {
+          "provider": "codex",
+          "usage_account_id": "primary",
+          "reserve_bps": 1000
+        }
+      ],
+      "score_weights": {
+        "task_fit_bps": 5000,
+        "usable_headroom_bps": 5000,
+        "reset_proximity_bps": 0,
+        "recent_capacity_bps": 0,
+        "latency_bps": 0,
+        "health_bps": 0,
+        "configured_preference_bps": 0
+      },
+      "switch_margin_bps": 500,
+      "unknown_usage_policy": "static_fallback",
+      "evaluation_mode": "enforce"
+    },
+    "evaluated_at_utc_ms": 1000,
+    "mission_id": "mission-adaptive",
+    "phase_id": "phase-routing",
+    "attempt": 1,
+    "applied_authority": {
+      "kind": "adaptive"
+    },
+    "requirements": {
+      "priority": "p1",
+      "required_capabilities": ["tools"],
+      "minimum_quality": "standard"
+    },
+    "incumbent_candidate_id": null,
+    "existing_session_runtime": null,
+    "legacy_route": {
+      "candidate_id": "legacy",
+      "provider": "claude",
+      "usage_account_id": "primary",
+      "runtime": "claude",
+      "model": "legacy-model",
+      "effort": "high"
+    },
+    "candidate_evaluations": [
+      {
+        "candidate": {
+          "route": {
+            "candidate_id": "adaptive-replay",
+            "provider": "codex",
+            "usage_account_id": "primary",
+            "runtime": "codex",
+            "model": "adaptive-replay-model",
+            "effort": "high"
+          },
+          "capabilities": ["tools"],
+          "automatic_eligibility": "automatic",
+          "quality": "premium",
+          "task_fit_bps": 8000,
+          "latency_bps": 5000,
+          "configured_preference_bps": 5000
+        },
+        "disposition": {
+          "status": "eligible"
+        },
+        "considered_snapshot_ids": ["adaptive-replay-usage"],
+        "governing_snapshot_ids": ["adaptive-replay-usage"],
+        "usage_reason_code": null,
+        "reported_remaining_bps": 9000,
+        "applied_reserve_bps": 1000,
+        "usable_headroom_bps": 8000,
+        "score_components": {
+          "task_fit_bps": 8000,
+          "usable_headroom_bps": 8000,
+          "reset_proximity_bps": 10000,
+          "recent_capacity_bps": 8000,
+          "latency_bps": 5000,
+          "health_bps": 10000,
+          "configured_preference_bps": 5000
+        },
+        "score_bps": 8000
+      },
+      {
+        "candidate": {
+          "route": {
+            "candidate_id": "rejected-loser",
+            "provider": "claude",
+            "usage_account_id": "primary",
+            "runtime": "claude",
+            "model": "rejected-loser-model",
+            "effort": "high"
+          },
+          "capabilities": ["tools"],
+          "automatic_eligibility": "automatic",
+          "quality": "premium",
+          "task_fit_bps": 10000,
+          "latency_bps": 5000,
+          "configured_preference_bps": 5000
+        },
+        "disposition": {
+          "status": "rejected",
+          "reason": "exhausted"
+        },
+        "considered_snapshot_ids": ["rejected-loser-usage"],
+        "governing_snapshot_ids": ["rejected-loser-usage"],
+        "usage_reason_code": null,
+        "reported_remaining_bps": 0,
+        "applied_reserve_bps": 1000,
+        "usable_headroom_bps": null,
+        "score_components": null,
+        "score_bps": null
+      }
+    ],
+    "referenced_snapshots": [
+      {
+        "schema_version": 1,
+        "snapshot_id": "adaptive-replay-usage",
+        "provider": "codex",
+        "usage_account_id": "primary",
+        "source": "fixture",
+        "observed_at_utc_ms": 900,
+        "received_at_utc_ms": 900,
+        "ttl_ms": 1000,
+        "confidence_bps": 10000,
+        "health": "healthy",
+        "reason_code": null,
+        "windows": [
+          {
+            "limit_id": "primary",
+            "kind": "rolling",
+            "applicable_models": [],
+            "used_bps": 1000,
+            "remaining_bps": 9000,
+            "recent_capacity_bps": 8000,
+            "resets_at_utc_ms": 2000,
+            "duration_ms": 18000000
+          }
+        ]
+      },
+      {
+        "schema_version": 1,
+        "snapshot_id": "rejected-loser-usage",
+        "provider": "claude",
+        "usage_account_id": "primary",
+        "source": "fixture",
+        "observed_at_utc_ms": 900,
+        "received_at_utc_ms": 900,
+        "ttl_ms": 1000,
+        "confidence_bps": 10000,
+        "health": "healthy",
+        "reason_code": null,
+        "windows": [
+          {
+            "limit_id": "primary",
+            "kind": "rolling",
+            "applicable_models": [],
+            "used_bps": 10000,
+            "remaining_bps": 0,
+            "recent_capacity_bps": 8000,
+            "resets_at_utc_ms": 2000,
+            "duration_ms": 18000000
+          }
+        ]
+      }
+    ],
+    "recommended_outcome": {
+      "status": "route",
+      "route": {
+        "candidate_id": "adaptive-replay",
+        "provider": "codex",
+        "usage_account_id": "primary",
+        "runtime": "codex",
+        "model": "adaptive-replay-model",
+        "effort": "high"
+      }
+    },
+    "dispatch_outcome": {
+      "status": "route",
+      "route": {
+        "candidate_id": "adaptive-replay",
+        "provider": "codex",
+        "usage_account_id": "primary",
+        "runtime": "codex",
+        "model": "adaptive-replay-model",
+        "effort": "high"
+      }
+    },
+    "switch_reason": "best_candidate",
+    "continuation": "no_session",
+    "decision_mode": {
+      "kind": "adaptive",
+      "evaluation_mode": "enforce"
+    }
+  }
+}

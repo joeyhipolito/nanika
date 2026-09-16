@@ -1,0 +1,65 @@
+{
+  "ok": true,
+  "observation": {
+    "execution_mode": "sequential",
+    "phases": [
+      {
+        "constraints": [],
+        "dependencies": [],
+        "expected": "",
+        "id": "phase-1",
+        "model_tier": "work",
+        "name": "first",
+        "objective": "Inspect inputs",
+        "persona": "fixture-architect",
+        "persona_selection_method": "llm",
+        "priority": "",
+        "role": "planner",
+        "runtime": "claude",
+        "runtime_policy_applied": true,
+        "skills": [],
+        "stall_timeout_ns": 0,
+        "status": "pending",
+        "target_dir": ""
+      },
+      {
+        "constraints": [],
+        "dependencies": ["phase-1"],
+        "expected": "",
+        "id": "phase-2",
+        "model_tier": "work",
+        "name": "second",
+        "objective": "Implement middle step",
+        "persona": "fixture-implementer",
+        "persona_selection_method": "llm",
+        "priority": "",
+        "role": "implementer",
+        "runtime": "claude",
+        "runtime_policy_applied": true,
+        "skills": [],
+        "stall_timeout_ns": 0,
+        "status": "pending",
+        "target_dir": ""
+      },
+      {
+        "constraints": [],
+        "dependencies": ["phase-2"],
+        "expected": "",
+        "id": "phase-3",
+        "model_tier": "work",
+        "name": "third",
+        "objective": "Build final step",
+        "persona": "fixture-implementer",
+        "persona_selection_method": "llm",
+        "priority": "",
+        "role": "implementer",
+        "runtime": "claude",
+        "runtime_policy_applied": true,
+        "skills": [],
+        "stall_timeout_ns": 0,
+        "status": "pending",
+        "target_dir": ""
+      }
+    ]
+  }
+}

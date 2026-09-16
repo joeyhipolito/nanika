@@ -1,0 +1,18 @@
+[package]
+name = "orchestrator-exec"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+orchestrator-core = { path = "../orchestrator-core" }
+cap-primitives.workspace = true
+cap-std.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true

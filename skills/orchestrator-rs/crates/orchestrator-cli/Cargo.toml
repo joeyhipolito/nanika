@@ -1,0 +1,52 @@
+[package]
+name = "orchestrator-cli"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+orchestrator-app = { path = "../orchestrator-app" }
+orchestrator-core = { path = "../orchestrator-core" }
+orchestrator-daemon = { path = "../orchestrator-daemon" }
+orchestrator-exec = { path = "../orchestrator-exec" }
+orchestrator-git = { path = "../orchestrator-git" }
+serde_json.workspace = true
+signal-hook.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+orchestrator-app = { path = "../orchestrator-app", features = ["test-support"] }
+# Self-referencing dev-dependency, exactly as `orchestrator-app` does: it
+# unifies this crate's own `test-support` feature into the library build the
+# `tests/*.rs` gate binaries link against, so `composition::seal`'s enrolled
+# branch — and `FixtureEnrollment` itself — exist in a gate build and are
+# compiled out of every other one. Without it, a gate could not reach the
+# enrolled half at all, and adding a production-reachable door to compensate is
+# exactly what the B5 lease forbids.
+orchestrator-cli = { path = ".", features = ["test-support"] }
+orchestrator-knowledge = { path = "../orchestrator-knowledge" }
+rusqlite.workspace = true
+# Gate 1b kills a real process *group*, not just a child, so a case that parks
+# with a live helper cannot orphan it.
+rustix.workspace = true
+
+[[bin]]
+name = "orchestrator"
+path = "src/main.rs"
+
+[features]
+# Compiles `composition::seal`'s enrolled branch (B5-DESIGN §1.1). It forwards
+# to the `orchestrator-app` feature that gates every fixture door the branch
+# calls — `fixture_production_boundary`, `open_fixture_runtime_store`, and
+# `MetricsOwnerCapability::in_fixture_boundary` — so without it `seal` has no
+# way to reach an authority and `FixtureEnrollment` is uninhabited.
+test-support = ["orchestrator-app/test-support"]
+# Forwards to orchestrator-app so the `orchestrator hermetic-canary` command is
+# compiled in. The command additionally requires the
+# NANIKA_HERMETIC_PROCESS_CANARY=1 environment variable at runtime, so a binary
+# built with this feature still refuses the canary unless the operator opts in.
+verification-process-canary = ["orchestrator-app/verification-process-canary"]
+
+[lints]
+workspace = true

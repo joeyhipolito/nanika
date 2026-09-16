@@ -1,0 +1,4 @@
+{"id":"evt_first","type":"mission.started","timestamp":"2026-07-13T00:00:00Z","sequence":9,"mission_id":"mission-1","data":{"source":"fixture"}}
+not-json
+{"id":"evt_unknown","type":"future.observed","timestamp":"2026-07-13T00:00:01+00:00","sequence":4,"mission_id":"mission-1","future_top":{"keep":true},"data":{"future_data":[1,2]}}
+{"id":"evt_last","type":"phase.started","timestamp":"2026-07-13T00:00:02.123Z","sequence":7,"mission_id":"mission-1","phase_id":"phase-1"}

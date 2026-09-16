@@ -1,0 +1,5 @@
+skill                         phase                 persona                   source        uses
+------------------------------------------------------------------------------------------------
+rust-best-practices           design                architect                 declared      2
+golang-testing                implement             developer                 output_parse  1
+golang-testing                verify                qa                        declared      1

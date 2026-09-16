@@ -1,0 +1,22 @@
+Removes learnings based on age, quality score, and domain count caps.
+Dry-run by default — use --apply to actually delete.
+
+Usage:
+  orchestrator prune [flags]
+
+Flags:
+      --apply             actually delete (default is dry-run)
+  -h, --help              help for prune
+      --max-age int       max age in days for unused low-quality learnings (default 180)
+      --max-count int     max learnings per domain (default 500)
+      --min-score float   delete learnings below this quality score (default 0.1)
+
+Global Flags:
+      --domain string         task domain (dev/personal/work/creative/academic) (default "dev")
+      --dry-run               show plan without executing
+      --max-turns int         max agentic turns per worker (0 = use persona-aware default)
+      --model string          force model for all workers
+      --nanika-dir string     path to nanika directory (default: ~/nanika)
+      --personas-dir string   path to personas directory (default: ~/nanika/personas/)
+      --sequential            force sequential execution
+  -v, --verbose               verbose output

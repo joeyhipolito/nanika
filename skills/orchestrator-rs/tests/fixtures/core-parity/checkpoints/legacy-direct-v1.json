@@ -1,0 +1,24 @@
+{
+  "version": 1,
+  "workspace_id": "20200101-legacy01",
+  "domain": "dev",
+  "plan": {
+    "id": "plan-old",
+    "task": "resume an old mission",
+    "phases": [{
+      "id": "phase-1",
+      "name": "legacy",
+      "objective": "remain readable",
+      "persona": "implementer",
+      "model_tier": "work",
+      "skills": null,
+      "constraints": [],
+      "dependencies": [],
+      "expected": "compatibility",
+      "status": "pending"
+    }],
+    "execution_mode": "sequential",
+    "decomp_source": "llm"
+  },
+  "status": "in_progress"
+}

@@ -1,0 +1,20 @@
+Assembles a system-state brief from registered preflight sections and prints it to stdout. When no sections are registered the output is empty. Set NANIKA_NO_INJECT=1 to suppress output entirely.
+
+Usage:
+  orchestrator hooks preflight [flags]
+
+Flags:
+      --format string      output format: text or json (default "text")
+  -h, --help               help for preflight
+      --max-bytes int      truncate output to this many bytes (0 = unlimited) (default 6144)
+      --sections strings   only include these sections (comma-separated; empty = all)
+
+Global Flags:
+      --domain string         task domain (dev/personal/work/creative/academic) (default "dev")
+      --dry-run               show plan without executing
+      --max-turns int         max agentic turns per worker (0 = use persona-aware default)
+      --model string          force model for all workers
+      --nanika-dir string     path to nanika directory (default: ~/nanika)
+      --personas-dir string   path to personas directory (default: ~/nanika/personas/)
+      --sequential            force sequential execution
+  -v, --verbose               verbose output

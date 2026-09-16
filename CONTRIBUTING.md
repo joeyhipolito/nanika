@@ -9,6 +9,7 @@ explain the problem, resulting behavior, and validation performed.
 
 ## Repository layout
 
+- `skills/orchestrator-rs/`: Rust execution pilot and foundation crates; see its README for scoped checks.
 - `skills/orchestrator/`: Go mission CLI.
 - `skills/decomposer/`: mission planning guidance; its `go.mod` has no Go packages.
 - `shared/sdk/`: Go library for the Claude Code CLI.

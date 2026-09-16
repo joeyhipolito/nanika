@@ -1,5 +1,8 @@
 # Go mission orchestrator
 
+This document covers the Go compatibility engine. For the Rust-first installer and
+native commands, see the [Rust guide](../orchestrator-rs/README.md).
+
 This is the mission CLI shipped in the public Nanika repository. It decomposes
 tasks, selects personas and runtimes, schedules dependent phases, captures
 artifacts and metrics, and runs review gates. This source is experimental;
@@ -115,7 +118,9 @@ than treating a partial suite as green. See the
 [refresh note](../../docs/OSS-UPDATE-2026-09.md) and
 [SDK documentation](../../shared/sdk/README.md).
 
-The Rust orchestrator rewrite and Portal tooling are not shipped here. The Rust
-tracker and Dust components are separate projects within this repository.
+The Rust execution pilot and explicit Portal helpers are now shipped in
+[`../orchestrator-rs`](../orchestrator-rs/README.md), with a Rust-first source
+installer and this Go engine retained for compatibility. Automatic provider
+output capping and full Go parity remain incomplete.
 
 [MIT license](../../LICENSE).

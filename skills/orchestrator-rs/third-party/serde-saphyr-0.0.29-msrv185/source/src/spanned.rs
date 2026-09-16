@@ -1,0 +1,515 @@
+//! Span-aware wrapper types.
+//!
+//! `Spanned<T>` lets you deserialize a value together with the source location
+//! (line/column) of the YAML node it came from.
+//!
+//! This is especially useful for config validation errors, where you want to
+//! point at the exact place in the YAML. Many configuration errors are not
+//! "invalid YAML", but rather "valid YAML with an invalid value". Using
+//! `Spanned` shows where the invalid value came from.
+//!
+//! ```rust
+//! # #[cfg(feature = "deserialize")]
+//! # {
+//! use serde::Deserialize;
+//!
+//! #[derive(Debug, Deserialize)]
+//! struct Cfg {
+//!     timeout: serde_saphyr::Spanned<u64>,
+//! }
+//!
+//! let cfg: Cfg = serde_saphyr::from_str("timeout: 5\n").unwrap();
+//! assert_eq!(cfg.timeout.value, 5);
+//! assert_eq!(cfg.timeout.referenced.line(), 1);
+//! assert_eq!(cfg.timeout.referenced.column(), 10);
+//! # }
+//! ```
+
+use serde_core::de::{self, Deserializer, IntoDeserializer};
+use serde_core::{Deserialize, Serialize};
+
+use crate::Location;
+
+pub(crate) const INTERNAL_SPANNED_MARKER: &str = "__serde_saphyr_private_spanned";
+
+/// A value paired with source locations describing where it came from. Spanned locations
+/// are specified in character positions and, when possible, in byte offsets as well. Byte offsets
+/// are available for string sources but not reader sources.
+///
+/// # Example
+///
+/// ```rust
+/// # #[cfg(feature = "deserialize")]
+/// # {
+/// use serde::Deserialize;
+///
+/// #[derive(Debug, Deserialize)]
+/// struct Cfg {
+///     timeout: serde_saphyr::Spanned<u64>,
+/// }
+///
+/// let cfg: Cfg = serde_saphyr::from_str("timeout: 5\n").unwrap();
+/// assert_eq!(cfg.timeout.value, 5);
+/// assert_eq!(cfg.timeout.referenced.line(), 1);
+/// assert_eq!(cfg.timeout.referenced.column(), 10);
+/// # }
+/// ```
+///
+/// # Location semantics for YAML aliases and merges
+///
+/// `Spanned<T>` exposes two locations:
+///
+/// - `referenced`: where the value is referenced/used in the YAML.
+///   - For aliases (`*a`): this is the location of the alias token.
+///   - For merge-derived values (`<<`): this is the location of the merge entry
+///     (typically the `<<: *a` site).
+/// - `defined`: where the value is defined in YAML.
+///   - For plain values: equals `referenced`.
+///   - For aliases: points to the anchored definition.
+///   - For merge-derived values: points to the originating scalar in the merged
+///     mapping.
+///
+/// # Limitation with `#[serde(flatten)]`, `#[serde(untagged)]`, and `#[serde(tag = "...")]`
+///
+/// When `Spanned<T>` is used inside a struct with `#[serde(flatten)]`, or inside
+/// variants of `#[serde(untagged)]` or `#[serde(tag = "...")]` enums, deserialization
+/// **succeeds** but **location information is lost**: both `referenced` and `defined`
+/// will be `Location::UNKNOWN` (line 0, column 0).
+///
+/// This is because serde buffers values through a generic `ContentDeserializer` in
+/// these cases, which discards the YAML deserializer context needed to capture spans.
+///
+/// ## Workaround for untagged/internally-tagged enums: Wrap the entire enum
+///
+/// Instead of putting `Spanned<T>` inside each variant, wrap the whole enum:
+///
+/// ```rust
+/// # #[cfg(feature = "deserialize")]
+/// # {
+/// use serde::Deserialize;
+/// use serde_saphyr::Spanned;
+///
+/// #[derive(Debug, Deserialize)]
+/// #[serde(untagged)]
+/// pub enum Payload {
+///     StringVariant { message: String },
+///     IntVariant { count: u32 },
+/// }
+///
+/// // Use Spanned<Payload> instead of Spanned<T> inside variants
+/// let yaml = "message: hello";
+/// let result: Spanned<Payload> = serde_saphyr::from_str(yaml).unwrap();
+/// assert_eq!(result.referenced.line(), 1);
+/// # }
+/// ```
+///
+/// ## Alternative: Use externally tagged enums (serde default)
+///
+/// Externally tagged enums (the default) work with `Spanned<T>` inside variants:
+///
+/// ```rust
+/// # #[cfg(feature = "deserialize")]
+/// # {
+/// use serde::Deserialize;
+/// use serde_saphyr::Spanned;
+///
+/// #[derive(Debug, Deserialize)]
+/// pub enum Payload {
+///     StringVariant { message: Spanned<String> },
+///     IntVariant { count: Spanned<u32> },
+/// }
+///
+/// let yaml = "StringVariant:\n  message: hello";
+/// let result: Payload = serde_saphyr::from_str(yaml).unwrap();
+/// match result {
+///     Payload::StringVariant { message } => {
+///         assert_eq!(&message.value, "hello");
+///         assert_eq!(message.referenced.line(), 2);
+///     }
+///     _ => panic!("Expected StringVariant"),
+/// }
+/// # }
+/// ```
+///
+/// ## Alternative: Use adjacently tagged enums
+///
+/// Adjacently tagged enums also work with `Spanned<T>` inside variants:
+///
+/// ```rust
+/// # #[cfg(feature = "deserialize")]
+/// # {
+/// use serde::Deserialize;
+/// use serde_saphyr::Spanned;
+///
+/// #[derive(Debug, Deserialize)]
+/// #[serde(tag = "type", content = "data")]
+/// pub enum Payload {
+///     StringVariant { message: Spanned<String> },
+///     IntVariant { count: Spanned<u32> },
+/// }
+///
+/// let yaml = "type: StringVariant\ndata:\n  message: hello";
+/// let result: Payload = serde_saphyr::from_str(yaml).unwrap();
+/// match result {
+///     Payload::StringVariant { message } => {
+///         assert_eq!(&message.value, "hello");
+///         assert_eq!(message.referenced.line(), 3);
+///     }
+///     _ => panic!("Expected StringVariant"),
+/// }
+/// # }
+/// ```
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Spanned<T> {
+    pub value: T,
+    pub referenced: Location,
+    pub defined: Location,
+}
+
+impl<T> Spanned<T> {
+    pub const fn new(value: T, referenced: Location, defined: Location) -> Self {
+        Self {
+            value,
+            referenced,
+            defined,
+        }
+    }
+}
+
+impl<'de, T> Deserialize<'de> for Spanned<T>
+where
+    T: Deserialize<'de>,
+{
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        struct SpannedVisitor<T>(std::marker::PhantomData<T>);
+
+        impl<'de, T> de::Visitor<'de> for SpannedVisitor<T>
+        where
+            T: Deserialize<'de>,
+        {
+            type Value = Spanned<T>;
+
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str("a span-aware newtype wrapper")
+            }
+
+            fn visit_newtype_struct<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
+            where
+                D: Deserializer<'de>,
+            {
+                // Call deserialize_any so that:
+                // - Our YAML SpannedDeser calls deserialize_struct → visit_map with the
+                //   synthesized {value, referenced, defined} map → full location info.
+                // - serde's ContentDeserializer (used by #[serde(flatten)]) calls
+                //   visit_map with the buffered Content::Map → ReprOrPlainVisitor::visit_map.
+                // - serde's ContentDeserializer with a plain scalar calls visit_u64/visit_str/
+                //   etc. → ReprOrPlainVisitor plain-value fallbacks with Location::UNKNOWN.
+                deserializer.deserialize_any(ReprOrPlainVisitor::<T>(std::marker::PhantomData))
+            }
+        }
+
+        /// Visitor that handles both the normal YAML path (visit_map with synthesized
+        /// {value, referenced, defined} fields) and the flattened/content path where
+        /// serde's ContentDeserializer calls visit_* with a plain or map value.
+        struct ReprOrPlainVisitor<T>(std::marker::PhantomData<T>);
+
+        impl<'de, T> de::Visitor<'de> for ReprOrPlainVisitor<T>
+        where
+            T: Deserialize<'de>,
+        {
+            type Value = Spanned<T>;
+
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str("a value or a span-aware map with value/referenced/defined fields")
+            }
+
+            fn visit_map<A>(self, map: A) -> Result<Self::Value, A::Error>
+            where
+                A: de::MapAccess<'de>,
+            {
+                struct PrependMapAccess<A> {
+                    first_key: Option<String>,
+                    tail: A,
+                }
+
+                impl<'de, A> de::MapAccess<'de> for PrependMapAccess<A>
+                where
+                    A: de::MapAccess<'de>,
+                {
+                    type Error = A::Error;
+
+                    fn next_key_seed<K>(&mut self, seed: K) -> Result<Option<K::Value>, A::Error>
+                    where
+                        K: de::DeserializeSeed<'de>,
+                    {
+                        if let Some(first_key) = self.first_key.take() {
+                            seed.deserialize(first_key.into_deserializer()).map(Some)
+                        } else {
+                            self.tail.next_key_seed(seed)
+                        }
+                    }
+
+                    fn next_value_seed<V>(&mut self, seed: V) -> Result<V::Value, A::Error>
+                    where
+                        V: de::DeserializeSeed<'de>,
+                    {
+                        self.tail.next_value_seed(seed)
+                    }
+                }
+
+                enum Field {
+                    Value,
+                    Referenced,
+                    Defined,
+                    Ignore,
+                }
+
+                impl<'de> Deserialize<'de> for Field {
+                    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+                    where
+                        D: Deserializer<'de>,
+                    {
+                        struct FieldVisitor;
+
+                        impl<'a> de::Visitor<'a> for FieldVisitor {
+                            type Value = Field;
+
+                            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                                f.write_str("a Spanned<T> field")
+                            }
+
+                            fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+                            where
+                                E: de::Error,
+                            {
+                                Ok(match value {
+                                    "value" => Field::Value,
+                                    "referenced" => Field::Referenced,
+                                    "defined" => Field::Defined,
+                                    _ => Field::Ignore,
+                                })
+                            }
+                        }
+
+                        deserializer.deserialize_identifier(FieldVisitor)
+                    }
+                }
+
+                let mut map = map;
+                // The YAML deserializer marks the synthetic Spanned<T> representation.
+                // Unmarked maps are user values buffered by serde, such as through flatten.
+                let Some(first_key) = map.next_key::<String>()? else {
+                    return T::deserialize(de::value::MapAccessDeserializer::new(map))
+                        .map(|val| Spanned::new(val, Location::UNKNOWN, Location::UNKNOWN));
+                };
+
+                if first_key != INTERNAL_SPANNED_MARKER {
+                    return T::deserialize(de::value::MapAccessDeserializer::new(
+                        PrependMapAccess {
+                            first_key: Some(first_key),
+                            tail: map,
+                        },
+                    ))
+                    .map(|val| Spanned::new(val, Location::UNKNOWN, Location::UNKNOWN));
+                }
+
+                let _ = map.next_value::<de::IgnoredAny>()?;
+                let mut value = None;
+                let mut referenced = None;
+                let mut defined = None;
+
+                while let Some(field) = map.next_key::<Field>()? {
+                    match field {
+                        Field::Value => {
+                            if value.is_some() {
+                                return Err(de::Error::duplicate_field("value"));
+                            }
+                            value = Some(map.next_value()?);
+                        }
+                        Field::Referenced => {
+                            if referenced.is_some() {
+                                return Err(de::Error::duplicate_field("referenced"));
+                            }
+                            referenced = Some(map.next_value()?);
+                        }
+                        Field::Defined => {
+                            if defined.is_some() {
+                                return Err(de::Error::duplicate_field("defined"));
+                            }
+                            defined = Some(map.next_value()?);
+                        }
+                        Field::Ignore => {
+                            let _ = map.next_value::<de::IgnoredAny>()?;
+                        }
+                    }
+                }
+
+                let value = value.ok_or_else(|| de::Error::missing_field("value"))?;
+                let referenced =
+                    referenced.ok_or_else(|| de::Error::missing_field("referenced"))?;
+                let defined = defined.ok_or_else(|| de::Error::missing_field("defined"))?;
+
+                Ok(Spanned::new(value, referenced, defined))
+            }
+
+            // Fallback handlers for plain values arriving via ContentDeserializer
+            // when Spanned<T> is inside a #[serde(flatten)] struct.
+            // Location information is unavailable in this path; Location::UNKNOWN is used.
+
+            fn visit_bool<E: de::Error>(self, v: bool) -> Result<Self::Value, E> {
+                T::deserialize(v.into_deserializer())
+                    .map(|val| Spanned::new(val, Location::UNKNOWN, Location::UNKNOWN))
+            }
+            fn visit_i8<E: de::Error>(self, v: i8) -> Result<Self::Value, E> {
+                T::deserialize(v.into_deserializer())
+                    .map(|val| Spanned::new(val, Location::UNKNOWN, Location::UNKNOWN))
+            }
+            fn visit_i16<E: de::Error>(self, v: i16) -> Result<Self::Value, E> {
+                T::deserialize(v.into_deserializer())
+                    .map(|val| Spanned::new(val, Location::UNKNOWN, Location::UNKNOWN))
+            }
+            fn visit_i32<E: de::Error>(self, v: i32) -> Result<Self::Value, E> {
+                T::deserialize(v.into_deserializer())
+                    .map(|val| Spanned::new(val, Location::UNKNOWN, Location::UNKNOWN))
+            }
+            fn visit_i64<E: de::Error>(self, v: i64) -> Result<Self::Value, E> {
+                T::deserialize(v.into_deserializer())
+                    .map(|val| Spanned::new(val, Location::UNKNOWN, Location::UNKNOWN))
+            }
+            fn visit_u8<E: de::Error>(self, v: u8) -> Result<Self::Value, E> {
+                T::deserialize(v.into_deserializer())
+                    .map(|val| Spanned::new(val, Location::UNKNOWN, Location::UNKNOWN))
+            }
+            fn visit_u16<E: de::Error>(self, v: u16) -> Result<Self::Value, E> {
+                T::deserialize(v.into_deserializer())
+                    .map(|val| Spanned::new(val, Location::UNKNOWN, Location::UNKNOWN))
+            }
+            fn visit_u32<E: de::Error>(self, v: u32) -> Result<Self::Value, E> {
+                T::deserialize(v.into_deserializer())
+                    .map(|val| Spanned::new(val, Location::UNKNOWN, Location::UNKNOWN))
+            }
+            fn visit_u64<E: de::Error>(self, v: u64) -> Result<Self::Value, E> {
+                T::deserialize(v.into_deserializer())
+                    .map(|val| Spanned::new(val, Location::UNKNOWN, Location::UNKNOWN))
+            }
+            fn visit_f32<E: de::Error>(self, v: f32) -> Result<Self::Value, E> {
+                T::deserialize(v.into_deserializer())
+                    .map(|val| Spanned::new(val, Location::UNKNOWN, Location::UNKNOWN))
+            }
+            fn visit_f64<E: de::Error>(self, v: f64) -> Result<Self::Value, E> {
+                T::deserialize(v.into_deserializer())
+                    .map(|val| Spanned::new(val, Location::UNKNOWN, Location::UNKNOWN))
+            }
+            fn visit_char<E: de::Error>(self, v: char) -> Result<Self::Value, E> {
+                T::deserialize(v.into_deserializer())
+                    .map(|val| Spanned::new(val, Location::UNKNOWN, Location::UNKNOWN))
+            }
+            fn visit_str<E: de::Error>(self, v: &str) -> Result<Self::Value, E> {
+                T::deserialize(v.into_deserializer())
+                    .map(|val| Spanned::new(val, Location::UNKNOWN, Location::UNKNOWN))
+            }
+            fn visit_string<E: de::Error>(self, v: String) -> Result<Self::Value, E> {
+                T::deserialize(v.into_deserializer())
+                    .map(|val| Spanned::new(val, Location::UNKNOWN, Location::UNKNOWN))
+            }
+            fn visit_bytes<E: de::Error>(self, v: &[u8]) -> Result<Self::Value, E> {
+                T::deserialize(de::value::BytesDeserializer::new(v))
+                    .map(|val| Spanned::new(val, Location::UNKNOWN, Location::UNKNOWN))
+            }
+            fn visit_byte_buf<E: de::Error>(self, v: Vec<u8>) -> Result<Self::Value, E> {
+                T::deserialize(de::value::BytesDeserializer::new(&v))
+                    .map(|val| Spanned::new(val, Location::UNKNOWN, Location::UNKNOWN))
+            }
+            fn visit_unit<E: de::Error>(self) -> Result<Self::Value, E> {
+                T::deserialize(().into_deserializer())
+                    .map(|val| Spanned::new(val, Location::UNKNOWN, Location::UNKNOWN))
+            }
+            fn visit_none<E: de::Error>(self) -> Result<Self::Value, E> {
+                T::deserialize(().into_deserializer())
+                    .map(|val| Spanned::new(val, Location::UNKNOWN, Location::UNKNOWN))
+            }
+            fn visit_seq<A>(self, seq: A) -> Result<Self::Value, A::Error>
+            where
+                A: de::SeqAccess<'de>,
+            {
+                T::deserialize(de::value::SeqAccessDeserializer::new(seq))
+                    .map(|val| Spanned::new(val, Location::UNKNOWN, Location::UNKNOWN))
+            }
+        }
+
+        deserializer
+            .deserialize_newtype_struct("__yaml_spanned", SpannedVisitor(std::marker::PhantomData))
+    }
+}
+
+impl<T> Serialize for Spanned<T>
+where
+    T: Serialize,
+{
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde_core::Serializer,
+    {
+        // `Spanned<T>` is a deserialization helper that records source locations.
+        // When serializing, we emit the wrapped value only.
+        self.value.serialize(serializer)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn deserialize_spanned_accepts_named_fields_and_ignores_unknown_fields() {
+        let spanned: Spanned<u32> = serde_json::from_str(
+            r#"{
+                "__serde_saphyr_private_spanned": true,
+                "unknown": true,
+                "value": 42,
+                "referenced": { "line": 1, "column": 2 },
+                "defined": { "line": 3, "column": 4 }
+            }"#,
+        )
+        .unwrap();
+
+        assert_eq!(spanned.value, 42);
+        assert_eq!(spanned.referenced.line(), 1);
+        assert_eq!(spanned.referenced.column(), 2);
+        assert_eq!(spanned.defined.line(), 3);
+        assert_eq!(spanned.defined.column(), 4);
+    }
+
+    #[test]
+    fn deserialize_spanned_rejects_duplicate_fields() {
+        let err = serde_json::from_str::<Spanned<u32>>(
+            r#"{
+                "__serde_saphyr_private_spanned": true,
+                "value": 1,
+                "value": 2,
+                "referenced": { "line": 1, "column": 2 },
+                "defined": { "line": 3, "column": 4 }
+            }"#,
+        )
+        .unwrap_err();
+
+        assert!(err.to_string().contains("duplicate field `value`"));
+    }
+
+    #[test]
+    fn deserialize_spanned_rejects_missing_fields() {
+        let err = serde_json::from_str::<Spanned<u32>>(
+            r#"{
+                "__serde_saphyr_private_spanned": true,
+                "value": 1,
+                "referenced": { "line": 1, "column": 2 }
+            }"#,
+        )
+        .unwrap_err();
+
+        assert!(err.to_string().contains("missing field `defined`"));
+    }
+}

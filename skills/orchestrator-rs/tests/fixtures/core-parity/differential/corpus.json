@@ -1,0 +1,1340 @@
+{
+  "schema_version": 2,
+  "oracle_revision": "3f2e5d1b9acfbe4a4338bb003425668cc803464e",
+  "archive_manifest": "tests/go-oracle/frozen-tree-manifest.json",
+  "module_proxy_manifest": "tests/go-oracle/module-proxy-manifest.json",
+  "adapter": "tests/go-oracle/adapter/main.go",
+  "case_manifest": "tests/fixtures/core-parity/differential/case-manifest.json",
+  "documented_normalization": [
+    "replace the canonical per-case root with $FIXTURE_ROOT",
+    "render nil Go slices as empty arrays",
+    "render Go zero times as empty strings",
+    "sort ProjectFromLog's exported phase map by key without claiming Go phase order",
+    "omit nondeterministic mission plan id, task, and creation time",
+    "supply explicit Rust policy fixtures only to the Rust parser, never to the Go adapter"
+  ],
+  "cases": [
+    {
+      "case_id": "checkpoint-current-writer-go-readable",
+      "contracts": [
+        "ORC-DATA-CHECKPOINT-001"
+      ],
+      "oracle": "go-package",
+      "operation": "checkpoint_writer",
+      "comparison": "exact-structured",
+      "go_api": [
+        "core.LoadCheckpoint"
+      ],
+      "normalization": {
+        "writer": "rust",
+        "source_shape": "rust-only"
+      },
+      "environment": {
+        "HOME": "$FIXTURE_ROOT/home",
+        "ORCHESTRATOR_CONFIG_DIR": null,
+        "ALLUKA_HOME": null,
+        "VIA_HOME": null,
+        "ORCHESTRATOR_PERSONAS_DIR": "$FIXTURE_ROOT/personas",
+        "NANIKA_DEFAULT_RUNTIME": null,
+        "NANIKA_CODEX_AUTO": "0",
+        "ORCHESTRATOR_STALL_TIMEOUT": null,
+        "TMPDIR": "$FIXTURE_ROOT/tmp",
+        "PATH": "$FIXTURE_ROOT/inert-bin"
+      },
+      "fixed_time": "2026-07-13T00:00:00Z",
+      "fixed_ids": [
+        "plan-fixed"
+      ],
+      "input": {
+        "workspace_id": "20260713-writer",
+        "domain": "dev",
+        "status": "in_progress",
+        "started_at": "2026-07-13T00:00:00Z",
+        "phase": {
+          "id": "phase-1",
+          "name": "write",
+          "objective": "encode",
+          "persona": "implementer",
+          "model_tier": "work",
+          "status": "pending"
+        }
+      }
+    },
+    {
+      "case_id": "checkpoint-direct-v2",
+      "contracts": [
+        "ORC-DATA-CHECKPOINT-001"
+      ],
+      "oracle": "go-package",
+      "operation": "checkpoint",
+      "comparison": "exact-structured",
+      "go_api": [
+        "core.LoadCheckpoint"
+      ],
+      "normalization": {
+        "source_shape": "rust-only"
+      },
+      "environment": {
+        "HOME": "$FIXTURE_ROOT/home",
+        "ORCHESTRATOR_CONFIG_DIR": null,
+        "ALLUKA_HOME": null,
+        "VIA_HOME": null,
+        "ORCHESTRATOR_PERSONAS_DIR": "$FIXTURE_ROOT/personas",
+        "NANIKA_DEFAULT_RUNTIME": null,
+        "NANIKA_CODEX_AUTO": "0",
+        "ORCHESTRATOR_STALL_TIMEOUT": null,
+        "TMPDIR": "$FIXTURE_ROOT/tmp",
+        "PATH": "$FIXTURE_ROOT/inert-bin"
+      },
+      "fixed_time": "2026-07-13T00:00:00Z",
+      "fixed_ids": [],
+      "input": {
+        "bytes_file": "checkpoints/legacy-direct-v2.json"
+      }
+    },
+    {
+      "case_id": "checkpoint-envelope-unknown-fields",
+      "contracts": [
+        "ORC-DATA-CHECKPOINT-001"
+      ],
+      "oracle": "go-package",
+      "operation": "checkpoint",
+      "comparison": "exact-structured",
+      "go_api": [
+        "core.LoadCheckpoint"
+      ],
+      "normalization": {
+        "source_shape": "rust-only",
+        "unknown_preservation": "rust-only"
+      },
+      "environment": {
+        "HOME": "$FIXTURE_ROOT/home",
+        "ORCHESTRATOR_CONFIG_DIR": null,
+        "ALLUKA_HOME": null,
+        "VIA_HOME": null,
+        "ORCHESTRATOR_PERSONAS_DIR": "$FIXTURE_ROOT/personas",
+        "NANIKA_DEFAULT_RUNTIME": null,
+        "NANIKA_CODEX_AUTO": "0",
+        "ORCHESTRATOR_STALL_TIMEOUT": null,
+        "TMPDIR": "$FIXTURE_ROOT/tmp",
+        "PATH": "$FIXTURE_ROOT/inert-bin"
+      },
+      "fixed_time": "2026-07-13T00:00:00Z",
+      "fixed_ids": [],
+      "input": {
+        "bytes_file": "checkpoints/envelope-v1-payload-v2-forward.json"
+      }
+    },
+    {
+      "case_id": "checkpoint-legacy-direct-missing-new-fields",
+      "contracts": [
+        "ORC-DATA-CHECKPOINT-001"
+      ],
+      "oracle": "go-package",
+      "operation": "checkpoint",
+      "comparison": "exact-structured",
+      "go_api": [
+        "core.LoadCheckpoint"
+      ],
+      "normalization": {
+        "source_shape": "rust-only"
+      },
+      "environment": {
+        "HOME": "$FIXTURE_ROOT/home",
+        "ORCHESTRATOR_CONFIG_DIR": null,
+        "ALLUKA_HOME": null,
+        "VIA_HOME": null,
+        "ORCHESTRATOR_PERSONAS_DIR": "$FIXTURE_ROOT/personas",
+        "NANIKA_DEFAULT_RUNTIME": null,
+        "NANIKA_CODEX_AUTO": "0",
+        "ORCHESTRATOR_STALL_TIMEOUT": null,
+        "TMPDIR": "$FIXTURE_ROOT/tmp",
+        "PATH": "$FIXTURE_ROOT/inert-bin"
+      },
+      "fixed_time": "2026-07-13T00:00:00Z",
+      "fixed_ids": [],
+      "input": {
+        "bytes_file": "checkpoints/legacy-direct-v1.json"
+      }
+    },
+    {
+      "case_id": "checkpoint-malformed-type",
+      "contracts": [
+        "ORC-DATA-CHECKPOINT-001"
+      ],
+      "oracle": "go-package",
+      "operation": "checkpoint",
+      "comparison": "error-class",
+      "go_api": [
+        "core.LoadCheckpoint"
+      ],
+      "normalization": {
+        "error_class": "unsupported_checkpoint"
+      },
+      "environment": {
+        "HOME": "$FIXTURE_ROOT/home",
+        "ORCHESTRATOR_CONFIG_DIR": null,
+        "ALLUKA_HOME": null,
+        "VIA_HOME": null,
+        "ORCHESTRATOR_PERSONAS_DIR": "$FIXTURE_ROOT/personas",
+        "NANIKA_DEFAULT_RUNTIME": null,
+        "NANIKA_CODEX_AUTO": "0",
+        "ORCHESTRATOR_STALL_TIMEOUT": null,
+        "TMPDIR": "$FIXTURE_ROOT/tmp",
+        "PATH": "$FIXTURE_ROOT/inert-bin"
+      },
+      "fixed_time": "2026-07-13T00:00:00Z",
+      "fixed_ids": [],
+      "expected_go_stderr": "failed to parse checkpoint",
+      "input": {
+        "bytes": "{\"version\":1,\"payload\":{\"workspace_id\":17}}"
+      }
+    },
+    {
+      "case_id": "event-current-writer-go-readable",
+      "contracts": [
+        "ORC-DATA-EVENTS-001"
+      ],
+      "oracle": "go-package",
+      "operation": "event_writer",
+      "comparison": "exact-continuation",
+      "go_api": [
+        "event.LastSequence"
+      ],
+      "normalization": {
+        "writer": "rust"
+      },
+      "environment": {
+        "HOME": "$FIXTURE_ROOT/home",
+        "ORCHESTRATOR_CONFIG_DIR": null,
+        "ALLUKA_HOME": null,
+        "VIA_HOME": null,
+        "ORCHESTRATOR_PERSONAS_DIR": "$FIXTURE_ROOT/personas",
+        "NANIKA_DEFAULT_RUNTIME": null,
+        "NANIKA_CODEX_AUTO": "0",
+        "ORCHESTRATOR_STALL_TIMEOUT": null,
+        "TMPDIR": "$FIXTURE_ROOT/tmp",
+        "PATH": "$FIXTURE_ROOT/inert-bin"
+      },
+      "fixed_time": "2026-07-13T00:00:00Z",
+      "fixed_ids": [
+        "evt-writer"
+      ],
+      "input": {
+        "id": "evt-writer",
+        "type": "phase.started",
+        "timestamp": "2026-07-13T00:00:00Z",
+        "sequence": 17,
+        "mission_id": "mission-1",
+        "phase_id": "phase-1",
+        "worker_id": "worker-1",
+        "data": {
+          "name": "write",
+          "unknown_data": true
+        }
+      }
+    },
+    {
+      "case_id": "events-all-45-stable-types",
+      "contracts": [
+        "ORC-DATA-EVENTS-001"
+      ],
+      "oracle": "go-package",
+      "operation": "events",
+      "comparison": "exact-continuation",
+      "go_api": [
+        "event.LastSequence"
+      ],
+      "normalization": {
+        "full_decode": "rust-only"
+      },
+      "environment": {
+        "HOME": "$FIXTURE_ROOT/home",
+        "ORCHESTRATOR_CONFIG_DIR": null,
+        "ALLUKA_HOME": null,
+        "VIA_HOME": null,
+        "ORCHESTRATOR_PERSONAS_DIR": "$FIXTURE_ROOT/personas",
+        "NANIKA_DEFAULT_RUNTIME": null,
+        "NANIKA_CODEX_AUTO": "0",
+        "ORCHESTRATOR_STALL_TIMEOUT": null,
+        "TMPDIR": "$FIXTURE_ROOT/tmp",
+        "PATH": "$FIXTURE_ROOT/inert-bin"
+      },
+      "fixed_time": "2026-07-13T00:00:00Z",
+      "fixed_ids": [],
+      "input": {
+        "bytes_file": "events/stable-types.jsonl"
+      }
+    },
+    {
+      "case_id": "events-corrupt-unknown-and-file-order",
+      "contracts": [
+        "ORC-DATA-EVENTS-001"
+      ],
+      "oracle": "go-package",
+      "operation": "events",
+      "comparison": "exact-continuation",
+      "go_api": [
+        "event.LastSequence"
+      ],
+      "normalization": {
+        "full_decode": "rust-only",
+        "file_order": "rust-only"
+      },
+      "environment": {
+        "HOME": "$FIXTURE_ROOT/home",
+        "ORCHESTRATOR_CONFIG_DIR": null,
+        "ALLUKA_HOME": null,
+        "VIA_HOME": null,
+        "ORCHESTRATOR_PERSONAS_DIR": "$FIXTURE_ROOT/personas",
+        "NANIKA_DEFAULT_RUNTIME": null,
+        "NANIKA_CODEX_AUTO": "0",
+        "ORCHESTRATOR_STALL_TIMEOUT": null,
+        "TMPDIR": "$FIXTURE_ROOT/tmp",
+        "PATH": "$FIXTURE_ROOT/inert-bin"
+      },
+      "fixed_time": "2026-07-13T00:00:00Z",
+      "fixed_ids": [],
+      "input": {
+        "bytes_file": "events/mixed-history.jsonl"
+      }
+    },
+    {
+      "case_id": "home-alluka-precedence",
+      "contracts": [
+        "ORC-CONFIG-HOME-001"
+      ],
+      "oracle": "go-package",
+      "operation": "home",
+      "comparison": "exact-path",
+      "go_api": [
+        "config.Dir"
+      ],
+      "normalization": {
+        "selection_source": "rust-only"
+      },
+      "environment": {
+        "HOME": "$FIXTURE_ROOT/home",
+        "ORCHESTRATOR_CONFIG_DIR": null,
+        "ALLUKA_HOME": "$FIXTURE_ROOT/alluka",
+        "VIA_HOME": "$FIXTURE_ROOT/via",
+        "ORCHESTRATOR_PERSONAS_DIR": "$FIXTURE_ROOT/personas",
+        "NANIKA_DEFAULT_RUNTIME": null,
+        "NANIKA_CODEX_AUTO": "0",
+        "ORCHESTRATOR_STALL_TIMEOUT": null,
+        "TMPDIR": "$FIXTURE_ROOT/tmp",
+        "PATH": "$FIXTURE_ROOT/inert-bin"
+      },
+      "fixed_time": "2026-07-13T00:00:00Z",
+      "fixed_ids": [],
+      "input": {}
+    },
+    {
+      "case_id": "home-existing-legacy-alluka",
+      "contracts": [
+        "ORC-CONFIG-HOME-001"
+      ],
+      "oracle": "go-package",
+      "operation": "home",
+      "comparison": "exact-path",
+      "go_api": [
+        "config.Dir"
+      ],
+      "normalization": {
+        "selection_source": "rust-only"
+      },
+      "environment": {
+        "HOME": "$FIXTURE_ROOT/home",
+        "ORCHESTRATOR_CONFIG_DIR": null,
+        "ALLUKA_HOME": null,
+        "VIA_HOME": null,
+        "ORCHESTRATOR_PERSONAS_DIR": "$FIXTURE_ROOT/personas",
+        "NANIKA_DEFAULT_RUNTIME": null,
+        "NANIKA_CODEX_AUTO": "0",
+        "ORCHESTRATOR_STALL_TIMEOUT": null,
+        "TMPDIR": "$FIXTURE_ROOT/tmp",
+        "PATH": "$FIXTURE_ROOT/inert-bin"
+      },
+      "home_layout": [
+        "home/.alluka/"
+      ],
+      "fixed_time": "2026-07-13T00:00:00Z",
+      "fixed_ids": [],
+      "input": {}
+    },
+    {
+      "case_id": "home-existing-legacy-alluka-file",
+      "contracts": [
+        "ORC-CONFIG-HOME-001"
+      ],
+      "oracle": "go-package",
+      "operation": "home",
+      "comparison": "exact-path",
+      "go_api": [
+        "config.Dir"
+      ],
+      "normalization": {
+        "selection_source": "rust-only"
+      },
+      "environment": {
+        "HOME": "$FIXTURE_ROOT/home",
+        "ORCHESTRATOR_CONFIG_DIR": null,
+        "ALLUKA_HOME": null,
+        "VIA_HOME": null,
+        "ORCHESTRATOR_PERSONAS_DIR": "$FIXTURE_ROOT/personas",
+        "NANIKA_DEFAULT_RUNTIME": null,
+        "NANIKA_CODEX_AUTO": "0",
+        "ORCHESTRATOR_STALL_TIMEOUT": null,
+        "TMPDIR": "$FIXTURE_ROOT/tmp",
+        "PATH": "$FIXTURE_ROOT/inert-bin"
+      },
+      "home_layout": [
+        "home/.alluka"
+      ],
+      "fixed_time": "2026-07-13T00:00:00Z",
+      "fixed_ids": [],
+      "input": {}
+    },
+    {
+      "case_id": "home-highest-precedence",
+      "contracts": [
+        "ORC-CONFIG-HOME-001"
+      ],
+      "oracle": "go-package",
+      "operation": "home",
+      "comparison": "exact-path",
+      "go_api": [
+        "config.Dir"
+      ],
+      "normalization": {
+        "selection_source": "rust-only"
+      },
+      "environment": {
+        "HOME": "$FIXTURE_ROOT/home",
+        "ORCHESTRATOR_CONFIG_DIR": "$FIXTURE_ROOT/config",
+        "ALLUKA_HOME": "$FIXTURE_ROOT/alluka",
+        "VIA_HOME": "$FIXTURE_ROOT/via",
+        "ORCHESTRATOR_PERSONAS_DIR": "$FIXTURE_ROOT/personas",
+        "NANIKA_DEFAULT_RUNTIME": null,
+        "NANIKA_CODEX_AUTO": "0",
+        "ORCHESTRATOR_STALL_TIMEOUT": null,
+        "TMPDIR": "$FIXTURE_ROOT/tmp",
+        "PATH": "$FIXTURE_ROOT/inert-bin"
+      },
+      "fixed_time": "2026-07-13T00:00:00Z",
+      "fixed_ids": [],
+      "input": {}
+    },
+    {
+      "case_id": "home-via-fallback",
+      "contracts": [
+        "ORC-CONFIG-HOME-001"
+      ],
+      "oracle": "go-package",
+      "operation": "home",
+      "comparison": "exact-path",
+      "go_api": [
+        "config.Dir"
+      ],
+      "normalization": {
+        "selection_source": "rust-only"
+      },
+      "environment": {
+        "HOME": "$FIXTURE_ROOT/home",
+        "ORCHESTRATOR_CONFIG_DIR": null,
+        "ALLUKA_HOME": null,
+        "VIA_HOME": null,
+        "ORCHESTRATOR_PERSONAS_DIR": "$FIXTURE_ROOT/personas",
+        "NANIKA_DEFAULT_RUNTIME": null,
+        "NANIKA_CODEX_AUTO": "0",
+        "ORCHESTRATOR_STALL_TIMEOUT": null,
+        "TMPDIR": "$FIXTURE_ROOT/tmp",
+        "PATH": "$FIXTURE_ROOT/inert-bin"
+      },
+      "fixed_time": "2026-07-13T00:00:00Z",
+      "fixed_ids": [],
+      "input": {}
+    },
+    {
+      "case_id": "home-via-precedence",
+      "contracts": [
+        "ORC-CONFIG-HOME-001"
+      ],
+      "oracle": "go-package",
+      "operation": "home",
+      "comparison": "exact-path",
+      "go_api": [
+        "config.Dir"
+      ],
+      "normalization": {
+        "selection_source": "rust-only"
+      },
+      "environment": {
+        "HOME": "$FIXTURE_ROOT/home",
+        "ORCHESTRATOR_CONFIG_DIR": null,
+        "ALLUKA_HOME": null,
+        "VIA_HOME": "$FIXTURE_ROOT/via",
+        "ORCHESTRATOR_PERSONAS_DIR": "$FIXTURE_ROOT/personas",
+        "NANIKA_DEFAULT_RUNTIME": null,
+        "NANIKA_CODEX_AUTO": "0",
+        "ORCHESTRATOR_STALL_TIMEOUT": null,
+        "TMPDIR": "$FIXTURE_ROOT/tmp",
+        "PATH": "$FIXTURE_ROOT/inert-bin"
+      },
+      "fixed_time": "2026-07-13T00:00:00Z",
+      "fixed_ids": [],
+      "input": {}
+    },
+    {
+      "case_id": "mission-authored-order",
+      "contracts": [
+        "ORC-DECOMPOSE-001"
+      ],
+      "oracle": "go-package",
+      "operation": "mission",
+      "comparison": "exact-structured",
+      "go_api": [
+        "persona.SetDir",
+        "persona.Load",
+        "decompose.PreDecomposed"
+      ],
+      "normalization": {
+        "plan_fields_omitted": [
+          "id",
+          "task",
+          "created_at"
+        ],
+        "rust_policy_fixture": true
+      },
+      "environment": {
+        "HOME": "$FIXTURE_ROOT/home",
+        "ORCHESTRATOR_CONFIG_DIR": null,
+        "ALLUKA_HOME": null,
+        "VIA_HOME": null,
+        "ORCHESTRATOR_PERSONAS_DIR": "$FIXTURE_ROOT/personas",
+        "NANIKA_DEFAULT_RUNTIME": null,
+        "NANIKA_CODEX_AUTO": "0",
+        "ORCHESTRATOR_STALL_TIMEOUT": null,
+        "TMPDIR": "$FIXTURE_ROOT/tmp",
+        "PATH": "$FIXTURE_ROOT/inert-bin"
+      },
+      "fixed_time": "2026-07-13T00:00:00Z",
+      "fixed_ids": [],
+      "input": {
+        "source_file": "differential/input/mission-authored-order.md",
+        "persona_dir": "$FIXTURE_ROOT/personas",
+        "target_context": {
+          "preferred_personas": [],
+          "skip_review_injection": true
+        },
+        "known_personas": [
+          "fixture-architect",
+          "fixture-implementer"
+        ],
+        "default_policy": {
+          "persona": "fixture-implementer",
+          "selection_method": "fallback",
+          "tier": "work",
+          "role": "implementer",
+          "runtime": "claude"
+        },
+        "phase_policies": {
+          "first": {
+            "persona": "fixture-architect",
+            "selection_method": "llm",
+            "tier": "work",
+            "role": "planner",
+            "runtime": "claude"
+          },
+          "second": {
+            "persona": "fixture-implementer",
+            "selection_method": "llm",
+            "tier": "work",
+            "role": "implementer",
+            "runtime": "claude"
+          },
+          "third": {
+            "persona": "fixture-implementer",
+            "selection_method": "llm",
+            "tier": "work",
+            "role": "implementer",
+            "runtime": "claude"
+          }
+        },
+        "target_phase_policies": {}
+      },
+      "expected": {
+        "ok": true,
+        "observation_file": "differential/expected/mission-authored-order.json"
+      }
+    },
+    {
+      "case_id": "mission-defaults-policy",
+      "contracts": [
+        "ORC-DECOMPOSE-001"
+      ],
+      "oracle": "go-package",
+      "operation": "mission",
+      "comparison": "exact-structured",
+      "go_api": [
+        "persona.SetDir",
+        "persona.Load",
+        "decompose.PreDecomposed"
+      ],
+      "normalization": {
+        "plan_fields_omitted": [
+          "id",
+          "task",
+          "created_at"
+        ],
+        "rust_policy_fixture": true
+      },
+      "environment": {
+        "HOME": "$FIXTURE_ROOT/home",
+        "ORCHESTRATOR_CONFIG_DIR": null,
+        "ALLUKA_HOME": null,
+        "VIA_HOME": null,
+        "ORCHESTRATOR_PERSONAS_DIR": "$FIXTURE_ROOT/personas",
+        "NANIKA_DEFAULT_RUNTIME": null,
+        "NANIKA_CODEX_AUTO": "0",
+        "ORCHESTRATOR_STALL_TIMEOUT": null,
+        "TMPDIR": "$FIXTURE_ROOT/tmp",
+        "PATH": "$FIXTURE_ROOT/inert-bin"
+      },
+      "fixed_time": "2026-07-13T00:00:00Z",
+      "fixed_ids": [],
+      "expected_go_stderr": "[decompose] keyword fallback for phase",
+      "input": {
+        "source_file": "differential/input/mission-defaults.md",
+        "persona_dir": "$FIXTURE_ROOT/personas",
+        "target_context": {
+          "preferred_personas": [
+            "fixture-architect"
+          ],
+          "skip_review_injection": true
+        },
+        "known_personas": [
+          "fixture-architect",
+          "fixture-implementer"
+        ],
+        "default_policy": {
+          "persona": "fixture-implementer",
+          "selection_method": "fallback",
+          "tier": "work",
+          "role": "implementer",
+          "runtime": "claude"
+        },
+        "phase_policies": {},
+        "target_phase_policies": {
+          "investigate": {
+            "persona": "fixture-architect",
+            "selection_method": "keyword",
+            "tier": "think",
+            "role": "planner",
+            "runtime": "claude"
+          }
+        }
+      },
+      "expected": {
+        "ok": true,
+        "observation_file": "differential/expected/mission-defaults-policy.json"
+      }
+    },
+    {
+      "case_id": "mission-malformed-no-phases",
+      "contracts": [
+        "ORC-DECOMPOSE-001"
+      ],
+      "oracle": "go-package",
+      "operation": "mission",
+      "comparison": "error-class",
+      "go_api": [
+        "persona.SetDir",
+        "persona.Load",
+        "decompose.PreDecomposed"
+      ],
+      "normalization": {
+        "error_class": "no_phases",
+        "rust_policy_fixture": true
+      },
+      "environment": {
+        "HOME": "$FIXTURE_ROOT/home",
+        "ORCHESTRATOR_CONFIG_DIR": null,
+        "ALLUKA_HOME": null,
+        "VIA_HOME": null,
+        "ORCHESTRATOR_PERSONAS_DIR": "$FIXTURE_ROOT/personas",
+        "NANIKA_DEFAULT_RUNTIME": null,
+        "NANIKA_CODEX_AUTO": "0",
+        "ORCHESTRATOR_STALL_TIMEOUT": null,
+        "TMPDIR": "$FIXTURE_ROOT/tmp",
+        "PATH": "$FIXTURE_ROOT/inert-bin"
+      },
+      "fixed_time": "2026-07-13T00:00:00Z",
+      "fixed_ids": [],
+      "input": {
+        "source": "PHASE: missing-objective | PERSONA: unknown\nprefix PHASE: ignored | OBJECTIVE: no",
+        "persona_dir": "$FIXTURE_ROOT/personas",
+        "target_context": {
+          "preferred_personas": [],
+          "skip_review_injection": true
+        },
+        "known_personas": [
+          "fixture-architect",
+          "fixture-implementer"
+        ],
+        "default_policy": {
+          "persona": "fixture-implementer",
+          "selection_method": "fallback",
+          "tier": "work",
+          "role": "implementer",
+          "runtime": "claude"
+        },
+        "phase_policies": {},
+        "target_phase_policies": {}
+      }
+    },
+    {
+      "case_id": "mission-positive-fields",
+      "contracts": [
+        "ORC-DECOMPOSE-001"
+      ],
+      "oracle": "go-package",
+      "operation": "mission",
+      "comparison": "exact-structured",
+      "go_api": [
+        "persona.SetDir",
+        "persona.Load",
+        "decompose.PreDecomposed"
+      ],
+      "normalization": {
+        "plan_fields_omitted": [
+          "id",
+          "task",
+          "created_at"
+        ],
+        "rust_policy_fixture": true
+      },
+      "environment": {
+        "HOME": "$FIXTURE_ROOT/home",
+        "ORCHESTRATOR_CONFIG_DIR": null,
+        "ALLUKA_HOME": null,
+        "VIA_HOME": null,
+        "ORCHESTRATOR_PERSONAS_DIR": "$FIXTURE_ROOT/personas",
+        "NANIKA_DEFAULT_RUNTIME": null,
+        "NANIKA_CODEX_AUTO": "0",
+        "ORCHESTRATOR_STALL_TIMEOUT": null,
+        "TMPDIR": "$FIXTURE_ROOT/tmp",
+        "PATH": "$FIXTURE_ROOT/inert-bin"
+      },
+      "fixed_time": "2026-07-13T00:00:00Z",
+      "fixed_ids": [],
+      "input": {
+        "source_file": "differential/input/mission-positive.md",
+        "persona_dir": "$FIXTURE_ROOT/personas",
+        "target_context": {
+          "preferred_personas": [
+            "fixture-architect"
+          ],
+          "skip_review_injection": true
+        },
+        "known_personas": [
+          "fixture-architect",
+          "fixture-implementer"
+        ],
+        "default_policy": {
+          "persona": "fixture-implementer",
+          "selection_method": "fallback",
+          "tier": "work",
+          "role": "implementer",
+          "runtime": "claude"
+        },
+        "phase_policies": {
+          "design": {
+            "persona": "fixture-architect",
+            "selection_method": "llm",
+            "tier": "think",
+            "role": "planner",
+            "runtime": "claude"
+          },
+          "implement": {
+            "persona": "fixture-implementer",
+            "selection_method": "llm",
+            "tier": "work",
+            "role": "implementer",
+            "runtime": "claude"
+          }
+        },
+        "target_phase_policies": {}
+      },
+      "expected": {
+        "ok": true,
+        "observation_file": "differential/expected/mission-positive-fields.json"
+      }
+    },
+    {
+      "case_id": "model-configured-runtime-match",
+      "contracts": [
+        "ORC-CONFIG-RUNTIME-001"
+      ],
+      "oracle": "go-package",
+      "operation": "model",
+      "comparison": "exact-model",
+      "go_api": [
+        "router.RoutingConfig.ModelForTier"
+      ],
+      "normalization": {
+        "built_in_model_input": "rust-only"
+      },
+      "environment": {
+        "HOME": "$FIXTURE_ROOT/home",
+        "ORCHESTRATOR_CONFIG_DIR": null,
+        "ALLUKA_HOME": null,
+        "VIA_HOME": null,
+        "ORCHESTRATOR_PERSONAS_DIR": "$FIXTURE_ROOT/personas",
+        "NANIKA_DEFAULT_RUNTIME": null,
+        "NANIKA_CODEX_AUTO": "0",
+        "ORCHESTRATOR_STALL_TIMEOUT": null,
+        "TMPDIR": "$FIXTURE_ROOT/tmp",
+        "PATH": "$FIXTURE_ROOT/inert-bin"
+      },
+      "fixed_time": "2026-07-13T00:00:00Z",
+      "fixed_ids": [],
+      "input": {
+        "forced_model": "",
+        "tier": "work",
+        "effective_runtime": "codex",
+        "built_in_model": "glm-5.2",
+        "routing": {
+          "work": {
+            "provider": "fixture",
+            "model": "fixture-model",
+            "runtime": "codex"
+          }
+        }
+      }
+    },
+    {
+      "case_id": "model-runtime-mismatch-fallback",
+      "contracts": [
+        "ORC-CONFIG-RUNTIME-001"
+      ],
+      "oracle": "go-package",
+      "operation": "model",
+      "comparison": "exact-model",
+      "go_api": [
+        "router.RoutingConfig.ModelForTier"
+      ],
+      "normalization": {
+        "built_in_model_input": "rust-only"
+      },
+      "environment": {
+        "HOME": "$FIXTURE_ROOT/home",
+        "ORCHESTRATOR_CONFIG_DIR": null,
+        "ALLUKA_HOME": null,
+        "VIA_HOME": null,
+        "ORCHESTRATOR_PERSONAS_DIR": "$FIXTURE_ROOT/personas",
+        "NANIKA_DEFAULT_RUNTIME": null,
+        "NANIKA_CODEX_AUTO": "0",
+        "ORCHESTRATOR_STALL_TIMEOUT": null,
+        "TMPDIR": "$FIXTURE_ROOT/tmp",
+        "PATH": "$FIXTURE_ROOT/inert-bin"
+      },
+      "fixed_time": "2026-07-13T00:00:00Z",
+      "fixed_ids": [],
+      "input": {
+        "forced_model": "",
+        "tier": "work",
+        "effective_runtime": "claude",
+        "built_in_model": "sonnet",
+        "routing": {
+          "work": {
+            "provider": "fixture",
+            "model": "fixture-model",
+            "runtime": "codex"
+          }
+        }
+      }
+    },
+    {
+      "case_id": "projection-descending-sequence-rejected",
+      "contracts": [
+        "ORC-PROCESS-001"
+      ],
+      "oracle": "normative-rust",
+      "operation": "projection",
+      "comparison": "rust-only-error",
+      "go_api": [],
+      "normalization": {
+        "differential_label_removed": true
+      },
+      "environment": {
+        "HOME": "$FIXTURE_ROOT/home",
+        "ORCHESTRATOR_CONFIG_DIR": null,
+        "ALLUKA_HOME": null,
+        "VIA_HOME": null,
+        "ORCHESTRATOR_PERSONAS_DIR": "$FIXTURE_ROOT/personas",
+        "NANIKA_DEFAULT_RUNTIME": null,
+        "NANIKA_CODEX_AUTO": "0",
+        "ORCHESTRATOR_STALL_TIMEOUT": null,
+        "TMPDIR": "$FIXTURE_ROOT/tmp",
+        "PATH": "$FIXTURE_ROOT/inert-bin"
+      },
+      "fixed_time": "2026-07-13T00:00:00Z",
+      "fixed_ids": [
+        "evt-2",
+        "evt-1"
+      ],
+      "input": {
+        "mission_id": "mission-1",
+        "definitions": [
+          {
+            "id": "phase-1",
+            "name": "build",
+            "dependencies": []
+          }
+        ],
+        "events": [
+          {
+            "id": "evt-2",
+            "type": "mission.started",
+            "timestamp": "2026-07-13T00:00:02Z",
+            "sequence": 2,
+            "mission_id": "mission-1"
+          },
+          {
+            "id": "evt-1",
+            "type": "future.observed",
+            "timestamp": "2026-07-13T00:00:01Z",
+            "sequence": 1,
+            "mission_id": "mission-1"
+          }
+        ]
+      },
+      "expected_rust_error": "out_of_order"
+    },
+    {
+      "case_id": "projection-valid-unknown-and-replay",
+      "contracts": [
+        "ORC-PROCESS-001"
+      ],
+      "oracle": "go-package",
+      "operation": "projection",
+      "comparison": "exact-structured",
+      "go_api": [
+        "event.ProjectFromLog"
+      ],
+      "normalization": {
+        "phase_map_sorted_by_key": true,
+        "replay_strictness": "rust-only"
+      },
+      "environment": {
+        "HOME": "$FIXTURE_ROOT/home",
+        "ORCHESTRATOR_CONFIG_DIR": null,
+        "ALLUKA_HOME": null,
+        "VIA_HOME": null,
+        "ORCHESTRATOR_PERSONAS_DIR": "$FIXTURE_ROOT/personas",
+        "NANIKA_DEFAULT_RUNTIME": null,
+        "NANIKA_CODEX_AUTO": "0",
+        "ORCHESTRATOR_STALL_TIMEOUT": null,
+        "TMPDIR": "$FIXTURE_ROOT/tmp",
+        "PATH": "$FIXTURE_ROOT/inert-bin"
+      },
+      "fixed_time": "2026-07-13T00:00:00Z",
+      "fixed_ids": [
+        "evt-1",
+        "evt-2",
+        "evt-3",
+        "evt-4",
+        "evt-5"
+      ],
+      "input": {
+        "mission_id": "mission-1",
+        "definitions": [
+          {
+            "id": "phase-1",
+            "name": "build",
+            "dependencies": []
+          }
+        ],
+        "events": [
+          {
+            "id": "evt-1",
+            "type": "mission.started",
+            "timestamp": "2026-07-13T00:00:01Z",
+            "sequence": 1,
+            "mission_id": "mission-1"
+          },
+          {
+            "id": "evt-2",
+            "type": "phase.started",
+            "timestamp": "2026-07-13T00:00:02Z",
+            "sequence": 2,
+            "mission_id": "mission-1",
+            "phase_id": "phase-1",
+            "data": {
+              "name": "build"
+            }
+          },
+          {
+            "id": "evt-3",
+            "type": "future.observed",
+            "timestamp": "2026-07-13T00:00:03Z",
+            "sequence": 3,
+            "mission_id": "mission-1",
+            "data": {
+              "keep": true
+            }
+          },
+          {
+            "id": "evt-4",
+            "type": "phase.completed",
+            "timestamp": "2026-07-13T00:00:04Z",
+            "sequence": 4,
+            "mission_id": "mission-1",
+            "phase_id": "phase-1"
+          },
+          {
+            "id": "evt-5",
+            "type": "mission.completed",
+            "timestamp": "2026-07-13T00:00:05Z",
+            "sequence": 5,
+            "mission_id": "mission-1"
+          },
+          {
+            "id": "evt-5",
+            "type": "mission.completed",
+            "timestamp": "2026-07-13T00:00:05Z",
+            "sequence": 5,
+            "mission_id": "mission-1"
+          }
+        ]
+      }
+    },
+    {
+      "case_id": "routing-yaml-malformed",
+      "contracts": [
+        "ORC-CONFIG-RUNTIME-001"
+      ],
+      "oracle": "go-package",
+      "operation": "routing",
+      "comparison": "error-class",
+      "go_api": [
+        "router.LoadRoutingConfig"
+      ],
+      "normalization": {
+        "error_class": "malformed_routing"
+      },
+      "environment": {
+        "HOME": "$FIXTURE_ROOT/home",
+        "ORCHESTRATOR_CONFIG_DIR": null,
+        "ALLUKA_HOME": null,
+        "VIA_HOME": null,
+        "ORCHESTRATOR_PERSONAS_DIR": "$FIXTURE_ROOT/personas",
+        "NANIKA_DEFAULT_RUNTIME": null,
+        "NANIKA_CODEX_AUTO": "0",
+        "ORCHESTRATOR_STALL_TIMEOUT": null,
+        "TMPDIR": "$FIXTURE_ROOT/tmp",
+        "PATH": "$FIXTURE_ROOT/inert-bin"
+      },
+      "fixed_time": "2026-07-13T00:00:00Z",
+      "fixed_ids": [],
+      "input": {
+        "bytes_file": "routing-malformed.yaml"
+      }
+    },
+    {
+      "case_id": "routing-yaml-valid-unknown-fields",
+      "contracts": [
+        "ORC-CONFIG-RUNTIME-001"
+      ],
+      "oracle": "go-package",
+      "operation": "routing",
+      "comparison": "exact-structured",
+      "go_api": [
+        "router.LoadRoutingConfig"
+      ],
+      "normalization": {},
+      "environment": {
+        "HOME": "$FIXTURE_ROOT/home",
+        "ORCHESTRATOR_CONFIG_DIR": null,
+        "ALLUKA_HOME": null,
+        "VIA_HOME": null,
+        "ORCHESTRATOR_PERSONAS_DIR": "$FIXTURE_ROOT/personas",
+        "NANIKA_DEFAULT_RUNTIME": null,
+        "NANIKA_CODEX_AUTO": "0",
+        "ORCHESTRATOR_STALL_TIMEOUT": null,
+        "TMPDIR": "$FIXTURE_ROOT/tmp",
+        "PATH": "$FIXTURE_ROOT/inert-bin"
+      },
+      "fixed_time": "2026-07-13T00:00:00Z",
+      "fixed_ids": [],
+      "input": {
+        "bytes_file": "routing-valid.yaml"
+      }
+    },
+    {
+      "case_id": "runtime-configured-precedence",
+      "contracts": [
+        "ORC-CONFIG-RUNTIME-001"
+      ],
+      "oracle": "go-package",
+      "operation": "runtime",
+      "comparison": "exact-runtime",
+      "go_api": [
+        "router.RoutingConfig.EffectiveRuntime"
+      ],
+      "normalization": {},
+      "environment": {
+        "HOME": "$FIXTURE_ROOT/home",
+        "ORCHESTRATOR_CONFIG_DIR": null,
+        "ALLUKA_HOME": null,
+        "VIA_HOME": null,
+        "ORCHESTRATOR_PERSONAS_DIR": "$FIXTURE_ROOT/personas",
+        "NANIKA_DEFAULT_RUNTIME": null,
+        "NANIKA_CODEX_AUTO": "0",
+        "ORCHESTRATOR_STALL_TIMEOUT": null,
+        "TMPDIR": "$FIXTURE_ROOT/tmp",
+        "PATH": "$FIXTURE_ROOT/inert-bin"
+      },
+      "fixed_time": "2026-07-13T00:00:00Z",
+      "fixed_ids": [],
+      "input": {
+        "forced_runtime": "",
+        "configured_runtime": "openrouter",
+        "policy_runtime": "claude",
+        "tier": "work"
+      }
+    },
+    {
+      "case_id": "runtime-empty-default",
+      "contracts": [
+        "ORC-CONFIG-RUNTIME-001"
+      ],
+      "oracle": "go-package",
+      "operation": "runtime",
+      "comparison": "exact-runtime",
+      "go_api": [
+        "router.RoutingConfig.EffectiveRuntime"
+      ],
+      "normalization": {},
+      "environment": {
+        "HOME": "$FIXTURE_ROOT/home",
+        "ORCHESTRATOR_CONFIG_DIR": null,
+        "ALLUKA_HOME": null,
+        "VIA_HOME": null,
+        "ORCHESTRATOR_PERSONAS_DIR": "$FIXTURE_ROOT/personas",
+        "NANIKA_DEFAULT_RUNTIME": null,
+        "NANIKA_CODEX_AUTO": "0",
+        "ORCHESTRATOR_STALL_TIMEOUT": null,
+        "TMPDIR": "$FIXTURE_ROOT/tmp",
+        "PATH": "$FIXTURE_ROOT/inert-bin"
+      },
+      "fixed_time": "2026-07-13T00:00:00Z",
+      "fixed_ids": [],
+      "input": {
+        "forced_runtime": "",
+        "configured_runtime": "",
+        "policy_runtime": "",
+        "tier": "work"
+      }
+    },
+    {
+      "case_id": "runtime-environment-precedence",
+      "contracts": [
+        "ORC-CONFIG-RUNTIME-001"
+      ],
+      "oracle": "go-package",
+      "operation": "runtime",
+      "comparison": "exact-runtime",
+      "go_api": [
+        "router.RoutingConfig.EffectiveRuntime"
+      ],
+      "normalization": {},
+      "environment": {
+        "HOME": "$FIXTURE_ROOT/home",
+        "ORCHESTRATOR_CONFIG_DIR": null,
+        "ALLUKA_HOME": null,
+        "VIA_HOME": null,
+        "ORCHESTRATOR_PERSONAS_DIR": "$FIXTURE_ROOT/personas",
+        "NANIKA_DEFAULT_RUNTIME": "openai-api",
+        "NANIKA_CODEX_AUTO": "0",
+        "ORCHESTRATOR_STALL_TIMEOUT": null,
+        "TMPDIR": "$FIXTURE_ROOT/tmp",
+        "PATH": "$FIXTURE_ROOT/inert-bin"
+      },
+      "fixed_time": "2026-07-13T00:00:00Z",
+      "fixed_ids": [],
+      "input": {
+        "forced_runtime": "",
+        "configured_runtime": "openrouter",
+        "policy_runtime": "claude",
+        "tier": "work"
+      }
+    },
+    {
+      "case_id": "runtime-forced-precedence",
+      "contracts": [
+        "ORC-CONFIG-RUNTIME-001"
+      ],
+      "oracle": "go-package",
+      "operation": "runtime",
+      "comparison": "exact-runtime",
+      "go_api": [
+        "router.RoutingConfig.EffectiveRuntime"
+      ],
+      "normalization": {},
+      "environment": {
+        "HOME": "$FIXTURE_ROOT/home",
+        "ORCHESTRATOR_CONFIG_DIR": null,
+        "ALLUKA_HOME": null,
+        "VIA_HOME": null,
+        "ORCHESTRATOR_PERSONAS_DIR": "$FIXTURE_ROOT/personas",
+        "NANIKA_DEFAULT_RUNTIME": "openai-api",
+        "NANIKA_CODEX_AUTO": "0",
+        "ORCHESTRATOR_STALL_TIMEOUT": null,
+        "TMPDIR": "$FIXTURE_ROOT/tmp",
+        "PATH": "$FIXTURE_ROOT/inert-bin"
+      },
+      "fixed_time": "2026-07-13T00:00:00Z",
+      "fixed_ids": [],
+      "input": {
+        "forced_runtime": "both",
+        "configured_runtime": "openrouter",
+        "policy_runtime": "claude",
+        "tier": "work"
+      }
+    },
+    {
+      "case_id": "runtime-policy-precedence",
+      "contracts": [
+        "ORC-CONFIG-RUNTIME-001"
+      ],
+      "oracle": "go-package",
+      "operation": "runtime",
+      "comparison": "exact-runtime",
+      "go_api": [
+        "router.RoutingConfig.EffectiveRuntime"
+      ],
+      "normalization": {},
+      "environment": {
+        "HOME": "$FIXTURE_ROOT/home",
+        "ORCHESTRATOR_CONFIG_DIR": null,
+        "ALLUKA_HOME": null,
+        "VIA_HOME": null,
+        "ORCHESTRATOR_PERSONAS_DIR": "$FIXTURE_ROOT/personas",
+        "NANIKA_DEFAULT_RUNTIME": null,
+        "NANIKA_CODEX_AUTO": "0",
+        "ORCHESTRATOR_STALL_TIMEOUT": null,
+        "TMPDIR": "$FIXTURE_ROOT/tmp",
+        "PATH": "$FIXTURE_ROOT/inert-bin"
+      },
+      "fixed_time": "2026-07-13T00:00:00Z",
+      "fixed_ids": [],
+      "input": {
+        "forced_runtime": "",
+        "configured_runtime": "",
+        "policy_runtime": "claude",
+        "tier": "work"
+      }
+    },
+    {
+      "case_id": "stall-environment-malformed-intentional-fix",
+      "contracts": [
+        "ORC-CONFIG-STALL-001"
+      ],
+      "oracle": "normative-rust",
+      "operation": "stall",
+      "comparison": "rust-only-error",
+      "go_api": [],
+      "normalization": {
+        "differential_label_removed": true
+      },
+      "environment": {
+        "HOME": "$FIXTURE_ROOT/home",
+        "ORCHESTRATOR_CONFIG_DIR": null,
+        "ALLUKA_HOME": null,
+        "VIA_HOME": null,
+        "ORCHESTRATOR_PERSONAS_DIR": "$FIXTURE_ROOT/personas",
+        "NANIKA_DEFAULT_RUNTIME": null,
+        "NANIKA_CODEX_AUTO": "0",
+        "ORCHESTRATOR_STALL_TIMEOUT": "garbage",
+        "TMPDIR": "$FIXTURE_ROOT/tmp",
+        "PATH": "$FIXTURE_ROOT/inert-bin"
+      },
+      "fixed_time": "2026-07-13T00:00:00Z",
+      "fixed_ids": [],
+      "input": {
+        "phase_timeout": "",
+        "flag_value": "",
+        "worker_default": "worker-default"
+      },
+      "expected_rust_error": "invalid_stall_environment"
+    },
+    {
+      "case_id": "stall-environment-negative-intentional-fix",
+      "contracts": [
+        "ORC-CONFIG-STALL-001"
+      ],
+      "oracle": "normative-rust",
+      "operation": "stall",
+      "comparison": "rust-only-error",
+      "go_api": [],
+      "normalization": {
+        "differential_label_removed": true
+      },
+      "environment": {
+        "HOME": "$FIXTURE_ROOT/home",
+        "ORCHESTRATOR_CONFIG_DIR": null,
+        "ALLUKA_HOME": null,
+        "VIA_HOME": null,
+        "ORCHESTRATOR_PERSONAS_DIR": "$FIXTURE_ROOT/personas",
+        "NANIKA_DEFAULT_RUNTIME": null,
+        "NANIKA_CODEX_AUTO": "0",
+        "ORCHESTRATOR_STALL_TIMEOUT": "-1s",
+        "TMPDIR": "$FIXTURE_ROOT/tmp",
+        "PATH": "$FIXTURE_ROOT/inert-bin"
+      },
+      "fixed_time": "2026-07-13T00:00:00Z",
+      "fixed_ids": [],
+      "input": {
+        "phase_timeout": "",
+        "flag_value": "",
+        "worker_default": "worker-default"
+      },
+      "expected_rust_error": "invalid_stall_environment"
+    },
+    {
+      "case_id": "stall-environment-zero-intentional-fix",
+      "contracts": [
+        "ORC-CONFIG-STALL-001"
+      ],
+      "oracle": "normative-rust",
+      "operation": "stall",
+      "comparison": "rust-only-error",
+      "go_api": [],
+      "normalization": {
+        "differential_label_removed": true
+      },
+      "environment": {
+        "HOME": "$FIXTURE_ROOT/home",
+        "ORCHESTRATOR_CONFIG_DIR": null,
+        "ALLUKA_HOME": null,
+        "VIA_HOME": null,
+        "ORCHESTRATOR_PERSONAS_DIR": "$FIXTURE_ROOT/personas",
+        "NANIKA_DEFAULT_RUNTIME": null,
+        "NANIKA_CODEX_AUTO": "0",
+        "ORCHESTRATOR_STALL_TIMEOUT": "0s",
+        "TMPDIR": "$FIXTURE_ROOT/tmp",
+        "PATH": "$FIXTURE_ROOT/inert-bin"
+      },
+      "fixed_time": "2026-07-13T00:00:00Z",
+      "fixed_ids": [],
+      "input": {
+        "phase_timeout": "",
+        "flag_value": "",
+        "worker_default": "worker-default"
+      },
+      "expected_rust_error": "invalid_stall_environment"
+    }
+  ]
+}

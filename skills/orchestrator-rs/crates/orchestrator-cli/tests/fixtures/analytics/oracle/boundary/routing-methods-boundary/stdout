@@ -1,0 +1,7 @@
+method                  phases      pct%
+------------------------------------------
+llm                          6     60.0%
+fallback                     3     30.0%
+keyword                      1     10.0%
+
+10 phases total

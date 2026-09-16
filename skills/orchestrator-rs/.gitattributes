@@ -1,0 +1,4 @@
+# Vendored upstream source and golden terminal output preserve exact whitespace.
+third-party/serde-saphyr-0.0.29-msrv185/source/** -whitespace
+crates/orchestrator-cli/tests/fixtures/analytics/oracle/**/stdout -whitespace
+crates/orchestrator-cli/tests/fixtures/preflight/oracle/**/stdout -whitespace

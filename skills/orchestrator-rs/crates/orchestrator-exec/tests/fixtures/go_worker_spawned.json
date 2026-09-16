@@ -1,0 +1,15 @@
+{
+  "id": "evt_0123456789abcdef",
+  "type": "worker.spawned",
+  "timestamp": "2026-07-15T00:00:00Z",
+  "sequence": 1,
+  "mission_id": "mission-1",
+  "phase_id": "phase-1",
+  "worker_id": "worker-1",
+  "data": {
+    "model": "claude-opus",
+    "effort_level": "high",
+    "persona": "rust-engineer",
+    "dir": "/fixture/workers/phase-1"
+  }
+}

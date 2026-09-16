@@ -1,0 +1,2 @@
+{"id":"evt_seed000000000001","type":"mission.started","timestamp":"2026-07-13T00:00:00Z","sequence":1,"mission_id":"seed-mission","data":{"execution_mode":"sequential","phases":2,"task":"the seeded pre-state"}}
+{"id":"evt_seed000000000002","type":"mission.completed","timestamp":"2026-07-13T00:00:01Z","sequence":2,"mission_id":"seed-mission","data":{"execution_mode":"sequential","phase_count":2,"task":"the seeded pre-state"}}

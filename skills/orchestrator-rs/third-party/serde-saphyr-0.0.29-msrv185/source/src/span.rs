@@ -1,0 +1,434 @@
+#[cfg(feature = "huge_documents")]
+use serde_core::Deserializer;
+use serde_core::de::{self, IgnoredAny, MapAccess, Visitor};
+#[cfg(feature = "huge_documents")]
+use std::fmt;
+
+#[cfg(not(feature = "huge_documents"))]
+pub(crate) type SpanIndex = u32;
+
+#[cfg(not(feature = "huge_documents"))]
+const SPAN_INDEX_SENTINEL_VALUE: u64 = u32::MAX as u64;
+
+#[cfg(feature = "huge_documents")]
+const MAX_PACKED_SPAN_INDEX: u64 = (1u64 << 48) - 1;
+
+#[cfg(feature = "huge_documents")]
+const SPAN_INDEX_SENTINEL_VALUE: u64 = MAX_PACKED_SPAN_INDEX;
+
+const MAX_REPRESENTABLE_SPAN_INDEX_VALUE: u64 = SPAN_INDEX_SENTINEL_VALUE - 1;
+
+#[cfg(feature = "huge_documents")]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub(crate) struct SpanIndex([u8; 6]);
+
+#[cfg(feature = "huge_documents")]
+impl SpanIndex {
+    const fn from_u64_saturating(value: u64) -> Self {
+        let value = if value > MAX_PACKED_SPAN_INDEX {
+            MAX_PACKED_SPAN_INDEX
+        } else {
+            value
+        };
+
+        Self([
+            value as u8,
+            (value >> 8) as u8,
+            (value >> 16) as u8,
+            (value >> 24) as u8,
+            (value >> 32) as u8,
+            (value >> 40) as u8,
+        ])
+    }
+
+    const fn to_u64(self) -> u64 {
+        (self.0[0] as u64)
+            | ((self.0[1] as u64) << 8)
+            | ((self.0[2] as u64) << 16)
+            | ((self.0[3] as u64) << 24)
+            | ((self.0[4] as u64) << 32)
+            | ((self.0[5] as u64) << 40)
+    }
+}
+
+#[cfg(feature = "huge_documents")]
+impl fmt::Debug for SpanIndex {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.to_u64().fmt(f)
+    }
+}
+
+#[cfg(feature = "huge_documents")]
+impl<'de> serde_core::Deserialize<'de> for SpanIndex {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        Ok(Self::from_u64_saturating(u64::deserialize(deserializer)?))
+    }
+}
+
+#[cfg(not(feature = "huge_documents"))]
+const fn span_index_from_u64_saturating(value: u64) -> SpanIndex {
+    if value > MAX_REPRESENTABLE_SPAN_INDEX_VALUE {
+        MAX_REPRESENTABLE_SPAN_INDEX_VALUE as u32
+    } else {
+        value as u32
+    }
+}
+
+#[cfg(feature = "huge_documents")]
+const fn span_index_from_u64_saturating(value: u64) -> SpanIndex {
+    let value = if value > MAX_REPRESENTABLE_SPAN_INDEX_VALUE {
+        MAX_REPRESENTABLE_SPAN_INDEX_VALUE
+    } else {
+        value
+    };
+
+    SpanIndex::from_u64_saturating(value)
+}
+
+#[cfg(not(feature = "huge_documents"))]
+const SPAN_INDEX_SENTINEL: SpanIndex = u32::MAX;
+
+#[cfg(feature = "huge_documents")]
+const SPAN_INDEX_SENTINEL: SpanIndex = SpanIndex::from_u64_saturating(SPAN_INDEX_SENTINEL_VALUE);
+
+const BYTE_INFO_UNAVAILABLE: (SpanIndex, SpanIndex) = (SPAN_INDEX_SENTINEL, SPAN_INDEX_SENTINEL);
+
+#[cfg(not(feature = "huge_documents"))]
+const fn span_index_to_u64(value: SpanIndex) -> u64 {
+    value as u64
+}
+
+#[cfg(feature = "huge_documents")]
+const fn span_index_to_u64(value: SpanIndex) -> u64 {
+    value.to_u64()
+}
+
+/// A span within the source YAML document.
+///
+/// This structure provides location information in two forms:
+/// 1. **Character-based**: `offset` and `len` count Unicode scalar values. This matches
+///    `granit-parser`'s native reporting and is always present.
+/// 2. **Byte-based**: `byte_info` contains `(byte_offset, byte_len)` counting raw bytes (UTF-8 code units).
+///    These are only populated when parsing from string inputs (`&str`, `String`).
+///
+/// By default, offsets are stored internally as `u32`, which keeps the span compact and
+/// supports YAML inputs up to 4 GiB for byte-based coordinates.
+///
+/// With the `huge_documents` feature, offsets are stored in a packed 48-bit representation.
+/// Public getters still return `u64`, and values beyond 48 bits saturate instead of wrapping.
+/// This keeps [`crate::Location`] compact enough to avoid inflating [`crate::Error`] as much
+/// as a full `u64`-based layout would.
+///
+/// The maximum storage value is reserved for [`Span::UNKNOWN`] and unavailable byte info.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct Span {
+    offset: SpanIndex,
+    len: SpanIndex,
+    byte_info: (SpanIndex, SpanIndex),
+}
+
+impl Default for Span {
+    fn default() -> Self {
+        Self::UNKNOWN
+    }
+}
+
+impl<'de> serde_core::Deserialize<'de> for Span {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde_core::Deserializer<'de>,
+    {
+        enum Field {
+            Offset,
+            Len,
+            ByteInfo,
+            Ignore,
+        }
+
+        impl<'de> serde_core::Deserialize<'de> for Field {
+            fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+            where
+                D: serde_core::Deserializer<'de>,
+            {
+                struct FieldVisitor;
+
+                impl<'a> Visitor<'a> for FieldVisitor {
+                    type Value = Field;
+
+                    fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                        f.write_str("a Span field")
+                    }
+
+                    fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+                    where
+                        E: de::Error,
+                    {
+                        Ok(match value {
+                            "offset" => Field::Offset,
+                            "len" => Field::Len,
+                            "byte_info" => Field::ByteInfo,
+                            _ => Field::Ignore,
+                        })
+                    }
+                }
+
+                deserializer.deserialize_identifier(FieldVisitor)
+            }
+        }
+
+        struct SpanVisitor;
+
+        impl<'de> Visitor<'de> for SpanVisitor {
+            type Value = Span;
+
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str("a source span")
+            }
+
+            fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+            where
+                A: MapAccess<'de>,
+            {
+                let mut offset = None;
+                let mut len = None;
+                let mut byte_info = None;
+
+                while let Some(field) = map.next_key::<Field>()? {
+                    match field {
+                        Field::Offset => {
+                            if offset.is_some() {
+                                return Err(de::Error::duplicate_field("offset"));
+                            }
+                            offset = Some(map.next_value()?);
+                        }
+                        Field::Len => {
+                            if len.is_some() {
+                                return Err(de::Error::duplicate_field("len"));
+                            }
+                            len = Some(map.next_value()?);
+                        }
+                        Field::ByteInfo => {
+                            if byte_info.is_some() {
+                                return Err(de::Error::duplicate_field("byte_info"));
+                            }
+                            byte_info = Some(map.next_value()?);
+                        }
+                        Field::Ignore => {
+                            let _ = map.next_value::<IgnoredAny>()?;
+                        }
+                    }
+                }
+
+                let offset = offset.ok_or_else(|| de::Error::missing_field("offset"))?;
+                let len = len.ok_or_else(|| de::Error::missing_field("len"))?;
+                let byte_info = byte_info.ok_or_else(|| de::Error::missing_field("byte_info"))?;
+
+                Ok(Span {
+                    offset,
+                    len,
+                    byte_info,
+                })
+            }
+        }
+
+        const FIELDS: &[&str] = &["offset", "len", "byte_info"];
+        deserializer.deserialize_struct("Span", FIELDS, SpanVisitor)
+    }
+}
+
+impl Span {
+    /// Sentinel span meaning "unknown".
+    pub const UNKNOWN: Self = Self {
+        offset: SPAN_INDEX_SENTINEL,
+        len: SPAN_INDEX_SENTINEL,
+        byte_info: BYTE_INFO_UNAVAILABLE,
+    };
+
+    /// Construct a span from character-based offset and length.
+    ///
+    /// Values that exceed the active non-sentinel storage range are saturated.
+    pub const fn new(offset: u64, len: u64) -> Self {
+        Self {
+            offset: span_index_from_u64_saturating(offset),
+            len: span_index_from_u64_saturating(len),
+            byte_info: BYTE_INFO_UNAVAILABLE,
+        }
+    }
+
+    /// Attach byte-based offset and length information to the span.
+    ///
+    /// Values that exceed the active non-sentinel storage range are saturated.
+    pub const fn with_byte_info(mut self, byte_offset: u64, byte_len: u64) -> Self {
+        self.byte_info = (
+            span_index_from_u64_saturating(byte_offset),
+            span_index_from_u64_saturating(byte_len),
+        );
+        self
+    }
+
+    /// Returns the character offset within the source YAML document.
+    #[inline]
+    pub fn offset(&self) -> u64 {
+        span_index_to_u64(self.offset)
+    }
+
+    /// Returns the character length within the source YAML document.
+    #[inline]
+    pub fn len(&self) -> u64 {
+        span_index_to_u64(self.len)
+    }
+
+    /// Returns the byte offset within the source YAML document.
+    /// Returns `None` if byte info is unavailable.
+    #[inline]
+    pub fn byte_offset(&self) -> Option<u64> {
+        if self.byte_info == BYTE_INFO_UNAVAILABLE {
+            None
+        } else {
+            Some(span_index_to_u64(self.byte_info.0))
+        }
+    }
+
+    /// Returns the byte length within the source YAML document.
+    /// Returns `None` if byte info is unavailable.
+    #[inline]
+    pub fn byte_len(&self) -> Option<u64> {
+        if self.byte_info == BYTE_INFO_UNAVAILABLE {
+            None
+        } else {
+            Some(span_index_to_u64(self.byte_info.1))
+        }
+    }
+
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    #[cfg(feature = "deserialize")]
+    #[inline]
+    pub(crate) fn byte_info_or_unavailable(&self) -> (u64, u64) {
+        (
+            span_index_to_u64(self.byte_info.0),
+            span_index_to_u64(self.byte_info.1),
+        )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[cfg(feature = "huge_documents")]
+    use std::mem::size_of;
+
+    #[test]
+    fn span_constructors_round_trip_small_values() {
+        let span = Span::new(10, 5).with_byte_info(20, 5);
+        assert_eq!(span.offset(), 10);
+        assert_eq!(span.len(), 5);
+        assert_eq!(span.byte_offset(), Some(20));
+        assert_eq!(span.byte_len(), Some(5));
+    }
+
+    #[test]
+    fn unknown_span_has_no_byte_info() {
+        assert_eq!(Span::UNKNOWN.byte_offset(), None);
+        assert_eq!(Span::UNKNOWN.byte_len(), None);
+        assert_eq!(Span::UNKNOWN.offset(), SPAN_INDEX_SENTINEL_VALUE);
+        assert_eq!(Span::UNKNOWN.len(), SPAN_INDEX_SENTINEL_VALUE);
+        assert_eq!(Span::default(), Span::UNKNOWN);
+    }
+
+    #[test]
+    fn zero_length_span_at_offset_zero_is_not_unknown() {
+        let span = Span::new(0, 0);
+
+        assert_ne!(span, Span::UNKNOWN);
+        assert_eq!(span.offset(), 0);
+        assert_eq!(span.len(), 0);
+        assert!(span.is_empty());
+        assert_eq!(span.byte_offset(), None);
+        assert_eq!(span.byte_len(), None);
+    }
+
+    #[test]
+    fn byte_info_at_offset_zero_is_reportable() {
+        let span = Span::new(0, 0).with_byte_info(0, 0);
+
+        assert_ne!(span, Span::UNKNOWN);
+        assert_eq!(span.byte_offset(), Some(0));
+        assert_eq!(span.byte_len(), Some(0));
+    }
+
+    #[test]
+    fn constructor_values_saturate_below_unknown_sentinel() {
+        let span = Span::new(u64::MAX, u64::MAX).with_byte_info(u64::MAX, u64::MAX);
+
+        assert_ne!(span, Span::UNKNOWN);
+        assert_eq!(span.offset(), MAX_REPRESENTABLE_SPAN_INDEX_VALUE);
+        assert_eq!(span.len(), MAX_REPRESENTABLE_SPAN_INDEX_VALUE);
+        assert_eq!(span.byte_offset(), Some(MAX_REPRESENTABLE_SPAN_INDEX_VALUE));
+        assert_eq!(span.byte_len(), Some(MAX_REPRESENTABLE_SPAN_INDEX_VALUE));
+    }
+
+    #[test]
+    fn deserialize_span_accepts_unknown_fields() {
+        let span: Span = serde_json::from_str(
+            r#"{
+                "ignored": "value",
+                "offset": 10,
+                "len": 5,
+                "byte_info": [20, 5]
+            }"#,
+        )
+        .unwrap();
+
+        assert_eq!(span.offset(), 10);
+        assert_eq!(span.len(), 5);
+        assert_eq!(span.byte_offset(), Some(20));
+        assert_eq!(span.byte_len(), Some(5));
+    }
+
+    #[test]
+    fn deserialize_span_rejects_duplicate_fields() {
+        let err = serde_json::from_str::<Span>(
+            r#"{ "offset": 1, "offset": 2, "len": 3, "byte_info": [4, 5] }"#,
+        )
+        .unwrap_err();
+
+        assert!(err.to_string().contains("duplicate field `offset`"));
+    }
+
+    #[test]
+    fn deserialize_span_rejects_missing_fields() {
+        let err = serde_json::from_str::<Span>(r#"{ "offset": 1, "len": 2 }"#).unwrap_err();
+
+        assert!(err.to_string().contains("missing field `byte_info`"));
+    }
+
+    #[cfg(feature = "huge_documents")]
+    #[test]
+    fn huge_document_indices_saturate_to_48_bits() {
+        let span = Span::new(u64::MAX, u64::MAX).with_byte_info(u64::MAX, u64::MAX);
+        assert_eq!(span.offset(), MAX_PACKED_SPAN_INDEX - 1);
+        assert_eq!(span.len(), MAX_PACKED_SPAN_INDEX - 1);
+        assert_eq!(span.byte_offset(), Some(MAX_PACKED_SPAN_INDEX - 1));
+        assert_eq!(span.byte_len(), Some(MAX_PACKED_SPAN_INDEX - 1));
+    }
+
+    #[cfg(feature = "huge_documents")]
+    #[test]
+    fn huge_document_layout_stays_compact() {
+        assert_eq!(size_of::<Span>(), 24);
+        assert!(size_of::<crate::Location>() <= 40);
+    }
+
+    #[cfg(all(feature = "huge_documents", feature = "deserialize"))]
+    #[test]
+    fn huge_document_error_layout_stays_below_clippy_threshold() {
+        assert!(size_of::<crate::Error>() < 128);
+    }
+}

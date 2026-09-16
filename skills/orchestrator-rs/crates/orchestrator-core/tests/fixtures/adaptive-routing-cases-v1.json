@@ -1,0 +1,307 @@
+{
+  "schema_version": 1,
+  "policy": {
+    "policy_version": 1,
+    "maximum_snapshot_age_ms": 1000,
+    "provider_reserves": [
+      { "provider": "claude", "usage_account_id": "primary", "reserve_bps": 1000 },
+      { "provider": "codex", "usage_account_id": "primary", "reserve_bps": 1000 }
+    ],
+    "score_weights": {
+      "task_fit_bps": 5000,
+      "usable_headroom_bps": 5000,
+      "reset_proximity_bps": 0,
+      "recent_capacity_bps": 0,
+      "latency_bps": 0,
+      "health_bps": 0,
+      "configured_preference_bps": 0
+    },
+    "switch_margin_bps": 500,
+    "unknown_usage_policy": "static_fallback",
+    "evaluation_mode": "enforce"
+  },
+  "cases": [
+    {
+      "name": "stable-tie-break-independent-of-input-order",
+      "input": {
+        "schema_version": 1,
+        "mission_id": "mission_fixture",
+        "phase_id": "phase_fixture",
+        "attempt": 1,
+        "evaluated_at_utc_ms": 1000,
+        "authority": {
+          "resolved_fixed_route": null,
+          "legacy_route": {
+            "candidate_id": "legacy",
+            "provider": "claude",
+            "usage_account_id": "primary",
+            "runtime": "claude",
+            "model": "legacy-model",
+            "effort": "high"
+          }
+        },
+        "requirements": {
+          "priority": "p1",
+          "required_capabilities": ["tools"],
+          "minimum_quality": "standard"
+        },
+        "candidates": [
+          {
+            "route": {
+              "candidate_id": "beta",
+              "provider": "codex",
+              "usage_account_id": "primary",
+              "runtime": "codex",
+              "model": "beta-model",
+              "effort": "high"
+            },
+            "capabilities": ["tools"],
+            "automatic_eligibility": "automatic",
+            "quality": "premium",
+            "task_fit_bps": 5000,
+            "latency_bps": 5000,
+            "configured_preference_bps": 5000
+          },
+          {
+            "route": {
+              "candidate_id": "alpha",
+              "provider": "codex",
+              "usage_account_id": "primary",
+              "runtime": "codex",
+              "model": "alpha-model",
+              "effort": "high"
+            },
+            "capabilities": ["tools"],
+            "automatic_eligibility": "automatic",
+            "quality": "premium",
+            "task_fit_bps": 8000,
+            "latency_bps": 5000,
+            "configured_preference_bps": 5000
+          }
+        ],
+        "usage_snapshots": [
+          {
+            "schema_version": 1,
+            "snapshot_id": "beta-usage",
+            "provider": "codex",
+            "usage_account_id": "primary",
+            "source": "fixture",
+            "observed_at_utc_ms": 900,
+            "received_at_utc_ms": 900,
+            "ttl_ms": 1000,
+            "confidence_bps": 10000,
+            "health": "healthy",
+            "reason_code": null,
+            "windows": [
+              {
+                "limit_id": "beta-limit",
+                "kind": "rolling",
+                "applicable_models": ["beta-model"],
+                "used_bps": 1000,
+                "remaining_bps": 9000,
+                "recent_capacity_bps": 8000,
+                "resets_at_utc_ms": 2000,
+                "duration_ms": 18000000
+              },
+              {
+                "limit_id": "alpha-limit",
+                "kind": "rolling",
+                "applicable_models": ["alpha-model"],
+                "used_bps": 4000,
+                "remaining_bps": 6000,
+                "recent_capacity_bps": 8000,
+                "resets_at_utc_ms": 2000,
+                "duration_ms": 18000000
+              }
+            ]
+          }
+        ],
+        "incumbent_candidate_id": null,
+        "existing_session_runtime": null
+      },
+      "expected": {
+        "recommended_candidate_id": "alpha",
+        "dispatch_candidate_id": "alpha",
+        "deferred_reason": null,
+        "switch_reason": "best_candidate",
+        "continuation": "no_session",
+        "evaluation_order": ["alpha", "beta"],
+        "eligible_scores": [
+          { "candidate_id": "alpha", "score_bps": 6500 },
+          { "candidate_id": "beta", "score_bps": 6500 }
+        ],
+        "rejections": []
+      }
+    },
+    {
+      "name": "non-p0-reserve-boundary-is-protected",
+      "input": {
+        "schema_version": 1,
+        "mission_id": "mission_fixture",
+        "phase_id": "phase_reserve",
+        "attempt": 2,
+        "evaluated_at_utc_ms": 1000,
+        "authority": {
+          "resolved_fixed_route": null,
+          "legacy_route": {
+            "candidate_id": "legacy",
+            "provider": "claude",
+            "usage_account_id": "primary",
+            "runtime": "claude",
+            "model": "legacy-model",
+            "effort": "high"
+          }
+        },
+        "requirements": {
+          "priority": "p1",
+          "required_capabilities": ["tools"],
+          "minimum_quality": "standard"
+        },
+        "candidates": [
+          {
+            "route": {
+              "candidate_id": "critical",
+              "provider": "codex",
+              "usage_account_id": "primary",
+              "runtime": "codex",
+              "model": "critical-model",
+              "effort": "high"
+            },
+            "capabilities": ["tools"],
+            "automatic_eligibility": "automatic",
+            "quality": "premium",
+            "task_fit_bps": 7000,
+            "latency_bps": 5000,
+            "configured_preference_bps": 5000
+          }
+        ],
+        "usage_snapshots": [
+          {
+            "schema_version": 1,
+            "snapshot_id": "reserve-edge",
+            "provider": "codex",
+            "usage_account_id": "primary",
+            "source": "fixture",
+            "observed_at_utc_ms": 900,
+            "received_at_utc_ms": 900,
+            "ttl_ms": 1000,
+            "confidence_bps": 10000,
+            "health": "healthy",
+            "reason_code": null,
+            "windows": [
+              {
+                "limit_id": "primary",
+                "kind": "rolling",
+                "applicable_models": [],
+                "used_bps": 9000,
+                "remaining_bps": 1000,
+                "recent_capacity_bps": 3000,
+                "resets_at_utc_ms": 2000,
+                "duration_ms": 18000000
+              }
+            ]
+          }
+        ],
+        "incumbent_candidate_id": null,
+        "existing_session_runtime": "claude"
+      },
+      "expected": {
+        "recommended_candidate_id": null,
+        "dispatch_candidate_id": null,
+        "deferred_reason": "capacity_unavailable",
+        "switch_reason": "no_eligible_candidate",
+        "continuation": "no_dispatch",
+        "evaluation_order": ["critical"],
+        "eligible_scores": [],
+        "rejections": [
+          { "candidate_id": "critical", "reason": "reserve_protected" }
+        ]
+      }
+    },
+    {
+      "name": "p0-may-consume-reserve",
+      "input": {
+        "schema_version": 1,
+        "mission_id": "mission_fixture",
+        "phase_id": "phase_p0",
+        "attempt": 3,
+        "evaluated_at_utc_ms": 1000,
+        "authority": {
+          "resolved_fixed_route": null,
+          "legacy_route": {
+            "candidate_id": "legacy",
+            "provider": "claude",
+            "usage_account_id": "primary",
+            "runtime": "claude",
+            "model": "legacy-model",
+            "effort": "high"
+          }
+        },
+        "requirements": {
+          "priority": "p0",
+          "required_capabilities": ["tools"],
+          "minimum_quality": "standard"
+        },
+        "candidates": [
+          {
+            "route": {
+              "candidate_id": "critical",
+              "provider": "codex",
+              "usage_account_id": "primary",
+              "runtime": "codex",
+              "model": "critical-model",
+              "effort": "high"
+            },
+            "capabilities": ["tools"],
+            "automatic_eligibility": "automatic",
+            "quality": "premium",
+            "task_fit_bps": 7000,
+            "latency_bps": 5000,
+            "configured_preference_bps": 5000
+          }
+        ],
+        "usage_snapshots": [
+          {
+            "schema_version": 1,
+            "snapshot_id": "p0-edge",
+            "provider": "codex",
+            "usage_account_id": "primary",
+            "source": "fixture",
+            "observed_at_utc_ms": 900,
+            "received_at_utc_ms": 900,
+            "ttl_ms": 1000,
+            "confidence_bps": 10000,
+            "health": "healthy",
+            "reason_code": null,
+            "windows": [
+              {
+                "limit_id": "primary",
+                "kind": "rolling",
+                "applicable_models": [],
+                "used_bps": 9000,
+                "remaining_bps": 1000,
+                "recent_capacity_bps": 3000,
+                "resets_at_utc_ms": 2000,
+                "duration_ms": 18000000
+              }
+            ]
+          }
+        ],
+        "incumbent_candidate_id": null,
+        "existing_session_runtime": "claude"
+      },
+      "expected": {
+        "recommended_candidate_id": "critical",
+        "dispatch_candidate_id": "critical",
+        "deferred_reason": null,
+        "switch_reason": "best_candidate",
+        "continuation": "fresh_session_required",
+        "evaluation_order": ["critical"],
+        "eligible_scores": [
+          { "candidate_id": "critical", "score_bps": 4000 }
+        ],
+        "rejections": []
+      }
+    }
+  ]
+}

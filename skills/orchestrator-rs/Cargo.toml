@@ -1,0 +1,35 @@
+[workspace]
+members = ["crates/orchestrator-core", "crates/orchestrator-knowledge", "crates/orchestrator-app", "crates/orchestrator-daemon", "crates/orchestrator-exec", "crates/orchestrator-git", "crates/orchestrator-cli", "crates/orchestrator-process", "crates/orchestrator-provider-claude", "crates/orchestrator-plugin-host", "crates/orchestrator-first-use-pilot"]
+resolver = "2"
+
+[workspace.package]
+edition = "2024"
+rust-version = "1.85"
+license = "MIT"
+
+[workspace.dependencies]
+cap-std = "4.0.2"
+cap-primitives = "4.0.2"
+proc_pidinfo = "=0.1.4"
+serde = { version = "1.0.219", features = ["derive"] }
+serde_json = "1.0.140"
+serde-saphyr = { version = "0.0.29", default-features = false, features = ["deserialize"] }
+thiserror = "2.0.12"
+rustix = { version = "1.1.4", features = ["event", "fs", "process", "termios"] }
+rusqlite = "0.32.1"
+sha2 = "0.10.9"
+getrandom = "0.3.4"
+signal-hook = "0.3.18"
+unicode-normalization = "0.1.24"
+unicode-width = "=0.2.2"
+
+[patch.crates-io]
+serde-saphyr = { path = "third-party/serde-saphyr-0.0.29-msrv185/source" }
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+expect_used = "deny"
+panic = "deny"
+unwrap_used = "deny"

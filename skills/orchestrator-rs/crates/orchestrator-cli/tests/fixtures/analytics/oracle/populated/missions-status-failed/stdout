@@ -1,0 +1,5 @@
+workspace     domain      status    decomp          persona                 duration phases        task
+------------------------------------------------------------------------------------------------------------------
+ws-beta       work        failed    decomp.keyword  developer               100s     1/2(1f)       line one line two
+
+1 missions  •  0 succeeded  •  1 failed  •  avg 100s

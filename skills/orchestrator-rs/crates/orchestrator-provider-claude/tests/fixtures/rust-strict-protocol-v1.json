@@ -1,0 +1,357 @@
+{
+  "schema_version": 1,
+  "oracle_scope": "Rust-only fail-closed parser policy and regression cases; these are not Go parity evidence",
+  "go_fixture": "go-sdk-one-shot-v1.json",
+  "parser_cases": [
+    {
+      "name": "unknown_message_fails_closed",
+      "stdout": "{\"type\":\"future_secret_message\",\"secret\":\"DO_NOT_RETAIN_ORACLE_SECRET\"}\n",
+      "expected_output": null,
+      "expected_error": "UnknownProtocolValue",
+      "expected_cost": null
+    },
+    {
+      "name": "malformed_json_fails_closed",
+      "stdout": "{\"type\":\"assistant\",\"secret\":\"DO_NOT_RETAIN_ORACLE_SECRET\"\n",
+      "expected_output": null,
+      "expected_error": "Malformed",
+      "expected_cost": null
+    },
+    {
+      "name": "duplicate_key_fails_closed",
+      "stdout": "{\"type\":\"system\",\"type\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"smuggled\"}]}\n",
+      "expected_output": null,
+      "expected_error": "Malformed",
+      "expected_cost": null
+    },
+    {
+      "name": "assistant_tool_use_fails_closed",
+      "stdout": "{\"type\":\"assistant\",\"content\":[{\"type\":\"tool_use\",\"name\":\"Bash\"}]}\n",
+      "expected_output": null,
+      "expected_error": "ToolProtocol",
+      "expected_cost": null
+    },
+    {
+      "name": "provider_error_result_fails_closed",
+      "stdout": "{\"type\":\"result\",\"subtype\":\"error\",\"error_message\":\"DO_NOT_RETAIN_ORACLE_SECRET\"}\n",
+      "expected_output": null,
+      "expected_error": "ProviderReportedError",
+      "expected_cost": null
+    },
+    {
+      "name": "assistant_without_result_fails_closed",
+      "stdout": "{\"type\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"partial secret\"}]}\n",
+      "expected_output": null,
+      "expected_error": "MissingResult",
+      "expected_cost": null
+    },
+    {
+      "name": "successful_empty_result_fails_closed",
+      "stdout": "{\"type\":\"result\",\"subtype\":\"success\"}\n",
+      "expected_output": null,
+      "expected_error": "EmptyOutput",
+      "expected_cost": null
+    },
+    {
+      "name": "assistant_after_result_requires_its_own_success_result",
+      "stdout": "{\"type\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"turn one\"}]}\n{\"type\":\"result\",\"subtype\":\"success\"}\n{\"type\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"uncommitted turn\"}]}\n",
+      "expected_output": null,
+      "expected_error": "MissingResult",
+      "expected_cost": null
+    },
+    {
+      "name": "stream_content_block_tool_use_fails_closed",
+      "stdout": "{\"type\":\"stream_event\",\"event\":{\"type\":\"content_block_start\",\"content_block\":{\"type\":\"tool_use\",\"name\":\"Bash\"}}}\n",
+      "expected_output": null,
+      "expected_error": "ToolProtocol",
+      "expected_cost": null
+    },
+    {
+      "name": "stream_input_json_delta_fails_closed",
+      "stdout": "{\"type\":\"stream_event\",\"event\":{\"type\":\"content_block_delta\",\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{}\"}}}\n",
+      "expected_output": null,
+      "expected_error": "ToolProtocol",
+      "expected_cost": null
+    },
+    {
+      "name": "stream_tool_stop_reason_fails_closed",
+      "stdout": "{\"type\":\"stream_event\",\"event\":{\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"tool_use\"}}}\n",
+      "expected_output": null,
+      "expected_error": "ToolProtocol",
+      "expected_cost": null
+    },
+    {
+      "name": "unknown_nested_stream_event_fails_closed",
+      "stdout": "{\"type\":\"stream_event\",\"event\":{\"type\":\"future_event\"}}\n",
+      "expected_output": null,
+      "expected_error": "UnknownProtocolValue",
+      "expected_cost": null
+    },
+    {
+      "name": "unknown_nested_delta_fails_closed",
+      "stdout": "{\"type\":\"stream_event\",\"event\":{\"type\":\"content_block_delta\",\"delta\":{\"type\":\"future_delta\"}}}\n",
+      "expected_output": null,
+      "expected_error": "UnknownProtocolValue",
+      "expected_cost": null
+    },
+    {
+      "name": "unknown_nested_content_block_fails_closed",
+      "stdout": "{\"type\":\"stream_event\",\"event\":{\"type\":\"content_block_start\",\"content_block\":{\"type\":\"future_block\"}}}\n",
+      "expected_output": null,
+      "expected_error": "UnknownProtocolValue",
+      "expected_cost": null
+    },
+    {
+      "name": "missing_nested_delta_is_malformed",
+      "stdout": "{\"type\":\"stream_event\",\"event\":{\"type\":\"content_block_delta\"}}\n",
+      "expected_output": null,
+      "expected_error": "Malformed",
+      "expected_cost": null
+    },
+    {
+      "name": "unexpected_content_block_on_stop_is_malformed",
+      "stdout": "{\"type\":\"stream_event\",\"event\":{\"type\":\"content_block_stop\",\"content_block\":{\"type\":\"text\",\"text\":\"smuggled\"}}}\n",
+      "expected_output": null,
+      "expected_error": "Malformed",
+      "expected_cost": null
+    },
+    {
+      "name": "known_delta_with_mixed_shape_is_malformed",
+      "stdout": "{\"type\":\"stream_event\",\"event\":{\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"partial\",\"thinking\":\"smuggled\"}}}\n",
+      "expected_output": null,
+      "expected_error": "Malformed",
+      "expected_cost": null
+    },
+    {
+      "name": "message_start_validates_nested_content_blocks",
+      "stdout": "{\"type\":\"stream_event\",\"event\":{\"type\":\"message_start\",\"message\":{\"content\":[{\"type\":\"future_block\"}]}}}\n",
+      "expected_output": null,
+      "expected_error": "UnknownProtocolValue",
+      "expected_cost": null
+    },
+    {
+      "name": "recorded_cli_assistant_envelope_remains_supported",
+      "stdout": "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"thinking\",\"thinking\":\"private reasoning\",\"signature\":\"sig\"}]}}\n{\"type\":\"assistant\",\"message\":{\"model\":\"claude-haiku-4-5-20251001\",\"id\":\"msg_fixture\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"done\"}],\"stop_reason\":null,\"stop_sequence\":null,\"stop_details\":null,\"usage\":{\"input_tokens\":1,\"cache_creation_input_tokens\":2,\"cache_read_input_tokens\":3,\"cache_creation\":{\"ephemeral_5m_input_tokens\":0,\"ephemeral_1h_input_tokens\":2},\"output_tokens\":4,\"service_tier\":\"standard\",\"inference_geo\":\"not_available\"},\"diagnostics\":null,\"context_management\":null},\"parent_tool_use_id\":null,\"session_id\":\"session_fixture\",\"uuid\":\"uuid_fixture\",\"request_id\":\"request_fixture\"}\n{\"type\":\"result\",\"subtype\":\"success\"}\n",
+      "expected_output": "done\n\n",
+      "expected_error": null,
+      "expected_cost": null
+    },
+    {
+      "name": "assistant_rejects_direct_and_nested_tool_content",
+      "stdout": "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"safe\"}]},\"content\":[{\"type\":\"tool_use\",\"name\":\"Bash\"}]}\n{\"type\":\"result\",\"subtype\":\"success\"}\n",
+      "expected_output": null,
+      "expected_error": "Malformed",
+      "expected_cost": null
+    },
+    {
+      "name": "assistant_rejects_duplicate_safe_representations",
+      "stdout": "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"nested\"}]},\"content\":[{\"type\":\"text\",\"text\":\"direct\"}]}\n{\"type\":\"result\",\"subtype\":\"success\"}\n",
+      "expected_output": null,
+      "expected_error": "Malformed",
+      "expected_cost": null
+    },
+    {
+      "name": "assistant_rejects_null_nested_representation_with_direct_content",
+      "stdout": "{\"type\":\"assistant\",\"message\":null,\"content\":[{\"type\":\"text\",\"text\":\"direct\"}]}\n{\"type\":\"result\",\"subtype\":\"success\"}\n",
+      "expected_output": null,
+      "expected_error": "Malformed",
+      "expected_cost": null
+    },
+    {
+      "name": "assistant_rejects_null_direct_representation_with_nested_content",
+      "stdout": "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"nested\"}]},\"content\":null}\n{\"type\":\"result\",\"subtype\":\"success\"}\n",
+      "expected_output": null,
+      "expected_error": "Malformed",
+      "expected_cost": null
+    },
+    {
+      "name": "assistant_message_tool_stop_reason_fails_closed",
+      "stdout": "{\"type\":\"assistant\",\"message\":{\"content\":[],\"stop_reason\":\"tool_use\"}}\n",
+      "expected_output": null,
+      "expected_error": "ToolProtocol",
+      "expected_cost": null
+    },
+    {
+      "name": "assistant_top_level_unknown_field_is_malformed",
+      "stdout": "{\"type\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"safe\"}],\"future_tool\":{\"type\":\"tool_use\"}}\n{\"type\":\"result\",\"subtype\":\"success\"}\n",
+      "expected_output": null,
+      "expected_error": "Malformed",
+      "expected_cost": null
+    },
+    {
+      "name": "assistant_message_unknown_field_is_malformed",
+      "stdout": "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"safe\"}],\"future_tool\":{\"type\":\"tool_use\"}}}\n{\"type\":\"result\",\"subtype\":\"success\"}\n",
+      "expected_output": null,
+      "expected_error": "Malformed",
+      "expected_cost": null
+    },
+    {
+      "name": "assistant_content_block_known_plus_tool_field_is_malformed",
+      "stdout": "{\"type\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"safe\",\"name\":\"Bash\"}]}\n{\"type\":\"result\",\"subtype\":\"success\"}\n",
+      "expected_output": null,
+      "expected_error": "Malformed",
+      "expected_cost": null
+    },
+    {
+      "name": "assistant_usage_unknown_field_is_malformed",
+      "stdout": "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"safe\"}],\"usage\":{\"output_tokens\":1,\"future_tool\":{\"type\":\"tool_use\"}}}}\n{\"type\":\"result\",\"subtype\":\"success\"}\n",
+      "expected_output": null,
+      "expected_error": "Malformed",
+      "expected_cost": null
+    },
+    {
+      "name": "assistant_cache_creation_unknown_field_is_malformed",
+      "stdout": "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"safe\"}],\"usage\":{\"cache_creation\":{\"ephemeral_5m_input_tokens\":0,\"future_tool\":{\"type\":\"tool_use\"}}}}}\n{\"type\":\"result\",\"subtype\":\"success\"}\n",
+      "expected_output": null,
+      "expected_error": "Malformed",
+      "expected_cost": null
+    },
+    {
+      "name": "stream_top_level_unknown_field_is_malformed",
+      "stdout": "{\"type\":\"stream_event\",\"event\":{\"type\":\"ping\"},\"future_tool\":{\"type\":\"tool_use\"}}\n",
+      "expected_output": null,
+      "expected_error": "Malformed",
+      "expected_cost": null
+    },
+    {
+      "name": "ping_with_nested_tool_extra_is_malformed",
+      "stdout": "{\"type\":\"stream_event\",\"event\":{\"type\":\"ping\",\"content_block\":{\"type\":\"tool_use\",\"name\":\"Bash\"}}}\n",
+      "expected_output": null,
+      "expected_error": "Malformed",
+      "expected_cost": null
+    },
+    {
+      "name": "stream_message_unknown_field_is_malformed",
+      "stdout": "{\"type\":\"stream_event\",\"event\":{\"type\":\"message_start\",\"message\":{\"content\":[],\"future_tool\":{\"type\":\"tool_use\"}}}}\n",
+      "expected_output": null,
+      "expected_error": "Malformed",
+      "expected_cost": null
+    },
+    {
+      "name": "stream_message_start_tool_stop_reason_fails_closed",
+      "stdout": "{\"type\":\"stream_event\",\"event\":{\"type\":\"message_start\",\"message\":{\"content\":[],\"stop_reason\":\"tool_use\"}}}\n",
+      "expected_output": null,
+      "expected_error": "ToolProtocol",
+      "expected_cost": null
+    },
+    {
+      "name": "stream_content_block_known_plus_tool_field_is_malformed",
+      "stdout": "{\"type\":\"stream_event\",\"event\":{\"type\":\"content_block_start\",\"content_block\":{\"type\":\"text\",\"text\":\"partial\",\"name\":\"Bash\"}}}\n",
+      "expected_output": null,
+      "expected_error": "Malformed",
+      "expected_cost": null
+    },
+    {
+      "name": "stream_delta_known_plus_tool_field_is_malformed",
+      "stdout": "{\"type\":\"stream_event\",\"event\":{\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"partial\",\"partial_json\":\"{}\"}}}\n",
+      "expected_output": null,
+      "expected_error": "Malformed",
+      "expected_cost": null
+    },
+    {
+      "name": "stream_usage_unknown_field_is_malformed",
+      "stdout": "{\"type\":\"stream_event\",\"event\":{\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":1,\"future_tool\":{\"type\":\"tool_use\"}}}}\n",
+      "expected_output": null,
+      "expected_error": "Malformed",
+      "expected_cost": null
+    },
+    {
+      "name": "successful_result_with_is_error_true_fails_closed",
+      "stdout": "{\"type\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"must not commit\"}]}\n{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":true}\n",
+      "expected_output": null,
+      "expected_error": "ProviderReportedError",
+      "expected_cost": null
+    },
+    {
+      "name": "result_tool_stop_reason_fails_closed",
+      "stdout": "{\"type\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"must not commit\"}]}\n{\"type\":\"result\",\"subtype\":\"success\",\"stop_reason\":\"tool_use\"}\n",
+      "expected_output": null,
+      "expected_error": "ToolProtocol",
+      "expected_cost": null
+    },
+    {
+      "name": "result_usage_unknown_nested_tool_field_is_malformed",
+      "stdout": "{\"type\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"must not commit\"}]}\n{\"type\":\"result\",\"subtype\":\"success\",\"total_cost_usd\":0.1,\"usage\":{\"input_tokens\":1,\"output_tokens\":1,\"server_tool_use\":{\"web_search_requests\":0,\"web_fetch_requests\":0,\"future_tool\":{\"type\":\"tool_use\"}}}}\n",
+      "expected_output": null,
+      "expected_error": "Malformed",
+      "expected_cost": null
+    },
+    {
+      "name": "result_legacy_and_modern_telemetry_is_invalid",
+      "stdout": "{\"type\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"must not commit\"}]}\n{\"type\":\"result\",\"subtype\":\"success\",\"cost\":{\"input_tokens\":1,\"output_tokens\":1,\"total_cost_usd\":0.1},\"total_cost_usd\":0.1,\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}\n",
+      "expected_output": null,
+      "expected_error": "InvalidCost",
+      "expected_cost": null
+    },
+    {
+      "name": "result_model_usage_must_reconcile_with_totals",
+      "stdout": "{\"type\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"must not commit\"}]}\n{\"type\":\"result\",\"subtype\":\"success\",\"total_cost_usd\":0.1,\"usage\":{\"input_tokens\":1,\"output_tokens\":1},\"modelUsage\":{\"fixture-model\":{\"inputTokens\":2,\"outputTokens\":1,\"cacheReadInputTokens\":0,\"cacheCreationInputTokens\":0,\"webSearchRequests\":0,\"costUSD\":0.1,\"contextWindow\":100,\"maxOutputTokens\":10}}}\n",
+      "expected_output": null,
+      "expected_error": "InvalidCost",
+      "expected_cost": null
+    },
+    {
+      "name": "result_permission_denial_fails_tool_less_contract",
+      "stdout": "{\"type\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"must not commit\"}]}\n{\"type\":\"result\",\"subtype\":\"success\",\"permission_denials\":[{\"tool_name\":\"Bash\"}]}\n",
+      "expected_output": null,
+      "expected_error": "ToolProtocol",
+      "expected_cost": null
+    },
+    {
+      "name": "unknown_system_subtype_fails_closed",
+      "stdout": "{\"type\":\"system\",\"subtype\":\"future_extension\"}\n",
+      "expected_output": null,
+      "expected_error": "UnknownProtocolValue",
+      "expected_cost": null
+    },
+    {
+      "name": "system_init_unknown_field_is_malformed",
+      "stdout": "{\"type\":\"system\",\"subtype\":\"init\",\"future_hook\":true}\n",
+      "expected_output": null,
+      "expected_error": "Malformed",
+      "expected_cost": null
+    },
+    {
+      "name": "system_init_nested_mcp_unknown_field_is_malformed",
+      "stdout": "{\"type\":\"system\",\"subtype\":\"init\",\"mcp_servers\":[{\"name\":\"fixture\",\"status\":\"connected\",\"future_tool\":true}]}\n",
+      "expected_output": null,
+      "expected_error": "Malformed",
+      "expected_cost": null
+    },
+    {
+      "name": "system_hook_started_fails_isolation_contract",
+      "stdout": "{\"type\":\"system\",\"subtype\":\"hook_started\",\"hook_id\":\"fixture-hook\",\"hook_name\":\"SessionStart:startup\",\"hook_event\":\"SessionStart\"}\n",
+      "expected_output": null,
+      "expected_error": "UnisolatedRuntime",
+      "expected_cost": null
+    },
+    {
+      "name": "result_max_tokens_does_not_commit_truncated_output",
+      "stdout": "{\"type\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"truncated\"}]}\n{\"type\":\"result\",\"subtype\":\"success\",\"stop_reason\":\"max_tokens\"}\n",
+      "expected_output": null,
+      "expected_error": "ProviderReportedError",
+      "expected_cost": null
+    },
+    {
+      "name": "result_stop_sequence_does_not_commit_partial_output",
+      "stdout": "{\"type\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"partial\"}]}\n{\"type\":\"result\",\"subtype\":\"success\",\"stop_reason\":\"stop_sequence\"}\n",
+      "expected_output": null,
+      "expected_error": "ProviderReportedError",
+      "expected_cost": null
+    },
+    {
+      "name": "result_refusal_does_not_commit_refused_output",
+      "stdout": "{\"type\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"refused\"}]}\n{\"type\":\"result\",\"subtype\":\"success\",\"stop_reason\":\"refusal\"}\n",
+      "expected_output": null,
+      "expected_error": "ProviderReportedError",
+      "expected_cost": null
+    },
+    {
+      "name": "system_init_unknown_capability_fails_isolation_contract",
+      "stdout": "{\"type\":\"system\",\"subtype\":\"init\",\"capabilities\":[\"future_extension_v1\"]}\n",
+      "expected_output": null,
+      "expected_error": "UnisolatedRuntime",
+      "expected_cost": null
+    }
+  ]
+}

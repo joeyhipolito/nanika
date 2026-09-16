@@ -1,0 +1,46 @@
+{
+  "ok": true,
+  "observation": {
+    "execution_mode": "sequential",
+    "phases": [
+      {
+        "constraints": [],
+        "dependencies": [],
+        "expected": "architecture.md",
+        "id": "phase-1",
+        "model_tier": "think",
+        "name": "design",
+        "objective": "Design parser architecture",
+        "persona": "fixture-architect",
+        "persona_selection_method": "llm",
+        "priority": "P0",
+        "role": "planner",
+        "runtime": "codex",
+        "runtime_policy_applied": false,
+        "skills": ["alpha", "beta", "alpha"],
+        "stall_timeout_ns": 90000000000,
+        "status": "pending",
+        "target_dir": "$FIXTURE_ROOT/home/repo"
+      },
+      {
+        "constraints": [],
+        "dependencies": ["phase-1"],
+        "expected": "green tests",
+        "id": "phase-2",
+        "model_tier": "work",
+        "name": "implement",
+        "objective": "Implement parser code",
+        "persona": "fixture-implementer",
+        "persona_selection_method": "llm",
+        "priority": "",
+        "role": "implementer",
+        "runtime": "openai-api",
+        "runtime_policy_applied": false,
+        "skills": ["gamma"],
+        "stall_timeout_ns": 45000000000,
+        "status": "pending",
+        "target_dir": ""
+      }
+    ]
+  }
+}

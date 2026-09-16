@@ -1,11 +1,12 @@
 # Nanika
 
-Nanika is a Go mission orchestrator: it decomposes a task into phases and runs each phase through an AI coding agent. The default execution runtime is Claude Code. An explicit Codex runtime is also supported, and experimental direct API executors are present in source. This repository does **not** include the Rust orchestrator rewrite or Portal — those are not part of this public checkout.
+Nanika is an AI mission orchestrator with a Rust execution pilot and a Go compatibility engine. The Rust-first source installer selects native coding, review, durable execution, cancellation, and streaming observation while retaining Go for existing mission commands. The rewrite remains in progress. See the [Rust guide](skills/orchestrator-rs/README.md) for supported provider versions and current limits.
 
 ## Components
 
 | Path | Language | What it is |
 |---|---|---|
+| `skills/orchestrator-rs` | Rust | Native execution pilot, matching process broker, inspector, and explicit Portal helpers. |
 | `skills/orchestrator` | Go | Mission orchestrator CLI. Depends on local `../../plugins/nen` and `../../shared/sdk`; must be built from a full clone. |
 | `skills/decomposer` | knowledge-only | Has a `go.mod` but no Go packages; decomposition guidance, not a runnable binary. |
 | `shared/sdk` | Go | Claude CLI SDK library used by the orchestrator. |
@@ -24,42 +25,41 @@ Not present in this checkout: a Wails-based `plugins/dashboard`, and `scout`, `g
 ```
 git clone https://github.com/joeyhipolito/nanika.git
 cd nanika
-GOWORK=off make build-orchestrator
-./bin/orchestrator --help
-mkdir -p "$HOME/.alluka"
-./bin/orchestrator --nanika-dir "$PWD" --personas-dir "$PWD/personas" run --no-comment "YOUR TASK"
+python3 scripts/install-rust-orchestrator.py
+export PATH="$HOME/.local/bin:$PATH"
+orchestrator --engine-info
+orchestrator --help
 ```
 
-The `--help` step does not start a mission; the build writes a local binary. The final `run` command starts provider work and may edit your selected target — only run it against a task/target you intend to change.
-
-Use the orchestrator's actual `--help` output for flags; the flags above (`--nanika-dir`, `--personas-dir`, `run --no-comment`) are the ones used in this quickstart, not an exhaustive list.
+Installation builds locally and does not start providers. Use the [Rust guide](skills/orchestrator-rs/README.md) for a first coding run, saved progress streaming, and durable missions. Use `orchestrator --engine go --help` for the legacy CLI.
 
 ### Requirements
 
-- Go 1.25.4 or newer, per `go.mod`.
-- Claude CLI installed and authenticated, for Claude Code execution.
-- Codex CLI installed and authenticated, if you use the Codex runtime.
+- Stable Rust/Cargo, Go 1.25.4 or newer, Python 3.9 or newer, Git, and native SQLite development libraries.
+- macOS or Linux for the Rust execution pilot.
+- Claude CLI installed and authenticated for Claude execution; the Rust adapter currently requires exactly 2.1.269.
+- Codex CLI installed and authenticated for Codex execution; the Rust adapter currently requires exactly 0.154.0.
 - Keep the checkout intact — components use local relative dependencies (e.g. `../../plugins/nen`, `../../shared/sdk`), so building from a partial copy will fail.
 - Shell scripts under `scripts/` require `bash` and `python3`.
 - `plugins/tracker` and `dust` need Rust/Cargo; `dust` additionally needs Node/Tauri tooling.
 
-### Optional install
+### Go-only build and install
 
 ```
 GOWORK=off make install-orchestrator
 export PATH="$HOME/.alluka/bin:$PATH"
 ```
 
-This installs the orchestrator binary into `~/.alluka/bin`.
+This installs the Go-only binary into `~/.alluka/bin`. It is separate from the Rust-first installer; PATH order determines which command runs.
 
-## Runtimes
+## Go compatibility runtimes
 
 - **Claude (default).** Tier aliases: `think=opus`, `work=sonnet`, `quick=haiku`.
 - **Codex (optional, explicit).** Current source maps all tiers to `gpt-5.4`. This is a source-level default, not a recommendation about model availability or fitness. Codex is never auto-selected — you must request it explicitly.
 - **API executor (experimental).** Executor names `anthropic-api`, `openai-api`, `openrouter`, and `gemini-api` exist in source. These are not production-parity alternatives to the Claude/Codex CLI runtimes.
 - Gemini CLI is not a default prerequisite.
 
-## Missions and phases
+## Go missions and phases
 
 Mission files live under `~/.alluka/missions`. `scripts/new-mission.sh` writes a dated template you edit. Each phase line has the form:
 
@@ -81,7 +81,7 @@ Note that `--dry-run` previews are not guaranteed to be a pure offline operation
 
 ## Legacy install scripts
 
-`scripts/install.sh --core` builds and installs the orchestrator plus `nen`, `tracker`, and `scheduler`, wiring up symlinks/config and optionally managing daemons. `--all` additionally adds `discord` and `telegram`. These scripts are not needed for a minimal CLI setup — prefer the targeted `make build-orchestrator` path above unless you want the full daemon-managed install.
+`scripts/install.sh --core` builds and installs the orchestrator plus `nen`, `tracker`, and `scheduler`, wiring up symlinks/config and optionally managing daemons. `--all` additionally adds `discord` and `telegram`. These are Go compatibility installers. They can replace a Go entrypoint in `~/.alluka/bin`; they do not manage the new Rust bundle. Keep `~/.local/bin` first on PATH for Rust-first dispatch, or reinstall the Rust bundle after changing command links. Prefer the Rust source installer above for native execution.
 
 `scripts/nanika-update.sh` rebuilds, reinstalls, and restarts the actual plugins on your machine — treat it as an operator action, not a read-only check.
 
@@ -92,7 +92,7 @@ Bulk targets like `make build`/`make setup` currently reference the missing dash
 - `shared/sdk`: 69 tests, race-enabled, passing; the orchestrator Go CLI builds cleanly, as of this snapshot.
 - Broader orchestrator test suites have baseline failures at this snapshot — do not assume all orchestrator tests are green.
 - The old "all skills" CI references paths that have since been retired.
-- A dedicated SDK CI workflow runs on Linux and macOS.
+- Dedicated SDK and Rust pilot CI workflows run on Linux and macOS.
 
 ## Skills discovery
 
@@ -100,6 +100,7 @@ Skills are tracked in their own directories, with additional links under `.claud
 
 ## Documentation
 
+- [`skills/orchestrator-rs/README.md`](skills/orchestrator-rs/README.md)
 - [`skills/orchestrator/README.md`](skills/orchestrator/README.md)
 - [`shared/sdk/README.md`](shared/sdk/README.md)
 - [`scripts/README.md`](scripts/README.md)

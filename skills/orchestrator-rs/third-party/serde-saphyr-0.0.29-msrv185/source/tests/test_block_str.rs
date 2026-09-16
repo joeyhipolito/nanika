@@ -1,0 +1,456 @@
+#![cfg(all(feature = "serialize", feature = "deserialize"))]
+use serde::{Deserialize, Serialize};
+
+use serde_saphyr::{
+    FoldStr, FoldString, LitStr, LitString, RcAnchor, to_string, to_string_with_options,
+};
+
+#[test]
+fn litstr_top_level() {
+    let out = to_string(&LitStr("line 1\nline 2")).unwrap();
+    assert_eq!(out, "|-\n  line 1\n  line 2\n");
+}
+
+#[test]
+fn litstr_no_trailing_newline() {
+    #[derive(Serialize)]
+    struct Doc<'a> {
+        note: LitStr<'a>,
+        other: usize,
+    }
+    let d = Doc {
+        note: LitStr("a\nb"),
+        other: 0,
+    };
+    let out = to_string(&d).unwrap();
+    assert_eq!(out, "note: |-\n  a\n  b\nother: 0\n");
+}
+
+#[test]
+fn litstr_trailing_newline() {
+    #[derive(Serialize)]
+    struct Doc<'a> {
+        note: LitStr<'a>,
+        other: usize,
+    }
+    let d = Doc {
+        note: LitStr("hello\nworld\n"),
+        other: 0,
+    };
+    let out = to_string(&d).unwrap();
+    assert_eq!(out, "note: |\n  hello\n  world\nother: 0\n");
+}
+
+#[test]
+fn litstr_empty_string() {
+    #[derive(Serialize)]
+    struct Doc<'a> {
+        note: LitStr<'a>,
+        other: usize,
+    }
+
+    let d = Doc {
+        note: LitStr(""),
+        other: 0,
+    };
+    let out = to_string(&d).unwrap();
+
+    // Empty string encoded as an empty literal block with strip chomping.
+    // Value: ""
+    assert_eq!(out, "note: |-\nother: 0\n");
+}
+
+#[test]
+fn litstr_only_newline() {
+    #[derive(Serialize)]
+    struct Doc<'a> {
+        note: LitStr<'a>,
+        other: usize,
+    }
+
+    let d = Doc {
+        note: LitStr("\n"),
+        other: 0,
+    };
+    let out = to_string(&d).unwrap();
+
+    // One empty content line, clip chomping.
+    // Value: "\n"
+    assert_eq!(out, "note: |\n  \nother: 0\n");
+}
+
+#[test]
+fn litstr_single_line_no_trailing_newline() {
+    #[derive(Serialize)]
+    struct Doc<'a> {
+        note: LitStr<'a>,
+        other: usize,
+    }
+
+    let d = Doc {
+        note: LitStr("hello"),
+        other: 0,
+    };
+    let out = to_string(&d).unwrap();
+
+    // Single line, no trailing '\n' → strip chomping.
+    // Value: "hello"
+    assert_eq!(out, "note: |-\n  hello\nother: 0\n");
+}
+
+#[test]
+fn litstr_single_line_trailing_newline() {
+    #[derive(Serialize)]
+    struct Doc<'a> {
+        note: LitStr<'a>,
+        other: usize,
+    }
+
+    let d = Doc {
+        note: LitStr("hello\n"),
+        other: 0,
+    };
+    let out = to_string(&d).unwrap();
+
+    // Single line, one trailing '\n' → clip chomping.
+    // Value: "hello\n"
+    assert_eq!(out, "note: |\n  hello\nother: 0\n");
+}
+
+#[test]
+fn litstr_two_trailing_newlines() {
+    #[derive(Serialize)]
+    struct Doc<'a> {
+        note: LitStr<'a>,
+        other: usize,
+    }
+
+    let d = Doc {
+        note: LitStr("a\nb\n\n"),
+        other: 0,
+    };
+    let out = to_string(&d).unwrap();
+
+    // Content lines: "a", "b", "" plus keep chomping.
+    // Value: "a\nb\n\n"
+    assert_eq!(out, "note: |+\n  a\n  b\n  \nother: 0\n");
+}
+
+#[test]
+fn litstr_inner_blank_line_and_trailing_newline() {
+    #[derive(Serialize)]
+    struct Doc<'a> {
+        note: LitStr<'a>,
+        other: usize,
+    }
+
+    let d = Doc {
+        note: LitStr("a\n\nb\n"),
+        other: 0,
+    };
+    let out = to_string(&d).unwrap();
+
+    // Inner blank line must be preserved as content; one trailing '\n'.
+    // Value: "a\n\nb\n"
+    assert_eq!(out, "note: |\n  a\n  \n  b\nother: 0\n");
+}
+
+#[test]
+fn litstr_with_non_printable_char_falls_back_to_quoted() {
+    let value = "a\n\0b";
+    let out = to_string(&LitStr(value)).unwrap();
+
+    assert!(
+        !out.as_bytes().contains(&0),
+        "serializer emitted a literal NUL byte: {out:?}"
+    );
+    assert!(
+        out.contains("\\0"),
+        "expected NUL to be escaped in quoted output: {out:?}"
+    );
+    assert!(
+        !out.starts_with('|'),
+        "unsafe literal wrapper output should fall back to quoting: {out:?}"
+    );
+    assert!(
+        out.starts_with('"'),
+        "fallback should produce double-quoted output: {out:?}"
+    );
+
+    let back: String = serde_saphyr::from_str(&out).unwrap();
+    assert_eq!(back, value);
+}
+
+#[test]
+fn litstr_in_block_sequence_item() {
+    let v = vec![LitStr("alpha\nbeta")];
+    let out = to_string(&v).unwrap();
+    assert_eq!(out, "- |-\n  alpha\n  beta\n");
+}
+
+#[test]
+fn foldstr_top_level() {
+    let out = to_string(&FoldStr("line 1\nline 2")).unwrap();
+    assert_eq!(out, ">\n  line 1\n  line 2\n");
+}
+
+#[test]
+fn foldstr_as_map_value() {
+    #[derive(Serialize)]
+    struct Doc<'a> {
+        note: FoldStr<'a>,
+    }
+    let d = Doc {
+        note: FoldStr("a\nb"),
+    };
+    let out = to_string(&d).unwrap();
+    assert_eq!(out, "note: >\n  a\n  b\n");
+}
+
+#[test]
+fn foldstr_in_block_sequence_item() {
+    let v = vec![FoldStr("alpha\nbeta")];
+    let out = to_string(&v).unwrap();
+    assert_eq!(out, "- >\n  alpha\n  beta\n");
+}
+
+#[test]
+fn lit_string_top_level() {
+    let out = to_string(&LitString("line 1\nline 2".to_string())).unwrap();
+    assert_eq!(out, "|-\n  line 1\n  line 2\n");
+}
+
+#[test]
+fn lit_string_as_map_value() {
+    #[derive(Serialize)]
+    struct Doc {
+        note: LitString,
+    }
+    let d = Doc {
+        note: LitString("a\nb".to_string()),
+    };
+    let out = to_string(&d).unwrap();
+    assert_eq!(out, "note: |-\n  a\n  b\n");
+}
+
+#[test]
+fn lit_string_in_block_sequence_item() {
+    let v = vec![LitString("alpha\nbeta".to_string())];
+    let out = to_string(&v).unwrap();
+    assert_eq!(out, "- |-\n  alpha\n  beta\n");
+}
+
+#[test]
+fn fold_string_top_level() {
+    let out = to_string(&FoldString("line 1\nline 2".to_string())).unwrap();
+    assert_eq!(out, ">\n  line 1\n  line 2\n");
+}
+
+#[test]
+fn fold_string_wraps_on_unicode_whitespace_without_panic() {
+    // Regression test: wrapping logic must not slice `&str` at non-UTF-8 boundaries.
+    // In particular, U+202F (NARROW NO-BREAK SPACE) is whitespace but is 3 bytes in UTF-8.
+    let s = "The pedicel-fruit junction was sampled from pedicels of LC-8 plants grown at the Zunyi Experimental Station (N 27°44′, E 107°12′) of the Pepper (Chili) Research Institute, the Guizhou\u{202f}Province";
+
+    let out = to_string(&FoldString(s.to_string())).unwrap();
+    assert!(out.starts_with(">\n  "));
+
+    // Ensure the produced YAML is parseable and contains the expected content.
+    let roundtrip: String = serde_saphyr::from_str(&out).unwrap();
+    assert!(roundtrip.contains("Guizhou"));
+    assert!(roundtrip.contains("Province"));
+}
+
+#[test]
+fn fold_string_does_not_wrap_on_tabs_roundtrips() {
+    // In YAML folded scalars (`>`), inserted newlines are folded back as a space.
+    // Wrapping at a tab would therefore change semantics on parse ("\t" would
+    // become " \t" or "\t ", depending on where the break happened).
+    //
+    // Ensure we only ever wrap at ASCII spaces.
+    let s = format!("{}\t{}", "a".repeat(120), "b".repeat(120));
+
+    let out = to_string(&FoldString(s.clone())).unwrap();
+    assert!(out.starts_with(">\n  "));
+    assert!(out.contains("\t"));
+
+    let roundtrip: String = serde_saphyr::from_str(&out).unwrap();
+    // FoldString uses plain '>' (clip chomping), which round-trips with a trailing newline.
+    assert_eq!(roundtrip, format!("{}\n", s));
+}
+
+#[test]
+fn fold_string_wraps_space_runs_roundtrips() {
+    // When we wrap at a run of N ASCII spaces in a YAML folded scalar (`>`), the parser
+    // will insert a single space at the folded newline. To preserve the exact number of
+    // spaces on round-trip, the emitter must effectively turn N spaces into:
+    //   (N-1) spaces at end-of-line + folded-space
+    // so that the reconstructed string has N spaces.
+    let s = format!("{}  {}", "a".repeat(90), "b".repeat(90));
+
+    let out = to_string(&FoldString(s.clone())).unwrap();
+    assert!(out.starts_with(">\n  "));
+
+    let roundtrip: String = serde_saphyr::from_str(&out).unwrap();
+    assert_eq!(roundtrip, format!("{}\n", s));
+}
+
+#[test]
+fn fold_string_does_not_hard_break_long_tokens_roundtrips() {
+    // If a line contains no ASCII spaces within the wrap limit, we must not hard-break
+    // the token: a folded newline would round-trip as a space and corrupt the content.
+    let s = "x".repeat(200);
+    let out = to_string(&FoldString(s.clone())).unwrap();
+    assert!(out.starts_with(">\n  "));
+
+    let roundtrip: String = serde_saphyr::from_str(&out).unwrap();
+    assert_eq!(roundtrip, format!("{}\n", s));
+}
+
+#[test]
+fn fold_string_as_map_value() {
+    #[derive(Serialize)]
+    struct Doc {
+        note: FoldString,
+    }
+    let d = Doc {
+        note: FoldString("a\nb".to_string()),
+    };
+    let out = to_string(&d).unwrap();
+    assert_eq!(out, "note: >\n  a\n  b\n");
+}
+
+#[test]
+fn fold_string_in_block_sequence_item() {
+    let v = vec![FoldString("alpha\nbeta".to_string())];
+    let out = to_string(&v).unwrap();
+    assert_eq!(out, "- >\n  alpha\n  beta\n");
+}
+
+#[test]
+fn verdanta_case_fold() -> anyhow::Result<()> {
+    #[derive(Debug, Deserialize, Serialize, Clone)]
+    pub struct Node2 {
+        /// Id of this node, used in annotations.
+        #[serde(skip)]
+        #[allow(dead_code)]
+        pub id: usize,
+
+        /// Name of the node, this can be arbitrary string.
+        pub name: String,
+
+        /// Longer description of this node
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub description: RcAnchor<Option<FoldString>>,
+
+        /// Children of this node.
+        #[serde(skip_serializing_if = "Vec::is_empty", default)]
+        pub children: Vec<RcAnchor<Node2>>,
+    }
+
+    let node = Node2 {
+        id: 0,
+        name: "name".to_string(),
+        description: RcAnchor::wrapping(Some(FoldString(
+            "00This is very very very long description. \
+        This is very very very long description. This is very very very long description."
+                .to_string(),
+        ))),
+        children: vec![RcAnchor::wrapping(Node2 {
+            id: 0,
+            name: "child".to_string(),
+            description: RcAnchor::wrapping(Some(FoldString(
+                "01This is very very very long description. \
+        This is very very very long description. This is very very very long description."
+                    .to_string(),
+            ))),
+            children: vec![RcAnchor::wrapping(Node2 {
+                id: 0,
+                name: "".to_string(),
+                description: RcAnchor::wrapping(Some(FoldString(
+                    "02This is very very very long description. \
+        This is very very very long description. This is very very very long description."
+                        .to_string(),
+                ))),
+                children: vec![],
+            })],
+        })],
+    };
+
+    let object = RcAnchor::wrapping(node);
+
+    let opts = serde_saphyr::ser_options! {
+        compact_list_indent: false,
+    };
+    let yaml = to_string_with_options(&object, opts)?;
+
+    // Block scalar bodies must be indented deeper than the `description: >` header.
+    // The anchor attached to each `RcAnchor<Option<FoldString>>` is correctly placed on
+    // the block scalar node itself (`description: &aN >`) rather than leaking to a
+    // sibling key.
+    assert!(
+        yaml.contains("description: &a2 >\n  00This is"),
+        "Top-level description anchor must sit on its block scalar and body must be indented:\n{yaml}"
+    );
+    assert!(
+        yaml.contains("    description: &a4 >\n      01This is"),
+        "Nested description body must be indented deeper than its header:\n{yaml}"
+    );
+    assert!(
+        yaml.contains("        description: &a6 >\n          02This is"),
+        "Deeply nested description body must be indented deeper than its header:\n{yaml}"
+    );
+
+    let opts = serde_saphyr::ser_options! {
+        compact_list_indent: true,
+    };
+    let compact_yaml = to_string_with_options(&object, opts)?;
+    assert!(
+        compact_yaml.contains("description: &a2 >\n  00This is"),
+        "Top-level description body must be indented:\n{compact_yaml}"
+    );
+    assert!(
+        compact_yaml.contains("  description: &a4 >\n    01This is"),
+        "Nested description body must be indented deeper than its header:\n{compact_yaml}"
+    );
+    assert!(
+        compact_yaml.contains("    description: &a6 >\n      02This is"),
+        "Deeply nested description body must be indented deeper than its header:\n{compact_yaml}"
+    );
+    let parsed: RcAnchor<Node2> = serde_saphyr::from_str(&compact_yaml)?;
+    assert_eq!(parsed.name, object.name);
+    assert_eq!(parsed.children.len(), object.children.len());
+    assert_eq!(parsed.children[0].name, object.children[0].name);
+    Ok(())
+}
+
+#[test]
+fn litstr_sequence_under_map_key() {
+    #[derive(Serialize)]
+    struct Doc<'a> {
+        items: Vec<LitStr<'a>>,
+    }
+    #[derive(Debug, Deserialize, PartialEq)]
+    struct DocOwned {
+        items: Vec<String>,
+    }
+    let d = Doc {
+        items: vec![LitStr("a"), LitStr("b"), LitStr("c")],
+    };
+    let opts = serde_saphyr::ser_options! {
+        compact_list_indent: false,
+    };
+    let out = to_string_with_options(&d, opts).unwrap();
+    assert_eq!(out, "items:\n  - |-\n    a\n  - |-\n    b\n  - |-\n    c\n");
+
+    let opts = serde_saphyr::ser_options! {
+        compact_list_indent: true,
+    };
+    let compact_out = to_string_with_options(&d, opts).unwrap();
+    assert_eq!(compact_out, "items:\n- |-\n  a\n- |-\n  b\n- |-\n  c\n");
+    let parsed: DocOwned = serde_saphyr::from_str(&compact_out).unwrap();
+    assert_eq!(
+        parsed.items,
+        vec!["a".to_string(), "b".to_string(), "c".to_string()]
+    );
+}

@@ -1,0 +1,9 @@
+method                  phases      pct%
+------------------------------------------
+llm                          5     50.0%
+fallback                     4     40.0%
+keyword                      1     10.0%
+
+10 phases total
+
+ALERT: fallback routing rate 40.0% exceeds 30% threshold — LLM decomposition may be failing too often

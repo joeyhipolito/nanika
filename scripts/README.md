@@ -55,3 +55,17 @@ manually; running the generator without `--dry-run` replaces it with local outpu
 `new-mission.sh` uses [templates/mission.md](../templates/mission.md) when present.
 Its historical frontmatter may include a Linear field; public contribution work
 uses GitHub issues and does not require a private Linear workspace.
+
+## Rust-first source installation
+
+`python3 scripts/install-rust-orchestrator.py` builds paired Rust pilot/broker,
+explicit output/usage helpers, and Go compatibility into versioned bundles under
+`~/.local`. `--prefix` chooses another prefix; `--profile dev` uses debug builds.
+The installer refuses unmanaged destination entries and activates the dispatcher
+last. It does not start providers or migrate daemons. See the
+[Rust guide](../skills/orchestrator-rs/README.md) for routing and rollback.
+
+`orchestrator-dispatch.py` is installed inside each bundle; invoke its installed
+link rather than running the source script before its sibling engines exist.
+
+Legacy `install.sh` and `nanika-update.sh` manage Go/plugin entries in `~/.alluka/bin`. Keep the Rust bundle prefix first on PATH when using both; those legacy scripts do not upgrade or migrate the Rust bundle.

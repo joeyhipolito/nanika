@@ -1,0 +1,736 @@
+use crate::budget::Budget;
+use crate::indentation::RequireIndent;
+#[cfg(feature = "properties")]
+use std::collections::HashMap;
+#[cfg(feature = "include_fs")]
+use std::io;
+#[cfg(feature = "include_fs")]
+use std::path::Path;
+use std::rc::Rc;
+
+// Intentionally no `granit_parser` imports here: include resolvers are handled in serde-saphyr.
+
+/// Duplicate key handling policy for mappings.
+#[non_exhaustive]
+#[derive(Clone, Copy, Debug)]
+#[cfg_attr(
+    feature = "serde_derived_types",
+    derive(serde::Serialize, serde::Deserialize)
+)]
+#[cfg_attr(feature = "serde_derived_types", serde(rename_all = "snake_case"))]
+pub enum DuplicateKeyPolicy {
+    /// Error out on encountering a duplicate key.
+    Error,
+    /// First key wins: later duplicate pairs are skipped (key+value are consumed and ignored).
+    FirstWins,
+    /// Last key wins: duplicate pairs are passed through when deserializing maps
+    /// so overwriting map targets can keep the later value; duplicate struct fields
+    /// are collapsed before Serde sees them.
+    LastWins,
+}
+
+/// Recognized syntaxes for `${NAME}` / `$NAME` property interpolation.
+#[cfg(feature = "properties")]
+#[non_exhaustive]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[cfg_attr(
+    feature = "serde_derived_types",
+    derive(serde::Serialize, serde::Deserialize)
+)]
+#[cfg_attr(feature = "serde_derived_types", serde(rename_all = "snake_case"))]
+pub enum PropertySyntax {
+    /// Only the braced `${NAME}` form is interpolated. Bare `$NAME` stays literal.
+    #[default]
+    Braced,
+
+    /// Both `${NAME}` and the unbraced shorthand `$NAME` are interpolated.
+    /// The unbraced form uses Required semantics (missing values error).
+    BracedOrBare,
+}
+
+/// Merge key handling policy for YAML mappings.
+#[non_exhaustive]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[cfg_attr(
+    feature = "serde_derived_types",
+    derive(serde::Serialize, serde::Deserialize)
+)]
+#[cfg_attr(feature = "serde_derived_types", serde(rename_all = "snake_case"))]
+pub enum MergeKeyPolicy {
+    /// Expand YAML merge keys (`<<`) into the surrounding mapping, as per YAML 1.1 specs.
+    #[default]
+    Merge,
+
+    /// Treat YAML merge keys (`<<`) as ordinary mapping keys.
+    AsOrdinary,
+
+    /// Error out on encountering a YAML merge key (`<<`), reporting the location.
+    Error,
+}
+
+/// Limits applied to alias replay to harden against alias bombs.
+///
+/// Prefer constructing this via the [`alias_limits!`](crate::alias_limits!) macro instead of a
+/// struct literal. This keeps call sites stable if new fields are added in the future.
+///
+/// ```rust
+/// # #[cfg(feature = "deserialize")]
+/// # {
+/// let limits = serde_saphyr::alias_limits! {
+///     max_replay_stack_depth: 32,
+/// };
+///
+/// assert_eq!(limits.max_replay_stack_depth, 32);
+/// # }
+/// ```
+#[derive(Clone, Copy, Debug)]
+#[cfg_attr(
+    feature = "serde_derived_types",
+    derive(serde::Serialize, serde::Deserialize)
+)]
+pub struct AliasLimits {
+    /// Maximum total number of **replayed** events injected from aliases across the entire parse.
+    /// When exceeded, deserialization errors (alias replay limit exceeded).
+    #[deprecated(
+        note = "Direct construction of `AliasLimits` will be disabled from 1.0.0, use macro `alias_limits!`"
+    )]
+    pub max_total_replayed_events: usize,
+    /// Maximum depth of the alias replay stack (nested alias → injected buffer → alias, etc.).
+    #[deprecated(
+        note = "Direct construction of `AliasLimits` will be disabled from 1.0.0, use macro `alias_limits!`"
+    )]
+    pub max_replay_stack_depth: usize,
+    /// Maximum number of times a **single anchor id** may be expanded via alias.
+    /// Use `usize::MAX` for "unlimited".
+    #[deprecated(
+        note = "Direct construction of `AliasLimits` will be disabled from 1.0.0, use macro `alias_limits!`"
+    )]
+    pub max_alias_expansions_per_anchor: usize,
+}
+
+impl Default for AliasLimits {
+    fn default() -> Self {
+        Self {
+            max_total_replayed_events: 1_000_000,
+            max_replay_stack_depth: 64,
+            max_alias_expansions_per_anchor: usize::MAX,
+        }
+    }
+}
+
+/// Parser configuration options.
+///
+/// Use this to configure duplicate-key policy, alias-replay limits, and an
+/// optional pre-parse YAML [`Budget`].
+///
+/// Example: parse a small `Config` using custom `Options`.
+///
+/// ```rust
+/// use serde::Deserialize;
+///
+/// use serde_saphyr::options::DuplicateKeyPolicy;
+/// use serde_saphyr::{from_str_with_options, Budget, Options};
+///
+/// #[derive(Deserialize)]
+/// struct Config {
+///     name: String,
+///     enabled: bool,
+///     retries: i32,
+/// }
+///
+/// let yaml = r#"
+/// name: My Application
+/// enabled: true
+/// retries: 5
+/// "#;
+///
+/// let options = serde_saphyr::options! {
+///     budget: serde_saphyr::budget! {
+///         max_documents: 2,
+///     },
+///     duplicate_keys: DuplicateKeyPolicy::LastWins,
+/// };
+///
+/// let cfg: Config = from_str_with_options(yaml, options).unwrap();
+/// assert_eq!(cfg.name, "My Application");
+/// ```
+#[derive(Clone)]
+#[cfg_attr(
+    feature = "serde_derived_types",
+    derive(serde::Serialize, serde::Deserialize)
+)]
+pub struct Options {
+    /// Optional YAML budget to enforce before parsing (counts raw parser events).
+    #[deprecated(
+        note = "Direct construction of `Options` will be disabled from 1.0.0, use macro `options!`"
+    )]
+    pub budget: Option<Budget>,
+    /// Optional callback invoked with the final budget report after parsing.
+    /// It is invoked both when parsing is successful and when budget was breached.
+    #[cfg_attr(feature = "serde_derived_types", serde(skip))]
+    #[deprecated(
+        note = "Direct construction of `Options` will be disabled from 1.0.0, use `Options::with_budget_report`"
+    )]
+    pub budget_report: Option<fn(&crate::budget::BudgetReport)>,
+
+    /// Invoked both when parsing is successful and when budget was breached.
+    #[cfg_attr(feature = "serde_derived_types", serde(skip))]
+    #[deprecated(
+        note = "Direct construction of `Options` will be disabled from 1.0.0, use `Options::with_budget_report`"
+    )]
+    pub budget_report_cb: Option<BudgetReportCallback>,
+
+    /// Policy for duplicate keys.
+    #[deprecated(
+        note = "Direct construction of `Options` will be disabled from 1.0.0, use macro `options!`"
+    )]
+    pub duplicate_keys: DuplicateKeyPolicy,
+    /// Policy for YAML merge keys (`<<`).
+    ///
+    /// [`MergeKeyPolicy::Merge`] expands merge keys and counts them against
+    /// [`Budget::max_merge_keys`]. [`MergeKeyPolicy::AsOrdinary`] accepts `<<`
+    /// as a regular key. [`MergeKeyPolicy::Error`] rejects merge keys.
+    ///
+    /// Default: [`MergeKeyPolicy::Merge`].
+    #[cfg_attr(feature = "serde_derived_types", serde(default))]
+    #[deprecated(
+        note = "Direct construction of `Options` will be disabled from 1.0.0, use macro `options!`"
+    )]
+    pub merge_keys: MergeKeyPolicy,
+    /// Limits for alias replay to harden against alias bombs.
+    #[deprecated(
+        note = "Direct construction of `Options` will be disabled from 1.0.0, use macro `options!`"
+    )]
+    pub alias_limits: AliasLimits,
+    /// Enable legacy octal parsing where values starting with `0` are treated as base-8.
+    /// They are deprecated in YAML 1.2. Default: false.
+    #[deprecated(
+        note = "Direct construction of `Options` will be disabled from 1.0.0, use macro `options!`"
+    )]
+    pub legacy_octal_numbers: bool,
+    /// If true, interpret only the exact literals `true` and `false` as booleans.
+    /// YAML 1.1 forms like `yes`/`no`/`on`/`off` will be rejected and not inferred.
+    /// Default: false (accept YAML 1.1 boolean forms).
+    #[deprecated(
+        note = "Direct construction of `Options` will be disabled from 1.0.0, use macro `options!`"
+    )]
+    pub strict_booleans: bool,
+    /// When a field marked with the `!!binary` tag is deserialized into a `String`,
+    /// `serde-saphyr` normally expects the value to be base64-encoded UTF-8.
+    /// If you want to treat the value as a plain string and ignore the `!!binary` tag,
+    /// set this to `true` (the default is `false`).
+    #[deprecated(
+        note = "Direct construction of `Options` will be disabled from 1.0.0, use macro `options!`"
+    )]
+    pub ignore_binary_tag_for_string: bool,
+    /// Activates YAML conventions common in robotics community. These extensions support
+    /// conversion functions (deg, rad) and simple mathematical expressions such as deg(180),
+    /// rad(pi), 1 + 2*(3 - 4/5), or rad(pi/2). `robotics` feature must also be enabled.
+    #[deprecated(
+        note = "Direct construction of `Options` will be disabled from 1.0.0, use macro `options!`"
+    )]
+    pub angle_conversions: bool,
+    /// If true, values that can be parsed as booleans or numbers are rejected as
+    /// unquoted strings. This flag is intended for teams that want to enforce
+    /// compatibility with YAML parsers that infer types from unquoted values,
+    /// requiring such strings to be explicitly quoted.
+    /// The default is false (a number or boolean will be stored in the string
+    /// field exactly as provided, without quoting).
+    #[deprecated(
+        note = "Direct construction of `Options` will be disabled from 1.0.0, use macro `options!`"
+    )]
+    pub no_schema: bool,
+
+    /// If true (default), public APIs that have access to the original YAML input
+    /// will wrap returned errors with a snippet wrapper, enabling rustc-like snippet
+    /// rendering when a location is available.
+    #[deprecated(
+        note = "Direct construction of `Options` will be disabled from 1.0.0, use macro `options!`"
+    )]
+    pub with_snippet: bool,
+
+    /// Horizontal crop radius (in character columns) when rendering snippet diagnostics.
+    ///
+    /// The renderer crops all displayed lines (including the context lines) to the same
+    /// column window around the reported error column, so they stay vertically aligned.
+    ///
+    /// If set to `0`, snippet wrapping is disabled (the original, unwrapped error is returned).
+    #[deprecated(
+        note = "Direct construction of `Options` will be disabled from 1.0.0, use macro `options!`"
+    )]
+    pub crop_radius: usize,
+
+    /// Indentation requirement for the parsed document.
+    #[deprecated(
+        note = "Direct construction of `Options` will be disabled from 1.0.0, use macro `options!`"
+    )]
+    pub require_indent: RequireIndent,
+
+    /// Optional include resolver callback.
+    ///
+    /// When provided, it can push parsers onto the internal parser stack to resolve `!include`
+    ///-like constructs.
+    #[cfg(feature = "include")]
+    #[cfg_attr(feature = "serde_derived_types", serde(skip))]
+    #[deprecated(
+        note = "Direct construction of `Options` will be disabled from 1.0.0, use `Options::with_include_resolver`"
+    )]
+    pub include_resolver: Option<IncludeResolverCallback>,
+
+    /// A map of properties to substitute in scalar values.
+    /// Used for docker-compose-style interpolation like `${VAR}`.
+    #[cfg(feature = "properties")]
+    #[cfg_attr(feature = "serde_derived_types", serde(skip))]
+    #[deprecated(
+        note = "Direct construction of `Options` will be disabled from 1.0.0, use `Options::with_properties`"
+    )]
+    pub property_map: Option<Rc<HashMap<String, String>>>,
+
+    /// Which property-interpolation syntaxes are recognized.
+    /// Defaults to [`PropertySyntax::Braced`] (only `${NAME}`).
+    #[cfg(feature = "properties")]
+    #[deprecated(
+        note = "Direct construction of `Options` will be disabled from 1.0.0, use macro `options!`"
+    )]
+    #[cfg_attr(feature = "serde_derived_types", serde(default))]
+    pub property_syntax: PropertySyntax,
+}
+
+#[cfg(feature = "include")]
+pub type IncludeResolverCallback = Rc<
+    std::cell::RefCell<
+        dyn for<'res> FnMut(
+                crate::input_source::IncludeRequest<'res>,
+            )
+                -> Result<crate::ResolvedInclude, crate::IncludeResolveError>
+            + 'static,
+    >,
+>;
+
+pub type BudgetReportCallback =
+    Rc<std::cell::RefCell<dyn FnMut(crate::budget::BudgetReport) + 'static>>;
+
+impl Options {
+    #[allow(deprecated)]
+    pub(crate) fn validate(&self) -> Result<(), crate::de_error::Error> {
+        self.require_indent.validate()
+    }
+
+    /// Registers a budget-report callback. Any closure can be used,  including ones that
+    /// capture state from the surrounding scope.
+    ///
+    /// The callback is invoked with the final [`crate::budget::BudgetReport`] after parsing
+    /// completes, both on success and when the budget is breached.
+    ///
+    /// ```rust
+    /// use serde_saphyr::options;
+    /// use serde_saphyr::budget::BudgetReport;
+    ///
+    /// let options = options! {}.with_budget_report(|report: BudgetReport| {
+    ///     // e.g. update your state / emit metrics / log the report
+    ///     let _ = report;
+    /// });
+    /// ```
+    #[allow(deprecated)]
+    pub fn with_budget_report<F>(mut self, cb: F) -> Self
+    where
+        F: FnMut(crate::budget::BudgetReport) + 'static,
+    {
+        self.budget_report_cb = Some(Rc::new(std::cell::RefCell::new(cb)));
+        self
+    }
+
+    /// Installs a property map used for `${NAME}` interpolation in plain scalars.
+    ///
+    /// This is the intended public API for the `properties` feature. It consumes the provided
+    /// [`HashMap`] and stores it in the internal shared representation used by nested
+    /// deserializers, so callers do not have to construct `Rc` or `Some(...)` manually.
+    ///
+    /// ```rust
+    /// # #[cfg(feature = "properties")]
+    /// # {
+    /// use std::collections::HashMap;
+    /// use serde_saphyr::Options;
+    ///
+    /// let mut properties = HashMap::new();
+    /// properties.insert("MODE".to_string(), "production".to_string());
+    ///
+    /// let options = Options::default().with_properties(properties);
+    /// # let _ = options;
+    /// # }
+    /// ```
+    #[cfg(feature = "properties")]
+    pub fn with_properties(mut self, properties: HashMap<String, String>) -> Self {
+        self.property_map = Some(Rc::new(properties));
+        self
+    }
+
+    /// Sets the include resolver callback to be used during parsing.
+    ///
+    /// This method is for advances use cases. If you just want to include files from the
+    /// filesystem, use [`Options::with_filesystem_root`] instead that will use [`crate::SafeFileResolver`]
+    ///
+    /// The callback is invoked each time the parser encounters a `!include` tag. It receives an
+    /// [`crate::input_source::IncludeRequest`] describing the requested include target, the source
+    /// that triggered it, the include stack, and the source location. The callback must then
+    /// return either a [`crate::ResolvedInclude`] or a [`crate::IncludeResolveError`].
+    ///
+    /// This is useful for virtual filesystems, embedded configuration bundles, network-backed
+    /// resolvers, or custom caching layers.
+    ///
+    /// ```rust
+    /// # #[cfg(feature = "include")]
+    /// # {
+    /// use serde::Deserialize;
+    /// use serde_saphyr::{
+    ///     from_str_with_options, options, IncludeRequest, IncludeResolveError, InputSource,
+    ///     ResolvedInclude,
+    /// };
+    ///
+    /// #[derive(Debug, Deserialize, PartialEq)]
+    /// struct Config {
+    ///     users: Vec<User>,
+    /// }
+    ///
+    /// #[derive(Debug, Deserialize, PartialEq)]
+    /// struct User {
+    ///     name: String,
+    /// }
+    ///
+    /// let root_yaml = "users: !include virtual://users.yaml\n";
+    /// let users_yaml = "- name: Alice\n- name: Bob\n";
+    ///
+    /// let options = options! {}.with_include_resolver(|req: IncludeRequest<'_>| {
+    ///     assert_eq!(req.spec, "virtual://users.yaml");
+    ///     assert_eq!(req.from_name, "<input>");
+    ///
+    ///     if req.spec == "virtual://users.yaml" {
+    ///         Ok(ResolvedInclude {
+    ///             id: req.spec.to_owned(),
+    ///             name: "virtual users".to_owned(),
+    ///             source: InputSource::from_string(users_yaml.to_owned()),
+    ///         })
+    ///     } else {
+    ///         Err(IncludeResolveError::Message(format!("unknown include: {}", req.spec)))
+    ///     }
+    /// });
+    ///
+    /// let config: Config = from_str_with_options(root_yaml, options).unwrap();
+    /// assert_eq!(config.users.len(), 2);
+    /// assert_eq!(config.users[0].name, "Alice");
+    /// # }
+    /// ```
+    #[cfg(feature = "include")]
+    pub fn with_include_resolver<F>(mut self, cb: F) -> Self
+    where
+        F: for<'res> FnMut(
+                crate::input_source::IncludeRequest<'res>,
+            )
+                -> Result<crate::ResolvedInclude, crate::IncludeResolveError>
+            + 'static,
+    {
+        self.include_resolver = Some(Rc::new(std::cell::RefCell::new(cb)));
+        self
+    }
+
+    /// Configures a [`crate::SafeFileResolver`] rooted at `path` for `!include` lookups.
+    ///
+    /// This is a convenience for:
+    ///
+    /// ```rust,no_run
+    /// # #[cfg(feature = "include_fs")]
+    /// # fn main() -> Result<(), std::io::Error> {
+    /// # use serde_saphyr::{options, SafeFileResolver};
+    /// let options = options! {}
+    ///     .with_include_resolver(SafeFileResolver::new("./configs")?.into_callback());
+    /// # let _ = options;
+    /// # Ok(())
+    /// # }
+    /// ```
+    ///
+    /// It enables filesystem-backed `!include` resolution while keeping every included file
+    /// confined to the canonicalized `path` root.
+    ///
+    /// ```rust,no_run
+    /// # #[cfg(feature = "include_fs")]
+    /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// use serde::Deserialize;
+    /// use serde_saphyr::{from_str_with_options, options};
+    ///
+    /// #[derive(Debug, Deserialize)]
+    /// struct User {
+    ///     name: String,
+    /// }
+    ///
+    /// #[derive(Debug, Deserialize)]
+    /// struct Config {
+    ///     users: Vec<User>,
+    /// }
+    ///
+    /// let yaml = "users: !include#users value.yaml\n";
+    /// let options = options! {}.with_filesystem_root("./examples")?;
+    /// let config: Config = from_str_with_options(yaml, options)?;
+    /// # let _ = config;
+    /// # Ok(())
+    /// # }
+    /// ```
+    #[cfg(feature = "include_fs")]
+    pub fn with_filesystem_root<P>(self, path: P) -> io::Result<Self>
+    where
+        P: AsRef<Path>,
+    {
+        Ok(self.with_include_resolver(crate::SafeFileResolver::new(path)?.into_callback()))
+    }
+}
+
+impl Default for Options {
+    #[allow(deprecated)]
+    fn default() -> Self {
+        Self {
+            budget: Some(Budget::default()),
+            budget_report: None,
+            budget_report_cb: None,
+            duplicate_keys: DuplicateKeyPolicy::Error,
+            merge_keys: MergeKeyPolicy::Merge,
+            alias_limits: AliasLimits::default(),
+            legacy_octal_numbers: false,
+            strict_booleans: false,
+            angle_conversions: false,
+            ignore_binary_tag_for_string: false,
+            no_schema: false,
+            with_snippet: true,
+            crop_radius: 64,
+            require_indent: RequireIndent::Unchecked,
+
+            #[cfg(feature = "include")]
+            include_resolver: None,
+            #[cfg(feature = "properties")]
+            property_map: None,
+            #[cfg(feature = "properties")]
+            property_syntax: PropertySyntax::Braced,
+        }
+    }
+}
+
+impl std::fmt::Debug for Options {
+    #[allow(deprecated)]
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Options")
+            .field("budget", &self.budget)
+            .field("budget_report", &self.budget_report)
+            .field(
+                "budget_report_cb",
+                &if self.budget_report_cb.is_some() {
+                    "set"
+                } else {
+                    "none"
+                },
+            )
+            .field("duplicate_keys", &self.duplicate_keys)
+            .field("merge_keys", &self.merge_keys)
+            .field("alias_limits", &self.alias_limits)
+            .field("legacy_octal_numbers", &self.legacy_octal_numbers)
+            .field("strict_booleans", &self.strict_booleans)
+            .field(
+                "ignore_binary_tag_for_string",
+                &self.ignore_binary_tag_for_string,
+            )
+            .field("angle_conversions", &self.angle_conversions)
+            .field("no_schema", &self.no_schema)
+            .field("with_snippet", &self.with_snippet)
+            .field("crop_radius", &self.crop_radius)
+            .field("require_indent", &self.require_indent)
+            .field("include_resolver", &{
+                #[cfg(feature = "include")]
+                {
+                    if self.include_resolver.is_some() {
+                        "set"
+                    } else {
+                        "none"
+                    }
+                }
+                #[cfg(not(feature = "include"))]
+                {
+                    "disabled"
+                }
+            })
+            .field("property_map", &{
+                #[cfg(feature = "properties")]
+                {
+                    if self.property_map.is_some() {
+                        "set"
+                    } else {
+                        "none"
+                    }
+                }
+                #[cfg(not(feature = "properties"))]
+                {
+                    "disabled"
+                }
+            })
+            .field("property_syntax", &{
+                #[cfg(feature = "properties")]
+                {
+                    format!("{:?}", self.property_syntax)
+                }
+                #[cfg(not(feature = "properties"))]
+                {
+                    "disabled".to_string()
+                }
+            })
+            .finish()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[cfg(feature = "include_fs")]
+    use crate::input_source::{IncludeRequest, InputSource};
+    #[cfg(feature = "include_fs")]
+    use std::path::PathBuf;
+    #[cfg(feature = "include_fs")]
+    use tempfile::tempdir;
+
+    #[test]
+    fn test_options_default() {
+        let opts = Options::default();
+        assert!(opts.budget.is_some());
+        assert!(opts.budget_report.is_none());
+        assert!(opts.budget_report_cb.is_none());
+        assert!(matches!(opts.duplicate_keys, DuplicateKeyPolicy::Error));
+        assert!(matches!(opts.merge_keys, MergeKeyPolicy::Merge));
+        assert_eq!(opts.alias_limits.max_total_replayed_events, 1_000_000);
+        assert!(!opts.legacy_octal_numbers);
+        assert!(!opts.strict_booleans);
+        assert!(!opts.ignore_binary_tag_for_string);
+        assert!(!opts.angle_conversions);
+        assert!(!opts.no_schema);
+        assert!(opts.with_snippet);
+        assert_eq!(opts.crop_radius, 64);
+        assert_eq!(opts.require_indent, RequireIndent::Unchecked);
+
+        #[cfg(feature = "include")]
+        assert!(opts.include_resolver.is_none());
+        #[cfg(feature = "properties")]
+        {
+            assert!(opts.property_map.is_none());
+            assert_eq!(opts.property_syntax, PropertySyntax::Braced);
+        }
+    }
+
+    #[cfg(feature = "serde_derived_types")]
+    #[test]
+    fn duplicate_key_policy_serde_uses_snake_case() {
+        assert_eq!(
+            serde_json::to_string(&DuplicateKeyPolicy::FirstWins).unwrap(),
+            "\"first_wins\""
+        );
+        assert!(matches!(
+            serde_json::from_str::<DuplicateKeyPolicy>("\"last_wins\"").unwrap(),
+            DuplicateKeyPolicy::LastWins
+        ));
+        assert!(serde_json::from_str::<DuplicateKeyPolicy>("\"FirstWins\"").is_err());
+    }
+
+    #[test]
+    fn test_options_debug_format() {
+        let opts = Options::default();
+        let debug_str = format!("{:?}", opts);
+        assert!(debug_str.contains("Options"));
+        assert!(debug_str.contains("budget"));
+        assert!(debug_str.contains("budget_report_cb: \"none\""));
+
+        #[cfg(feature = "include")]
+        assert!(debug_str.contains("include_resolver: \"none\""));
+        #[cfg(feature = "properties")]
+        {
+            assert!(debug_str.contains("property_map: \"none\""));
+        }
+        #[cfg(not(feature = "properties"))]
+        {
+            assert!(debug_str.contains("property_map: \"disabled\""));
+        }
+
+        // Test with callback
+        let opts_with_cb = opts.with_budget_report(|_| {});
+        let debug_str_cb = format!("{:?}", opts_with_cb);
+        assert!(debug_str_cb.contains("budget_report_cb: \"set\""));
+    }
+
+    #[cfg(feature = "properties")]
+    #[test]
+    fn test_with_properties_sets_property_map() {
+        let mut properties = std::collections::HashMap::new();
+        properties.insert("MODE".to_string(), "production".to_string());
+
+        let opts = Options::default().with_properties(properties);
+
+        assert_eq!(
+            opts.property_map.as_deref().unwrap().get("MODE"),
+            Some(&"production".to_string())
+        );
+    }
+
+    #[test]
+    fn test_alias_limits_default() {
+        let limits = AliasLimits::default();
+        assert_eq!(limits.max_total_replayed_events, 1_000_000);
+        assert_eq!(limits.max_replay_stack_depth, 64);
+        assert_eq!(limits.max_alias_expansions_per_anchor, usize::MAX);
+    }
+
+    #[test]
+    fn test_alias_limits_macro() {
+        let limits = crate::alias_limits! {
+            max_total_replayed_events: 42,
+            max_replay_stack_depth: 7,
+        };
+        assert_eq!(limits.max_total_replayed_events, 42);
+        assert_eq!(limits.max_replay_stack_depth, 7);
+        assert_eq!(limits.max_alias_expansions_per_anchor, usize::MAX);
+
+        let opts = crate::options! {
+            alias_limits: crate::alias_limits! {
+                max_alias_expansions_per_anchor: 9,
+            },
+        };
+        assert_eq!(opts.alias_limits.max_alias_expansions_per_anchor, 9);
+    }
+
+    #[cfg(feature = "include_fs")]
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn test_with_filesystem_root_sets_include_resolver() {
+        let root = PathBuf::from(".");
+        let opts = Options::default().with_filesystem_root(&root).unwrap();
+        assert!(opts.include_resolver.is_some());
+    }
+
+    #[cfg(feature = "include_fs")]
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn test_with_filesystem_root_uses_reader_default_for_regular_files() {
+        let dir = tempdir().unwrap();
+        std::fs::write(dir.path().join("child.yaml"), "value: 1\n").unwrap();
+
+        let opts = Options::default().with_filesystem_root(dir.path()).unwrap();
+        let mut resolver = opts
+            .include_resolver
+            .as_ref()
+            .expect("resolver set")
+            .borrow_mut();
+        let resolved = resolver(IncludeRequest {
+            spec: "child.yaml",
+            from_name: "<input>",
+            from_id: None,
+            stack: vec!["<input>".to_string()],
+            location: crate::Location::UNKNOWN,
+            size_remaining: None,
+        })
+        .unwrap();
+
+        assert!(matches!(resolved.source, InputSource::Reader(_)));
+    }
+}

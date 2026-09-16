@@ -1,0 +1,17 @@
+{
+  "upstream": "serde-saphyr 0.0.29",
+  "captured_with": "unpatched crate on current stable",
+  "classifications": {
+    "alias-expansion": "rejected",
+    "anchors-aliases": "accepted",
+    "duplicate-keys": "rejected",
+    "excessive-depth": "rejected",
+    "malformed-syntax": "rejected",
+    "multiple-documents": "rejected",
+    "recursive-alias": "rejected",
+    "tags": "accepted",
+    "type-mismatch": "rejected",
+    "unknown-fields": "accepted",
+    "valid-routing": "accepted"
+  }
+}

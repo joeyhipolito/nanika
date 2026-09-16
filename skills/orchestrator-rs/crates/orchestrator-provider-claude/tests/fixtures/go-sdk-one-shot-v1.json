@@ -1,0 +1,172 @@
+{
+  "schema_version": 1,
+  "oracle_scope": "frozen Go SDK one-shot argv ordering, explicit environment policy, authoritative assistant text, result boundaries, proven result cost fields, and a recorded full Claude CLI assistant envelope",
+  "source_commit": "f39aefcc48610be6040fc686b3a72188948bcbab",
+  "sources": [
+    {
+      "path": "shared/sdk/query.go",
+      "git_blob": "cf643daaab549905f420c7f1d198933f8988d8cd"
+    },
+    {
+      "path": "shared/sdk/transport.go",
+      "git_blob": "6d800f89775fb4a4206fb29580fb201d74a4f5da"
+    },
+    {
+      "path": "shared/sdk/query_append_effort_test.go",
+      "git_blob": "cc302698c14909a35273c66b7cc9ece072f99a3a"
+    },
+    {
+      "path": "shared/sdk/query_disable_mcp_test.go",
+      "git_blob": "0e0f3f8465513fcb90ed8c93918cb8243efa9836"
+    },
+    {
+      "path": "shared/sdk/query_test.go",
+      "git_blob": "29e9f57004ccd597bb11324669a384c269fdea4d"
+    },
+    {
+      "path": "shared/sdk/env_allowlist_test.go",
+      "git_blob": "6ad44fbb266be6f6438c406eecd135802b936ef4"
+    },
+    {
+      "path": "shared/sdk/types.go",
+      "git_blob": "5977bc077b72807398c2e221014c1fbde653fad9"
+    },
+    {
+      "path": "skills/orchestrator/internal/worker/execute.go",
+      "git_blob": "e07780f43e6127a6f4541e7277fb404f9aa55204"
+    },
+    {
+      "path": "skills/orchestrator/internal/worker/execute_test.go",
+      "git_blob": "5d6516c556bb67a45553feae0f8afab8b965c303"
+    },
+    {
+      "path": "cmd/nanika/internal/tui/shell/testdata/claude-control-protocol/claude-allow.jsonl",
+      "git_blob": "2e00def0a99cea19591980718bb6a315cbfe2f1b"
+    }
+  ],
+  "argv_cases": [
+    {
+      "name": "append_prompt_wins_and_effort_follows_model",
+      "options": {
+        "model": "claude-opus-4-8",
+        "max_turns": 0,
+        "append_system_prompt": "persona",
+        "system_prompt": "replace-everything",
+        "effort": "high",
+        "disable_builtin_tools": false,
+        "disable_mcp": false,
+        "add_directory": null
+      },
+      "expected": [
+        "--output-format",
+        "stream-json",
+        "--print",
+        "--verbose",
+        "--include-partial-messages",
+        "--dangerously-skip-permissions",
+        "--model",
+        "claude-opus-4-8",
+        "--append-system-prompt",
+        "persona",
+        "--effort",
+        "high"
+      ]
+    },
+    {
+      "name": "tool_less_strict_empty_mcp_and_add_dir",
+      "options": {
+        "model": "claude-sonnet-5",
+        "max_turns": 20,
+        "append_system_prompt": null,
+        "system_prompt": null,
+        "effort": "medium",
+        "disable_builtin_tools": true,
+        "disable_mcp": true,
+        "add_directory": "/fixture/worker"
+      },
+      "expected": [
+        "--output-format",
+        "stream-json",
+        "--print",
+        "--verbose",
+        "--include-partial-messages",
+        "--dangerously-skip-permissions",
+        "--model",
+        "claude-sonnet-5",
+        "--max-turns",
+        "20",
+        "--effort",
+        "medium",
+        "--tools",
+        "",
+        "--strict-mcp-config",
+        "--mcp-config",
+        "{\"mcpServers\":{}}",
+        "--add-dir",
+        "/fixture/worker"
+      ]
+    },
+    {
+      "name": "system_prompt_fallback",
+      "options": {
+        "model": "",
+        "max_turns": 1,
+        "append_system_prompt": null,
+        "system_prompt": "full replacement",
+        "effort": "low",
+        "disable_builtin_tools": false,
+        "disable_mcp": false,
+        "add_directory": null
+      },
+      "expected": [
+        "--output-format",
+        "stream-json",
+        "--print",
+        "--verbose",
+        "--include-partial-messages",
+        "--dangerously-skip-permissions",
+        "--max-turns",
+        "1",
+        "--system-prompt",
+        "full replacement",
+        "--effort",
+        "low"
+      ]
+    }
+  ],
+  "parser_cases": [
+    {
+      "name": "direct_text_and_current_cli_cost",
+      "stdout": "{\"type\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"review ok\"}]}\n{\"type\":\"result\",\"subtype\":\"success\",\"session_id\":\"not-retained\",\"num_turns\":1,\"duration_ms\":3671,\"total_cost_usd\":0.083861,\"usage\":{\"input_tokens\":3,\"cache_creation_input_tokens\":12498,\"cache_read_input_tokens\":11217,\"output_tokens\":5}}\n",
+      "expected_output": "review ok\n\n",
+      "expected_error": null,
+      "expected_cost": {
+        "input_tokens": 23718,
+        "output_tokens": 5,
+        "total_cost_usd": 0.083861,
+        "cache_creation_tokens": 12498,
+        "cache_read_tokens": 11217
+      }
+    },
+    {
+      "name": "known_metadata_nested_text_and_turn_boundaries",
+      "stdout": "{\"type\":\"system\",\"subtype\":\"init\"}\n{\"type\":\"stream_event\",\"event\":{\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"partial ignored\"}}}\n{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"turn one\"}]}}\n{\"type\":\"result\",\"subtype\":\"success\"}\n{\"type\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"turn two\"}]}\n{\"type\":\"result\",\"subtype\":\"success\"}\n",
+      "expected_output": "turn one\n\nturn two\n\n",
+      "expected_error": null,
+      "expected_cost": null
+    },
+    {
+      "name": "legacy_nested_cost",
+      "stdout": "{\"type\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"legacy\"}]}\n{\"type\":\"result\",\"subtype\":\"success\",\"cost\":{\"input_tokens\":9,\"output_tokens\":4,\"total_cost_usd\":0.25,\"cache_creation_tokens\":2,\"cache_read_tokens\":3}}\n",
+      "expected_output": "legacy\n\n",
+      "expected_error": null,
+      "expected_cost": {
+        "input_tokens": 9,
+        "output_tokens": 4,
+        "total_cost_usd": 0.25,
+        "cache_creation_tokens": 2,
+        "cache_read_tokens": 3
+      }
+    }
+  ]
+}

@@ -1,0 +1,26 @@
+Identifies learnings that are no longer useful and marks them archived.
+
+Four criteria are applied:
+  1. Never injected, older than 90 days
+  2. Chronic non-compliance: injected >= 5 times, compliance_rate < 0.10
+  3. Low quality (< 0.2), never used, older than 60 days
+  4. Single observation, no embedding, older than 30 days
+
+Dry-run by default — pass --apply to write changes.
+
+Usage:
+  orchestrator archive [flags]
+
+Flags:
+      --apply           actually archive (default is dry-run)
+      --domain string   restrict to a specific domain (default: all domains)
+  -h, --help            help for archive
+
+Global Flags:
+      --dry-run               show plan without executing
+      --max-turns int         max agentic turns per worker (0 = use persona-aware default)
+      --model string          force model for all workers
+      --nanika-dir string     path to nanika directory (default: ~/nanika)
+      --personas-dir string   path to personas directory (default: ~/nanika/personas/)
+      --sequential            force sequential execution
+  -v, --verbose               verbose output

@@ -1,0 +1,12 @@
+{
+  "version": 2,
+  "workspace_id": "20240101-direct02",
+  "domain": "dev",
+  "plan": null,
+  "status": "completed",
+  "started_at": "2024-01-01T00:00:00Z",
+  "git_repo_root": "/fixture/repo",
+  "worktree_path": "/fixture/worktree",
+  "branch_name": "via/direct-v2",
+  "base_branch": "main"
+}

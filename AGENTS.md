@@ -8,6 +8,7 @@ private tools can differ from the source here.
 
 | Task | Reference |
 |------|-----------|
+| Build, install, or run Rust native execution | [Rust guide](skills/orchestrator-rs/README.md) |
 | Build or run the Go mission CLI | [Orchestrator README](skills/orchestrator/README.md) |
 | Decompose a mission into PHASE lines | [Decomposer skill](skills/decomposer/.claude/skills/decomposer/SKILL.md) |
 | Use the shared Claude Code Go SDK | [SDK README](shared/sdk/README.md) |

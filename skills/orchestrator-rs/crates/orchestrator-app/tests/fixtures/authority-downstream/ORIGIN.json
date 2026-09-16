@@ -1,0 +1,8 @@
+{
+  "schema": "nanika-authority-downstream-lock-origin-v1",
+  "source": "skills/orchestrator-rs/Cargo.lock",
+  "source_sha256": "d77a977357a9c9b1bed459253f3df0c0fa7927d115ee99ab0d06d84e08612fbc",
+  "source_baseline": "skills/orchestrator-rs/tests/rust-lock-baseline.json",
+  "derivation": "transitive package closure of orchestrator-app@0.1.0 and cap-std@4.0.2 plus the fixture root package; original package records preserved byte-for-byte",
+  "cargo_lock_sha256": "21be0cbb5fa8613a857b034a121d66d0073613e27be21a18451e18413e8b9d3b"
+}

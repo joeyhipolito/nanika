@@ -1,0 +1,46 @@
+Usage:
+  orchestrator [command]
+
+Available Commands:
+  advisor             Manage operator-intended GLM advisor jobs
+  archive             Archive dead-weight learnings (dry-run by default)
+  audit               Audit tools for mission quality tracking
+  backfill-embeddings Fill missing embeddings on existing learnings (dry-run by default)
+  barok               Barok output-compression debug and status
+  cancel              Cancel a running mission
+  cleanup             Remove old workspaces (older than 7 days)
+  compare             Compare v1 vs v2 orchestrator performance metrics
+  completion          Generate the autocompletion script for the specified shell
+  daemon              Manage the event relay daemon
+  discipline          Reasoning-discipline layer debug and status
+  doctor              Run environment health checks
+  dream               Mine agent session transcripts for durable learnings
+  events              Inspect mission event logs
+  evidence            Manage the local interview-evidence ledger
+  help                Help about any command
+  hooks               Hook commands for context management during worker sessions
+  ingest              Ingest external content into the learnings database
+  memory              Manage persona memory entries
+  metrics             Show mission execution history
+  prune               Prune old and low-quality learnings from the database
+  routing             Manage routing memory (target profiles and patterns)
+  run                 Execute a task or mission
+  stats               Show learning database statistics
+  status              Show recent workspace status
+  sync                Show and reconcile issue/workspace/audit links
+  templates           Manage mission templates
+
+Flags:
+      --domain string         task domain (dev/personal/work/creative/academic) (default "dev")
+      --dry-run               show plan without executing
+  -h, --help                  help for orchestrator
+      --max-turns int         max agentic turns per worker (0 = use persona-aware default)
+      --model string          force model for all workers
+      --nanika-dir string     path to nanika directory (default: ~/nanika)
+      --personas-dir string   path to personas directory (default: ~/nanika/personas/)
+      --sequential            force sequential execution
+  -v, --verbose               verbose output
+
+Use "orchestrator [command] --help" for more information about a command.
+
+unknown flag: --version

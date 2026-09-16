@@ -1,0 +1,228 @@
+{
+  "schema_version": 1,
+  "canonicalization": "UTF-8 JSON with recursively sorted object keys and no insignificant whitespace",
+  "cases": [
+    {
+      "case_id": "checkpoint-current-writer-go-readable",
+      "case_sha256": "0759ab095d32b93460676c2d604316412fbd83f7321bfde694ef23c02fe5cf92",
+      "references": []
+    },
+    {
+      "case_id": "checkpoint-direct-v2",
+      "case_sha256": "177042469d63064e6085e0531ef4655f2ad1da48d6059ead90e294a08282e556",
+      "references": [
+        {
+          "path": "checkpoints/legacy-direct-v2.json",
+          "sha256": "ef45af77fb0b7c7e1fe6fdf8094f16f859cbfc328630e279a24ed8861d8f35b2"
+        }
+      ]
+    },
+    {
+      "case_id": "checkpoint-envelope-unknown-fields",
+      "case_sha256": "0154d002cc3dc698418670065df95234d5f6ce59c2b61fc824463da08604e36c",
+      "references": [
+        {
+          "path": "checkpoints/envelope-v1-payload-v2-forward.json",
+          "sha256": "5f6bd41076501fa2dfbdfc6192f52495cc5580febd6d69509aa4ee48f4a73343"
+        }
+      ]
+    },
+    {
+      "case_id": "checkpoint-legacy-direct-missing-new-fields",
+      "case_sha256": "2825caae0aeaba0a0c91da510927f95f831b47d82212e3601e9a3304caff6921",
+      "references": [
+        {
+          "path": "checkpoints/legacy-direct-v1.json",
+          "sha256": "2a86296304dcb5b349b655a51308a58a41f3ede243f9a94e8cf1361d96003123"
+        }
+      ]
+    },
+    {
+      "case_id": "checkpoint-malformed-type",
+      "case_sha256": "c48b114d5a1675506f817610d73f4078822209d260125340c5baaef9a2997cf2",
+      "references": []
+    },
+    {
+      "case_id": "event-current-writer-go-readable",
+      "case_sha256": "9d68fcf0d744f0da3aef37c8062bd38236bcef8e69bc92591d5d96196f8cd5ed",
+      "references": []
+    },
+    {
+      "case_id": "events-all-45-stable-types",
+      "case_sha256": "48dc1674cb0b436e695c85878221f002df83ee21758968db50fdc211dd953516",
+      "references": [
+        {
+          "path": "events/stable-types.jsonl",
+          "sha256": "3e8ff143e1bb935f405f4122d7b6ed741afec898e1f4e4eb4d974537143d643f"
+        }
+      ]
+    },
+    {
+      "case_id": "events-corrupt-unknown-and-file-order",
+      "case_sha256": "daf4a67e5093bc2ebcc61c15093a12568649ae362314ded2d2f980ebd4272f39",
+      "references": [
+        {
+          "path": "events/mixed-history.jsonl",
+          "sha256": "2c39cb12f02799bc4d3ac2d1f44016c9b93072b91eace15d5d785e4127285093"
+        }
+      ]
+    },
+    {
+      "case_id": "home-alluka-precedence",
+      "case_sha256": "01ff407dbd03844cfcc47120ff095b90f7e65297a436ef6ab36206f5f632c2a7",
+      "references": []
+    },
+    {
+      "case_id": "home-existing-legacy-alluka",
+      "case_sha256": "f908333ed81b7f9c7ad794a4a6d7832dbae80a860f9318e727c54097e3a9b05b",
+      "references": []
+    },
+    {
+      "case_id": "home-existing-legacy-alluka-file",
+      "case_sha256": "d01a9f41c7d02121921cafce8a27cd6f055a21d108d4fbd5262340908c906579",
+      "references": []
+    },
+    {
+      "case_id": "home-highest-precedence",
+      "case_sha256": "2d956469a57ad974eaffc3cacf7cf75fb316c6672f56fc2d6b226b35065960f4",
+      "references": []
+    },
+    {
+      "case_id": "home-via-fallback",
+      "case_sha256": "c4fa678c8640d14444b5499e896b7007a6e525bd4cef38b4963eae44a31db05d",
+      "references": []
+    },
+    {
+      "case_id": "home-via-precedence",
+      "case_sha256": "42fb62fef1be2872ca9c789da9413540a7c0d67b9c1805855ab4745df62000fc",
+      "references": []
+    },
+    {
+      "case_id": "mission-authored-order",
+      "case_sha256": "8603c4b5526cd1e8fc2831fb3bd67dc5e342d597f7f04f39144eb64d8b59d67a",
+      "references": [
+        {
+          "path": "differential/expected/mission-authored-order.json",
+          "sha256": "7ebfff85d0bf12089c44407489fed16dec28f8db42ce25bc6caffe64bf4a78a2"
+        },
+        {
+          "path": "differential/input/mission-authored-order.md",
+          "sha256": "dcf6f316a9d708c37971acec85dcafe05f79f258a1a792f3e60f54a80e949693"
+        }
+      ]
+    },
+    {
+      "case_id": "mission-defaults-policy",
+      "case_sha256": "5e391a283e0acd31146ac31301cd26b23eba1e2f222ff485009ce608a08f3cdc",
+      "references": [
+        {
+          "path": "differential/expected/mission-defaults-policy.json",
+          "sha256": "6781531c5c0d8844b99bf11e9fb35892118cfc27dcf0f5a6445b0a51909599aa"
+        },
+        {
+          "path": "differential/input/mission-defaults.md",
+          "sha256": "c7ed2cbcecb1cb472d026e1c57f8addd0ca64b63ef7454c2622b369ba206e3e0"
+        }
+      ]
+    },
+    {
+      "case_id": "mission-malformed-no-phases",
+      "case_sha256": "d1eff692bb6e95bbb3063cafc3b8b6dd33674d0c4396cae21dfe8c82bad8dd42",
+      "references": []
+    },
+    {
+      "case_id": "mission-positive-fields",
+      "case_sha256": "c8ff66f183409605a1fb2c7d0589987e60673cd1487db4d9ae0f91b1f4ce29b6",
+      "references": [
+        {
+          "path": "differential/expected/mission-positive-fields.json",
+          "sha256": "c2d5b7fdb1028e9569bb28102494f232433b04089db760310b4d2b4afe0d4bb9"
+        },
+        {
+          "path": "differential/input/mission-positive.md",
+          "sha256": "8b6255803d4657a623e1d0efd41e36ce4af3261b79372523d82e6aefa97198c9"
+        }
+      ]
+    },
+    {
+      "case_id": "model-configured-runtime-match",
+      "case_sha256": "8dc75acc7449a5e5e9657ddda11e1c23e714bef1c05b4d5643419cb9aea8de98",
+      "references": []
+    },
+    {
+      "case_id": "model-runtime-mismatch-fallback",
+      "case_sha256": "210d3082241e1b371726f0822d339e88bad210e82a36268268daf2fa4f2e2962",
+      "references": []
+    },
+    {
+      "case_id": "projection-descending-sequence-rejected",
+      "case_sha256": "b98882234aae511a845b4dd2c50ce19804777bee69576f5e3d9aa703a2067325",
+      "references": []
+    },
+    {
+      "case_id": "projection-valid-unknown-and-replay",
+      "case_sha256": "752717c647719e8e3f45b05b46d66f874c31a332ed6162592d02cc1e711a8392",
+      "references": []
+    },
+    {
+      "case_id": "routing-yaml-malformed",
+      "case_sha256": "f23bb7acd72dd1f3cfa891d83851dd1abd4f35ddc2575651b1da7e3f6a5fb46d",
+      "references": [
+        {
+          "path": "routing-malformed.yaml",
+          "sha256": "4d5a46859a35d457b799453ebcf7a69363f8b1ef0462b782603c61f9e2bb3cc5"
+        }
+      ]
+    },
+    {
+      "case_id": "routing-yaml-valid-unknown-fields",
+      "case_sha256": "49aa3f3253f628380691c4804fe99c8ae9f5e640f6879d51d31ada00c321398e",
+      "references": [
+        {
+          "path": "routing-valid.yaml",
+          "sha256": "b193cf5361ab942b7e3aa92fe2a35e19adba2830dbfbc16ca5f16d1ff8488144"
+        }
+      ]
+    },
+    {
+      "case_id": "runtime-configured-precedence",
+      "case_sha256": "bb5ea65b00f5072028e980850dc5a94e2863b2f837e11d6b11b9626db9192154",
+      "references": []
+    },
+    {
+      "case_id": "runtime-empty-default",
+      "case_sha256": "5496ccffd0bb5f52eac4c6fee52ab2cb4375536e417efe3dbb177f1f24dfea1b",
+      "references": []
+    },
+    {
+      "case_id": "runtime-environment-precedence",
+      "case_sha256": "38c96f4feb2c4d88f58e92599be65290756eab9ccc0f70fa3fa266504be680ad",
+      "references": []
+    },
+    {
+      "case_id": "runtime-forced-precedence",
+      "case_sha256": "2548f0d3db88d3a5e70a8dc42df4bc4fb3424bf728665a3180c974d6947d158f",
+      "references": []
+    },
+    {
+      "case_id": "runtime-policy-precedence",
+      "case_sha256": "2f92f0981488f8269b397455b9c4f4e9e807738314a5202d25dffc79b3d972bb",
+      "references": []
+    },
+    {
+      "case_id": "stall-environment-malformed-intentional-fix",
+      "case_sha256": "9b0cd04b049c76898f3146ecf6da3b17121cf0c2c4a27817d584c9f408f94f38",
+      "references": []
+    },
+    {
+      "case_id": "stall-environment-negative-intentional-fix",
+      "case_sha256": "9418e2f9dc3a229a93a83abcd3458c92c90334ca90884b603ccf335f6b3759da",
+      "references": []
+    },
+    {
+      "case_id": "stall-environment-zero-intentional-fix",
+      "case_sha256": "b0c973caf160bd5db6fae7b36334ec7b6b3fca201526421f321d18ad6ec1c848",
+      "references": []
+    }
+  ]
+}

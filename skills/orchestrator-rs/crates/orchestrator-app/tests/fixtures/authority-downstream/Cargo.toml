@@ -1,0 +1,104 @@
+[package]
+name = "authority-downstream-contract-v1"
+version = "0.0.0"
+edition = "2024"
+publish = false
+autobins = false
+
+[dependencies]
+orchestrator-app = { path = "../../.." }
+orchestrator-exec = { path = "../../../../orchestrator-exec" }
+cap-std = "=4.0.2"
+
+[patch.crates-io]
+serde-saphyr = { path = "../../../../../third-party/serde-saphyr-0.0.29-msrv185/source" }
+
+[[bin]]
+name = "valid_usage"
+path = "src/bin/valid_usage.rs"
+
+[[bin]]
+name = "clone_raw_production_directory"
+path = "src/bin/clone_raw_production_directory.rs"
+
+[[bin]]
+name = "concurrent_raw_projection_bypass"
+path = "src/bin/concurrent_raw_projection_bypass.rs"
+
+[[bin]]
+name = "forge_root"
+path = "src/bin/forge_root.rs"
+
+[[bin]]
+name = "mint_enrollment"
+path = "src/bin/mint_enrollment.rs"
+
+[[bin]]
+name = "mint_legacy_quiescence"
+path = "src/bin/mint_legacy_quiescence.rs"
+
+[[bin]]
+name = "mint_process_start_identity"
+path = "src/bin/mint_process_start_identity.rs"
+
+[[bin]]
+name = "mint_storage_actor"
+path = "src/bin/mint_storage_actor.rs"
+
+[[bin]]
+name = "mint_projection_receipt"
+path = "src/bin/mint_projection_receipt.rs"
+
+[[bin]]
+name = "mint_retry_authorization"
+path = "src/bin/mint_retry_authorization.rs"
+
+[[bin]]
+name = "promote_fixture"
+path = "src/bin/promote_fixture.rs"
+
+[[bin]]
+name = "authorize_without_enrollment"
+path = "src/bin/authorize_without_enrollment.rs"
+
+[[bin]]
+name = "raw_fixture_root_cannot_authorize"
+path = "src/bin/raw_fixture_root_cannot_authorize.rs"
+
+[[bin]]
+name = "forge_process_preflight"
+path = "src/bin/forge_process_preflight.rs"
+
+[[bin]]
+name = "forge_bound_process_preflight"
+path = "src/bin/forge_bound_process_preflight.rs"
+
+[[bin]]
+name = "process_preflight_not_clone_copy"
+path = "src/bin/process_preflight_not_clone_copy.rs"
+
+[[bin]]
+name = "bound_process_preflight_not_clone_copy"
+path = "src/bin/bound_process_preflight_not_clone_copy.rs"
+
+[[bin]]
+name = "name_prepared_provider_launch"
+path = "src/bin/name_prepared_provider_launch.rs"
+
+[[bin]]
+name = "name_enrolled_provider_launch"
+path = "src/bin/name_enrolled_provider_launch.rs"
+
+[[bin]]
+name = "name_durable_process_actor"
+path = "src/bin/name_durable_process_actor.rs"
+
+[[bin]]
+name = "forge_untyped_effect_row"
+path = "src/bin/forge_untyped_effect_row.rs"
+
+[[bin]]
+name = "unbound_process_effect_row"
+path = "src/bin/unbound_process_effect_row.rs"
+
+[workspace]

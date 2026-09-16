@@ -1,0 +1,7 @@
+{"type":"thread.started","thread_id":"00000000-0000-4000-8000-000000000000"}
+{"type":"turn.started"}
+{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"I’ll make exactly those two filesystem changes with apply_patch, without running tests, Git, or network operations."}}
+{"type":"item.started","item":{"id":"item_1","type":"file_change","changes":[{"path":"/workspace/notes.txt","kind":"add"},{"path":"/workspace/obsolete.txt","kind":"delete"}],"status":"in_progress"}}
+{"type":"item.completed","item":{"id":"item_1","type":"file_change","changes":[{"path":"/workspace/notes.txt","kind":"add"},{"path":"/workspace/obsolete.txt","kind":"delete"}],"status":"completed"}}
+{"type":"item.completed","item":{"id":"item_2","type":"agent_message","text":"Added notes.txt and deleted obsolete.txt."}}
+{"type":"turn.completed","usage":{"input_tokens":20511,"cached_input_tokens":9984,"cache_write_input_tokens":0,"output_tokens":119,"reasoning_output_tokens":10}}

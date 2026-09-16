@@ -1,0 +1,15 @@
+{
+  "id": "evt_1123456789abcdef",
+  "type": "worker.output",
+  "timestamp": "2026-07-15T00:00:01Z",
+  "sequence": 2,
+  "mission_id": "mission-1",
+  "phase_id": "phase-1",
+  "worker_id": "worker-1",
+  "data": {
+    "chunk": "[tool result: bash]\n",
+    "event_kind": "tool_result",
+    "tool_name": "bash",
+    "is_error": false
+  }
+}

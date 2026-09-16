@@ -1,0 +1,25 @@
+Audit Scorecard
+============================================================
+Audits: 1  |  Period: 2026-07-14 to 2026-07-14
+
+Metric Trends
+------------------------------------------------------------
+  Metric             Cur   Avg   Range    Delta  Trend
+  -----------------  ---   ---   -----    -----  ----------
+  Decomposition      5/5  5.0  5 - 5    -    = stable
+  Persona Fit        5/5  5.0  5 - 5    -    = stable
+  Skill Usage        5/5  5.0  5 - 5    -    = stable
+  Output Quality     5/5  5.0  5 - 5    -    = stable
+  Rule Compliance    5/5  5.0  5 - 5    -    = stable
+  Overall            5/5  5.0  5 - 5    -    = stable
+
+Score History (last 1 audits)
+------------------------------------------------------------
+  Decomposition      [@]
+  Persona Fit        [@]
+  Skill Usage        [@]
+  Output Quality     [@]
+  Rule Compliance    [@]
+  Overall            [@]
+
+No regressions detected.

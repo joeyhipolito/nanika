@@ -1,0 +1,6 @@
+{"type":"thread.started","thread_id":"01a09b5e-9036-79c2-bba6-c7eee5ae2ad7"}
+{"type":"turn.started"}
+{"type":"item.started","item":{"id":"item_41","type":"collab_tool_call","tool":"wait","sender_thread_id":"01a09b5e-9036-79c2-bba6-c7eee5ae2ad7","receiver_thread_ids":[],"prompt":null,"agents_states":{},"status":"in_progress"}}
+{"type":"item.completed","item":{"id":"item_41","type":"collab_tool_call","tool":"wait","sender_thread_id":"01a09b5e-9036-79c2-bba6-c7eee5ae2ad7","receiver_thread_ids":[],"prompt":null,"agents_states":{},"status":"completed"}}
+{"type":"item.started","item":{"id":"item_52","type":"collab_tool_call","tool":"wait","sender_thread_id":"01a09b5e-9036-79c2-bba6-c7eee5ae2ad7","receiver_thread_ids":[],"prompt":null,"agents_states":{},"status":"in_progress"}}
+{"type":"item.completed","item":{"id":"item_52","type":"collab_tool_call","tool":"wait","sender_thread_id":"01a09b5e-9036-79c2-bba6-c7eee5ae2ad7","receiver_thread_ids":[],"prompt":null,"agents_states":{},"status":"completed"}}

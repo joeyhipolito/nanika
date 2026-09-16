@@ -1,0 +1,27 @@
+{
+  "ok": true,
+  "observation": {
+    "execution_mode": "sequential",
+    "phases": [
+      {
+        "constraints": [],
+        "dependencies": [],
+        "expected": "",
+        "id": "phase-1",
+        "model_tier": "think",
+        "name": "investigate",
+        "objective": "Investigate fixture architecture",
+        "persona": "fixture-architect",
+        "persona_selection_method": "keyword",
+        "priority": "",
+        "role": "planner",
+        "runtime": "claude",
+        "runtime_policy_applied": true,
+        "skills": [],
+        "stall_timeout_ns": 0,
+        "status": "pending",
+        "target_dir": ""
+      }
+    ]
+  }
+}

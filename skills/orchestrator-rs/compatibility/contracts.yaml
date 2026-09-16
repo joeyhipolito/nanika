@@ -1,0 +1,734 @@
+schema_version: 1
+ledger_id: orchestrator-go-to-rust
+title: Go orchestrator to Rust compatibility ledger
+baseline:
+  implementation: skills/orchestrator
+  git_commit: 3f2e5d1b
+  observed_on: "2026-07-13"
+  normative_document: docs/rust-orchestrator/compatibility-contract.md
+
+classification_definitions:
+  exact: Observable behavior, name, default, ordering, or representation must match.
+  versioned: Readers preserve old data/wire versions; writers emit the documented current version.
+  intentional-fix: Rust deliberately differs to correct a named safety or correctness defect.
+  retired: Runtime behavior is not implemented in Rust; preservation rules may still apply to its data.
+
+disposition_definitions:
+  implement: Implement and test in Rust.
+  preserve: Never delete, rewrite, migrate, or claim ownership of the existing artifact unless a later versioned migration explicitly does so.
+  read_only: May inspect but must not mutate the artifact.
+  omit: Do not expose or execute the runtime behavior.
+
+contracts:
+  - id: ORC-CLI-ROOT-001
+    status: incomplete
+    missing_observation: "cli_oracle_matrix censuses help, usage and flag-parsing exits only; the documented backfill-embeddings exits 2, 3 and 4 are observed by no enrolled gate."
+    classification: exact
+    area: cli
+    summary: Cobra-compatible command discovery, global flags, help, errors, and process exits.
+    requirements:
+      - "Binary name is orchestrator; help/version requests and successful commands exit 0."
+      - "General Cobra validation and RunE failures print an error to stderr and exit 1; backfill-embeddings directly exits 2 for invalid batch-size/since, 3 for missing Gemini credentials under --apply, and 4 when one or more rows fail."
+      - "Persistent flags and defaults: -v/--verbose=false, --dry-run=false, --domain=dev, --model='', --sequential=false, --personas-dir='', --nanika-dir='', --max-turns=0."
+      - "Persistent flags are accepted before or after every descendant command and explicit persona/nanika directory flags override their package defaults."
+    packages: [github.com/joeyhipolito/orchestrator-cli, github.com/joeyhipolito/orchestrator-cli/internal/cmd]
+
+  - id: ORC-CLI-RUN-001
+    status: incomplete
+    missing_observation: "no enrolled gate observes --runtime overriding a policy-applied phase while never overriding an authored RUNTIME field, nor --no-git winning over automatic isolation."
+    classification: exact
+    area: cli
+    summary: Mission execution entrypoint and recursive run flags.
+    requirements:
+      - "Command: run [task or mission-file]; joins positional task words, reads a .md mission file, or resumes with --resume."
+      - "Flags/defaults: --resume='', --no-learnings=false, --no-review=false, --review-runtime='', --runtime='', --gate-mode=block, --template='', --save-template='', --git-isolate=true, --no-git=false, --pr=false, --no-draft=false, --codex-review=false, --no-comment=false, --stall-timeout='', --no-persistent-worker=false."
+      - "--runtime overrides policy-applied phases but never an explicitly authored RUNTIME field; --no-git wins over automatic isolation."
+    packages: [github.com/joeyhipolito/orchestrator-cli/internal/cmd, github.com/joeyhipolito/orchestrator-cli/internal/engine]
+
+  - id: ORC-CLI-OPS-001
+    status: incomplete
+    missing_observation: "cancel_cleanup_e2e observes cancellation only; status, sync --write-back/--last and the cleanup worktree/claims/trash/restore actions are observed against Go by no enrolled gate."
+    classification: exact
+    area: cli
+    summary: Status, cancellation, synchronization, and cleanup commands.
+    requirements:
+      - "Commands: status; cancel <workspace-id> [--force=false]; sync [issue-id] [--write-back=false --last=10]."
+      - "cleanup flags: --worktrees, --claims, --empty-trash (all false), and --restore <workspace-id>; with no action it removes workspaces older than 7 days unless global --dry-run is set."
+      - "cancel validates workspace containment, is idempotent for terminal missions, uses SIGTERM normally and SIGKILL plus manual cleanup with --force."
+    packages: [github.com/joeyhipolito/orchestrator-cli/internal/cmd, github.com/joeyhipolito/orchestrator-cli/internal/core, github.com/joeyhipolito/orchestrator-cli/internal/claims]
+
+  - id: ORC-CLI-DAEMON-001
+    status: incomplete
+    missing_observation: "daemon start/stop/status and their flag defaults are observed by no enrolled gate; B1 owns daemon_loopback_e2e and it is not in the B4/B5 gate list."
+    classification: exact
+    area: cli
+    summary: Daemon management commands.
+    requirements:
+      - "Commands: daemon start, daemon stop, daemon status."
+      - "start flags/defaults: --port=7331, --dashboard='', --api-key='', --cf-team='', --cf-aud='', --allowed-email=''."
+      - "start is foreground-only; stop sends SIGTERM from daemon.pid; missing PID is a successful not-running result."
+    packages: [github.com/joeyhipolito/orchestrator-cli/internal/cmd, github.com/joeyhipolito/orchestrator-cli/internal/daemon]
+
+  - id: ORC-CLI-EVENTS-001
+    status: incomplete
+    missing_observation: "events list/replay/tail, the .jsonl path argument and SIGINT/SIGTERM termination are observed by no enrolled gate; B1 owns events_cli_e2e."
+    classification: exact
+    area: cli
+    summary: Event-log inspection commands.
+    requirements:
+      - "Commands: events list; events replay <mission-id> [-j/--json=false]; events tail <mission-id> [-j/--json=false]."
+      - "A replay argument ending in .jsonl is accepted as a path; otherwise the canonical mission event path is used."
+      - "Formatted output is the default; JSON mode reproduces raw JSON lines; tail terminates cleanly on SIGINT/SIGTERM."
+    packages: [github.com/joeyhipolito/orchestrator-cli/internal/cmd, github.com/joeyhipolito/orchestrator-cli/internal/event, github.com/joeyhipolito/orchestrator-cli/internal/render]
+
+  - id: ORC-CLI-ANALYTICS-001
+    status: incomplete
+    missing_observation: "doctor, compare, audit scorecard and the metrics command tree are observed by no enrolled gate; B3 owns analytics_go_fixture_matrix."
+    classification: exact
+    area: cli
+    summary: Doctor, audit, metric, and comparison command tree.
+    requirements:
+      - "doctor [--json=false]; compare [--domain='' --days=0]; audit scorecard [--format=text --domain='' --last=0]."
+      - "metrics [--last=20 --domain='' --status='' --days=0 --decomp-source='' --worker='']; metrics personas; metrics skills; metrics trends [--days=30]; metrics routing; metrics routing-methods; metrics phases <workspace-id>."
+      - "Malformed JSONL rows are skipped by analytical readers; empty stores produce successful empty/no-data output."
+    packages: [github.com/joeyhipolito/orchestrator-cli/internal/cmd, github.com/joeyhipolito/orchestrator-cli/internal/audit, github.com/joeyhipolito/orchestrator-cli/internal/metrics]
+
+  - id: ORC-CLI-LEARNING-001
+    status: incomplete
+    missing_observation: "stats, prune, archive, backfill-embeddings, memory, routing and ingest are observed by no enrolled gate; B3 owns the learning gates."
+    classification: exact
+    area: cli
+    summary: Learning, memory, ingest, routing-memory, and archive commands.
+    requirements:
+      - "stats; prune [--apply=false --max-age=180 --min-score=0.1 --max-count=500]; archive [--apply=false --domain='' and hidden --db='']."
+      - "backfill-embeddings [--apply=false --since=0 --limit=0 --batch-size=100 --rpm=60 --max-retries=5 --include-archived=false --quiet=false and hidden --db='']."
+      - "memory promote <persona> [--match='' --used=0]; memory sync; memory search <query> [--limit=10]."
+      - "routing seed; routing correct [required --target --assigned --ideal, optional --task-hint]; routing corrections [target-id]; routing ingest-audit [--workspace='']."
+      - "ingest docs [--root='' --json=false]."
+    packages: [github.com/joeyhipolito/orchestrator-cli/internal/cmd, github.com/joeyhipolito/orchestrator-cli/internal/learning, github.com/joeyhipolito/orchestrator-cli/internal/routing, github.com/joeyhipolito/orchestrator-cli/internal/worker]
+
+  - id: ORC-CLI-HOOKS-001
+    status: incomplete
+    missing_observation: "hooks flush-context, snapshot-session, bridge-session, insights and memory subcommands are observed by no enrolled gate; preflight_helpers_go_matrix records the Rust preflight surface as a gap, not a match."
+    classification: exact
+    area: cli
+    summary: Hooks and embedded memory command tree.
+    requirements:
+      - "hooks flush-context requires --query and --output, --limit=10; hooks inject-context [--query='' --limit=10 --max-bytes=0]."
+      - "hooks snapshot-session [--workspace='']; hooks preflight [--max-bytes=6144 --sections=[] --format=text]; hooks bridge-session [--source-dir='']."
+      - "hooks insights search <query...> [--limit=10 --days=0 --domain='']."
+      - "hooks memory add requires --text, --type=insight; hooks memory list [--limit=20 --offset=0 --json=false]; hooks memory search <query...> [--limit=20 --json=false]."
+    packages: [github.com/joeyhipolito/orchestrator-cli/internal/cmd, github.com/joeyhipolito/orchestrator-cli/internal/preflight, github.com/joeyhipolito/orchestrator-cli/internal/learning]
+
+  - id: ORC-CLI-DREAM-001
+    status: incomplete
+    missing_observation: "dream run/status/reset/worker are observed by no enrolled gate; B3 owns transcript mining."
+    classification: exact
+    area: cli
+    summary: Transcript and worker-memory mining commands.
+    requirements:
+      - "dream run [--since='' --session='' --force=false --limit=0 --source=all]; sources are claude, sessions, or all."
+      - "dream status; dream reset; dream worker [--worker='' --force=false]."
+      - "Default run limit is 20 when flag value is 0; hashes make processing incremental unless forced/reset."
+    packages: [github.com/joeyhipolito/orchestrator-cli/internal/cmd, github.com/joeyhipolito/orchestrator-cli/internal/dream]
+
+  - id: ORC-CLI-MISC-001
+    status: incomplete
+    missing_observation: "templates, barok and discipline are observed only as help text by cli_oracle_matrix; no enrolled gate observes their behaviour against Go."
+    classification: exact
+    area: cli
+    summary: Remaining root command families.
+    requirements:
+      - "templates list; barok status; discipline status."
+      - "Parent-only command nodes show help and do not invent implicit actions."
+    packages: [github.com/joeyhipolito/orchestrator-cli/internal/cmd, github.com/joeyhipolito/orchestrator-cli/internal/core, github.com/joeyhipolito/orchestrator-cli/internal/worker]
+
+  - id: ORC-CONFIG-HOME-001
+    status: incomplete
+    missing_observation: "config_cli_matrix observes the five home-precedence rungs only; persona and Nanika directory precedence, and the never-eagerly-moved legacy ~/.via guarantee, are observed by no enrolled gate."
+    classification: exact
+    area: config
+    summary: Orchestrator base-directory precedence.
+    foundation_evidence:
+      - "Partial core-slice evidence only: six authenticated frozen-package observations compare only the exported resolved home path, including regular-file ~/.alluka compatibility. The one-test home_precedence_table and 13-test runtime_home_isolation binaries cover five-rung precedence, verbatim explicit paths, fixture sentinels, and refusal paths without reading or writing a live home. Go selection labels are not claimed. Persona/Nanika directory behavior and live migration remain unimplemented."
+    requirements:
+      - "Highest to lowest: ORCHESTRATOR_CONFIG_DIR; ALLUKA_HOME; VIA_HOME/orchestrator; existing ~/.alluka; ~/.via fallback."
+      - "An explicitly set environment path is used without existence checks or canonicalization."
+      - "Legacy ~/.via data remains readable and is never eagerly moved."
+      - "Persona precedence is --personas-dir, ORCHESTRATOR_PERSONAS_DIR, ~/nanika/personas; Nanika precedence is --nanika-dir for worker state, ORCHESTRATOR_NANIKA_DIR, ORCHESTRATOR_VIA_DIR, ~/nanika."
+    packages: [github.com/joeyhipolito/orchestrator-cli/internal/config]
+
+  - id: ORC-CONFIG-RUNTIME-001
+    status: incomplete
+    missing_observation: "config_cli_matrix observes runtime and model resolution through the dry-run plan only; credential precedence, ALLUKA_AUTH_FILE, the Claude credentials directory, Keychain and provider URL variables are observed by no enrolled gate."
+    classification: exact
+    area: config
+    summary: Runtime/model/auth configuration precedence.
+    foundation_evidence:
+      - "Partial core-slice evidence only: nine authenticated frozen-package observations (runtime 5, model 2, routing 2) cover exported EffectiveRuntime, ModelForTier, and routing-loader values for the forced/environment/configured/policy/default chain, matching-tier model selection, and valid/malformed routing YAML. The two-test routing_configuration binary and focused Rust configuration tables separately cover fixture loading, authored-runtime provenance, and warning behavior. Credentials, auth, provider URLs, execution, review routing, and broader feature variables remain unimplemented."
+    requirements:
+      - "Runtime precedence: authored phase RUNTIME; --runtime; NANIKA_DEFAULT_RUNTIME; config.yaml model_tiers.<tier>.runtime; policy runtime; empty runtime means claude."
+      - "Model uses matching config.yaml tier model then built-in resolver; the loader reports malformed config.yaml, while the run command warns only in verbose mode and falls back to an empty routing map; a missing file also means an empty map."
+      - "Credential precedence: <PROVIDER>_API_KEY; ALLUKA_AUTH_FILE or ~/.alluka/auth.json; CLAUDE_CREDENTIALS_DIR/.credentials.json; macOS Keychain unless disabled."
+      - "Provider URL and feature environment variables retain the names and meanings listed in the normative document."
+    packages: [github.com/joeyhipolito/orchestrator-cli/internal/router, github.com/joeyhipolito/orchestrator-cli/internal/auth, github.com/joeyhipolito/orchestrator-cli/internal/usage]
+
+  - id: ORC-CONFIG-STALL-001
+    status: incomplete
+    missing_observation: "no enrolled gate observes the per-phase TIMEOUT / --stall-timeout / ORCHESTRATOR_STALL_TIMEOUT precedence or the invalid-duration configuration error through a shipped binary."
+    classification: intentional-fix
+    area: config
+    summary: The advertised ORCHESTRATOR_STALL_TIMEOUT fallback is made real.
+    foundation_evidence:
+      - "Partial Rust-only lifecycle evidence: the four-test configuration_resolution binary and three normative-Rust corpus cases cover phase/flag/environment/default precedence and reject malformed, zero, and negative explicit values. The three-test injected-clock watchdog table covers reset, exact boundary, invalid time, cancellation/exit/hard-timeout precedence, and never returns success from liveness; native supervision separately cancels a stalled live fixture. No frozen-Go differential label, production worker adapter, provider execution, or runtime retry/escalation is claimed."
+    requirements:
+      - "Precedence is per-phase TIMEOUT, --stall-timeout, ORCHESTRATOR_STALL_TIMEOUT, then the worker default."
+      - "A present invalid or non-positive environment duration is an observable configuration error, not a silent fallback."
+      - "This corrects the Go baseline, which advertises and documents the variable but never reads it."
+    packages: [github.com/joeyhipolito/orchestrator-cli/internal/cmd, github.com/joeyhipolito/orchestrator-cli/internal/engine, github.com/joeyhipolito/orchestrator-cli/internal/worker]
+
+  - id: ORC-DATA-CHECKPOINT-001
+    status: incomplete
+    missing_observation: "go_bidirectional_differential and rust_write_go_resume observe checkpoint envelope round-tripping; plan.json field preservation, template writer subsetting and orchestrator.signal.json kind defaulting are observed by no enrolled gate."
+    classification: versioned
+    area: persistence
+    summary: Checkpoint, plan, template, and completion-signal JSON.
+    foundation_evidence:
+      - "Partial core-slice evidence only: five authenticated frozen-package observations (checkpoint 4, checkpoint_writer 1) cover exported checkpoint values for legacy direct, envelope-v1/payload-v2, missing-field, malformed, and current-Rust-writer inputs. Source-shape and unknown-field preservation remain Rust-only compatibility_codecs/bounded_projection evidence with capability-bounded fixture replacement. Plan/template/signal codecs, live ownership, and Go resume remain unimplemented."
+    current_writer_versions: {checkpoint_payload: 2, checkpoint_envelope: 1}
+    requirements:
+      - "checkpoint.json writer emits {version:1,payload:{version:2,...}} via same-directory 0600 temp plus atomic rename."
+      - "Reader accepts legacy direct checkpoint JSON and the envelope; workspace_id presence selects a valid shape; missing new fields keep zero/default semantics."
+      - "plan.json preserves documented phase status/runtime/role/timing/retry/cost/review/worker/Barok fields; template writers intentionally retain only the documented frozen phase subset and omit execution/newer structural fields."
+      - "Missing orchestrator.signal.json means kind=ok; empty kind also defaults to ok; known kinds and fields are preserved."
+    packages: [github.com/joeyhipolito/orchestrator-cli/internal/core]
+
+  - id: ORC-DATA-EVENTS-001
+    status: incomplete
+    missing_observation: "the 45-type vocabulary and envelope shape are observed, but multi-sink single-sequence assignment, dropped-write accounting and the 1 MiB Go Scanner ceiling are observed by no enrolled gate."
+    classification: versioned
+    area: events
+    summary: Durable JSONL event envelope, ordering, and event type namespace.
+    foundation_evidence:
+      - "Partial core-slice evidence only: three authenticated frozen-package observations (events 2, event_writer 1) compare exported LastSequence behavior for corrupt-line skipping, greatest-sequence continuation, and current-Rust-writer readability. Full decoding, the 45-line stable-types fixture, unknown type/data preservation, oversized-line handling, and file order remain Rust-only compatibility_codecs evidence. Live append ownership, IDs, file modes, dropped-write accounting, bus, UDS, SSE, and daemon behavior remain unimplemented."
+    current_writer_versions: {event_envelope: 1}
+    requirements:
+      - "Envelope fields: id, type, timestamp, sequence, mission_id, optional phase_id, worker_id, data; IDs use evt_ plus 16 lowercase hex characters with timestamp fallback."
+      - "The 45 event type strings listed in the normative document are stable; unknown types and unknown data fields must round-trip through preservation/replay paths."
+      - "zettel.written, zettel.skipped, and zettel.write_failed remain historical decode/replay vocabulary with their documented fields, but the retired legacy integration emits no new Zettel events."
+      - "Multi-sink sequence is assigned once, monotonically; append file is 0600 under a 0700 directory; corrupt replay lines are skipped; Go's 1 MiB Scanner token ceiling permits at most 1 MiB minus one byte of JSON content when LF-delimited, and a complete valid final EOF record remains readable."
+      - "File delivery is best-effort with observable dropped-write counts; resume continues at the highest valid prior sequence."
+    packages: [github.com/joeyhipolito/orchestrator-cli/internal/event]
+
+  - id: ORC-DATA-WORKSPACE-001
+    status: incomplete
+    missing_observation: "ordinary_authored_run_e2e observes the base workspace tree only; the sidecar linkage/degraded semantics, worker .claude/hooks layout and the documented 0755 Git compatibility directories are observed by no enrolled gate."
+    classification: exact
+    area: filesystem
+    summary: Workspace layout and sidecar semantics.
+    foundation_evidence:
+      - "Partial Rust-only lifecycle evidence: the workspace/settings integration binary uses fresh capability roots to cover the exact private base tree, lazy worker/.claude/hooks, artifact, learning, and scratch directories, optional/degraded sidecars, 0700/0600 modes, atomic fixture event/checkpoint recovery, unknown-file preservation, traversal/alias/symlink refusal, and byte-exact settings recovery. This is not a live-home writer and does not implement production worker content, hooks, artifacts, learning capture, Git directories, or every sidecar producer."
+    requirements:
+      - "Base workspaces/<YYYYMMDD-randomhex>/ contains mission.md, checkpoint.json, plan.json, workers/, artifacts/merged/, learnings/, and optional scratch/<phase>/notes.md."
+      - "Sidecars linear_issue_id, mission_path, target_id, task_type, pr_url, pid, and cancel are optional 0600 plain text; absent linkage means old/ad-hoc, while whitespace/broken linkage referents mean degraded."
+      - "Worker layout preserves CLAUDE.md, output.md, orchestrator.signal.json, workspace-context.md, and .claude/hooks; artifacts and learnings retain phase/worker naming."
+      - "Workspace data files are 0600 and directories 0700; generated hook scripts are executable 0700; Git trash/todo compatibility directories may use 0755 as documented."
+    packages: [github.com/joeyhipolito/orchestrator-cli/internal/core, github.com/joeyhipolito/orchestrator-cli/internal/worker, github.com/joeyhipolito/orchestrator-cli/internal/scratch]
+
+  - id: ORC-DATA-SIDECARS-001
+    status: incomplete
+    missing_observation: "persistent worker identity/memory/stats, Barok density JSON, vault, dropped/zettel and preflight cache paths are observed by no enrolled gate."
+    classification: exact
+    area: filesystem
+    summary: Non-workspace files and backward-readable stores.
+    requirements:
+      - "Preserve events/<mission>.jsonl, metrics.jsonl, audits.jsonl, config.yaml, templates/*.json, todos/<session>.json, auth.json plus .lock, daemon.pid, and daemon/events sockets."
+      - "Preserve persistent worker identity.md, memory.md, stats.json; global/persona/Claude memory paths; Barok density JSON; vault, dropped/zettel, preflight cache/audit, and worktree trash metadata paths."
+      - "Malformed optional files degrade/skip as in Go and are never destructively normalized merely by reading."
+    packages: [github.com/joeyhipolito/orchestrator-cli/internal/audit, github.com/joeyhipolito/orchestrator-cli/internal/tools, github.com/joeyhipolito/orchestrator-cli/internal/worker, github.com/joeyhipolito/orchestrator-cli/internal/preflight]
+
+  - id: ORC-DB-LEARNINGS-001
+    status: incomplete
+    missing_observation: "the learnings, routing, dream and file-claims schemas are observed by no enrolled gate; B3 owns them."
+    classification: versioned
+    area: sqlite
+    summary: Shared learnings, routing, dream, and file-claims database.
+    current_writer_versions: {schema_version: 1}
+    requirements:
+      - "Path is <config>/learnings.db; WAL is required; claims additionally request busy_timeout=5000."
+      - "Preserve schema_version, learnings, learnings_fts and triggers, target_profiles, routing_patterns, handoff_patterns, routing_corrections, decomposition_examples, decomposition_findings, phase_shape_patterns, role_assignments, handoff_records, routing_decisions, processed_transcripts, processed_chunks, and file_claims."
+      - "Schema changes are additive/idempotent; a schema_version greater than supported is a hard error; FTS and embedding BLOB representation remain readable."
+      - "Dedup, archive, compliance, routing outcomes, transcript hashes, and advisory claim release semantics are observable contracts."
+    packages: [github.com/joeyhipolito/orchestrator-cli/internal/learning, github.com/joeyhipolito/orchestrator-cli/internal/routing, github.com/joeyhipolito/orchestrator-cli/internal/dream, github.com/joeyhipolito/orchestrator-cli/internal/claims]
+
+  - id: ORC-DB-METRICS-001
+    status: incomplete
+    missing_observation: "kill9_restart_matrix cell 12 observes the metrics commit boundary only; the metrics schema and its JSONL compatibility stream are observed by no enrolled gate."
+    classification: versioned
+    area: sqlite
+    summary: Mission metrics database and JSONL compatibility stream.
+    current_writer_versions: {schema_generation: additive}
+    requirements:
+      - "Path is <config>/metrics.db; set journal_mode=WAL, busy_timeout=5000, foreign_keys=ON before schema use."
+      - "Preserve missions, phases, skill_invocations, quota_snapshots, usage_snapshots and all documented columns/indexes/FKs."
+      - "Migrations are transactional and additive; duplicate-column errors alone are ignored; mission upsert preserves a known decomp_source over incoming unknown."
+      - "metrics.jsonl remains append-readable with legacy persona_selection_method/selection_method tolerance."
+    packages: [github.com/joeyhipolito/orchestrator-cli/internal/metrics, github.com/joeyhipolito/orchestrator-cli/internal/engine]
+
+  - id: ORC-DB-CHAT-001
+    status: incomplete
+    missing_observation: "daemon chat persistence is observed by no enrolled gate; B1 owns the daemon."
+    classification: versioned
+    area: sqlite
+    summary: Daemon chat persistence.
+    current_writer_versions: {schema_version: 1}
+    requirements:
+      - "Path is <config>/chat.db; one pooled connection; journal_mode=WAL, busy_timeout=5000, foreign_keys=ON."
+      - "Preserve conversations(id,claude_session_id,created_at,updated_at) and messages(id,conversation_id,role,content,created_at), indexes, and ON DELETE CASCADE."
+      - "Message append and conversation timestamp update are one transaction; Claude session IDs survive daemon restart."
+    packages: [github.com/joeyhipolito/orchestrator-cli/internal/daemon]
+
+  - id: ORC-DB-EXTERNAL-001
+    status: incomplete
+    missing_observation: "read-only external stores queried by preflight and the daemon are observed by no enrolled gate."
+    classification: exact
+    area: sqlite
+    summary: Read-only external state queried by preflight and daemon.
+    requirements:
+      - "Scheduler DB precedence: SCHEDULER_DB; ALLUKA_HOME/scheduler/scheduler.db; ~/.scheduler/scheduler.db, opened mode=ro."
+      - "Tracker DB precedence: TRACKER_DB; ALLUKA_HOME/tracker.db; ~/.alluka/tracker.db, opened mode=ro."
+      - "Session index <ALLUKA_HOME or ~/.alluka>/state.db is opened mode=ro with busy_timeout(1000); nen/findings.db is mode=ro with busy_timeout=5000."
+      - "Rust must never migrate or write these external databases."
+    packages: [github.com/joeyhipolito/orchestrator-cli/internal/preflight, github.com/joeyhipolito/orchestrator-cli/internal/dream, github.com/joeyhipolito/orchestrator-cli/internal/daemon]
+
+  - id: ORC-DAEMON-UDS-001
+    status: incomplete
+    missing_observation: "the ingest and broadcast Unix sockets are observed by no enrolled gate; B1 owns daemon_loopback_e2e."
+    classification: exact
+    area: daemon
+    summary: Event ingest and broadcast Unix sockets.
+    requirements:
+      - "<config>/daemon.sock accepts newline-delimited Event JSON and is chmod 0600; stale socket is removed before bind and on shutdown."
+      - "<config>/events.sock broadcasts newline-delimited Event JSON to each connected client; slow/broken clients do not terminate the daemon."
+      - "UDS emitter is lazy, 100ms dial timeout, 3 retries only when socket exists with 50ms backoff, 2s write deadline, reconnect-next-emit, and best-effort drops."
+    packages: [github.com/joeyhipolito/orchestrator-cli/internal/daemon, github.com/joeyhipolito/orchestrator-cli/internal/event]
+
+  - id: ORC-DAEMON-HTTP-001
+    status: incomplete
+    missing_observation: "the HTTP REST and static surface is observed by no enrolled gate; B1 owns it."
+    classification: exact
+    area: daemon
+    summary: HTTP REST and static surface.
+    requirements:
+      - "Bind only 127.0.0.1:<port>; all /api routes except GET /api/health pass through configured auth."
+      - "Implement every method/path in the normative HTTP endpoint table, including mission, persona, metric, chat, plugin, cleanup, channel, vault, and scribe routes. Retired plugin status/items/action and vault-assignment routes remain addressable but return deterministic 503 responses before body parsing, binary resolution, process launch, or mutation."
+      - "Built dashboard serves at GET / only when index.html exists; API remains available without dashboard assets."
+      - "JSON errors use their existing status classes (400 malformed/invalid, 401 auth, 404 absent, 409 conflict, 500 internal, 503 unavailable) and unknown methods rely on Go-1.22-style method routing."
+    packages: [github.com/joeyhipolito/orchestrator-cli/internal/daemon]
+
+  - id: ORC-DAEMON-SSE-001
+    status: incomplete
+    missing_observation: "the mission/event and chat SSE protocols are observed by no enrolled gate; B1 owns them."
+    classification: versioned
+    area: daemon
+    summary: Mission/event and chat SSE protocols.
+    requirements:
+      - "Event SSE uses Content-Type text/event-stream, id:<sequence>, event:<Event.type>, data:<sanitized Event JSON>, Last-Event-ID replay, 15s keepalive, and stream:done terminal event where applicable."
+      - "Mission worker-output streams use event: worker.output and preserve sequence IDs; global/live streams filter by mission as documented."
+      - "Chat SSE event names are token, done, error, tool.start, tool.result, ui.render, confirm.request with the exact JSON data shapes in the normative document."
+      - "Unknown future event fields/types do not crash streams."
+    packages: [github.com/joeyhipolito/orchestrator-cli/internal/daemon, github.com/joeyhipolito/orchestrator-cli/internal/event]
+
+  - id: ORC-PROCESS-001
+    status: incomplete
+    missing_observation: "production_composition_e2e and the campaign observe process ownership and reaping; daemon process ownership and the writer-lock interaction are observed by no enrolled gate."
+    classification: exact
+    area: lifecycle
+    summary: Mission, worker, and daemon process ownership.
+    foundation_evidence:
+      - "Partial Rust-only lifecycle evidence extends the prior reducer/projection slice with fixture-owned native process groups, bounded output and environment, normal/nonzero/signal/spawn-error closure, descendant trees, closed-pipe liveness, stall and hard timeout, TERM-to-KILL escalation, cancellation/drop/unwind idempotence, and 0600 .orchestrator-backup restoration across exit and recovery paths. The release resource artifact is a 100-cycle synthetic supervision campaign with active-tree, cleanup, warmed, and 30-second idle observations; it is explicitly not the real 100-mission campaign. Mission/daemon ownership, production workers, retry/escalation, locks/claims, durable recovery, providers, and live persistence remain unimplemented."
+      - "Intentional Rust divergence, recorded here and not yet observed by an enrolled gate: Go's writerlock.Acquire provisions a missing writer home through provisionHomeNoFollow, while Rust's LegacyQuiescenceProof::inspect requires an existing, explicitly authorized home and fails closed on a missing one, taking no ambient filesystem authority. The mixed writer-authority proof supplies the shared home as fixture setup so the lock semantics it observes do not depend on which runtime moves first. Owner decision for M5; rationale in B5-DESIGN.md section 9.D.1."
+    requirements:
+      - "Mission writes its PID, handles SIGINT/SIGTERM by cancelling new work, waits for tracked phases, marks remaining work coherently, saves checkpoint, releases claims/locks, and emits a terminal event."
+      - "Temporary target .claude/settings.local.json deny overlays are 0600, back up an existing file as .orchestrator-backup, and restore it during every normal/error/cancel teardown path."
+      - "Daemon owns one PID lock; stale PID/socket handling, status signal-0 probing, foreground operation, and shutdown cleanup remain compatible."
+      - "Daemon-launched mission processes use a separate process group; shutdown sends group SIGTERM, waits up to 10 seconds, then group SIGKILL."
+      - "Stall watchdog, runtime retry/escalation, phase terminal-state monotonicity, and cancellation idempotence remain observable."
+    packages: [github.com/joeyhipolito/orchestrator-cli/internal/engine, github.com/joeyhipolito/orchestrator-cli/internal/daemon, github.com/joeyhipolito/orchestrator-cli/internal/worker, github.com/joeyhipolito/orchestrator-cli/internal/writerlock]
+
+  - id: ORC-PROCESS-BG-001
+    status: incomplete
+    missing_observation: "no enrolled gate observes a worker being refused success while an owned background command is still running."
+    classification: intentional-fix
+    area: lifecycle
+    issue: TRK-1111
+    summary: A worker may not report success while an owned background command is unfinished.
+    foundation_evidence:
+      - "Partial intentional-fix evidence only: native fixture tests reject a zero-exited leader whose descendant remains live, cancel its still-owned group, and require group absence/direct-child reap; lifecycle-effect tests refuse phase or mission terminal projection while the registry reports unresolved ownership. The synthetic 100-cycle campaign records no survivor group. Durable handoff, production tool/Bash discovery, crash reconciliation, push/PR execution, and provider workers remain unimplemented."
+    requirements:
+      - "Rust tracks every spawned child/process group until exit, explicit durable handoff, or cancellation."
+      - "Phase and mission success gates fail when an owned child remains unresolved; push/PR and other success criteria cannot be lost at session teardown."
+    packages: [github.com/joeyhipolito/orchestrator-cli/internal/engine, github.com/joeyhipolito/orchestrator-cli/internal/tools, github.com/joeyhipolito/orchestrator-cli/internal/worker]
+
+  - id: ORC-GIT-001
+    status: incomplete
+    missing_observation: "refreshed_base_e2e and git_run_e2e observe isolation, claims, commits and cleanup, but both forbid gh, network and a real PR provider, so the gh-backed PR behaviour (draft default, body fields, reviewers, labels, Codex review) is observed by no enrolled gate."
+    classification: exact
+    area: git
+    summary: Repository isolation, commits, claims, cleanup, and PR behavior.
+    requirements:
+      - "Find repository by walking to .git; branch is via/<mission-id>/<40-char-slug>, with lowercase/non-alnum collapse and task fallback."
+      - "Create branch then linked worktree under <config>/worktrees; .nanika-lock is 0600 JSON with pid, mission_id, RFC3339 started_at, phase."
+      - "Per-phase commit stages -A; nothing-to-commit is success; changed files include committed, staged, unstaged, and untracked paths and are sorted for claims."
+      - "Soft cleanup moves unlocked worktrees to trash, writes .nanika-trash-meta.json, prunes, and supports repair/restore; locked live worktrees are refused."
+      - "PR uses gh, pushes the feature branch, defaults to draft, preserves body fields, optional reviewers/labels and Codex review behavior."
+    packages: [github.com/joeyhipolito/orchestrator-cli/internal/git, github.com/joeyhipolito/orchestrator-cli/internal/claims, github.com/joeyhipolito/orchestrator-cli/internal/cmd]
+
+  - id: ORC-GIT-BASE-001
+    status: complete
+    evidence: refreshed_base_e2e
+    evidence_note: >-
+      B4 gate refreshed_base_e2e, cases
+      fetch_before_branch_selects_advanced_remote_over_stale_local_main,
+      two_bare_remotes_prove_the_configured_remote_is_fetched,
+      base_sha_is_recorded_before_any_branch_exists,
+      refresh_refuses_when_the_remote_is_unreachable and
+      refresh_refuses_a_non_file_remote_under_local_only, over two local bare remotes: the
+      advanced remote base is fetched and selected before any branch exists, the exact base
+      SHA is persisted first, the stale local main is reported stale and never selected, and
+      an unreachable remote is refused rather than silently falling back.
+    classification: intentional-fix
+    area: git
+    issue: TRK-1116
+    summary: New worktrees branch from refreshed remote truth, not a stale local main.
+    requirements:
+      - "Before branch creation, fetch the selected remote and resolve the configured remote base (normally origin/main)."
+      - "Persist the exact base ref/SHA and refuse silent fallback to a stale local branch; offline fallback requires explicit operator choice and an event/warning."
+    packages: [github.com/joeyhipolito/orchestrator-cli/internal/git, github.com/joeyhipolito/orchestrator-cli/internal/cmd]
+
+  - id: ORC-LEARNING-001
+    status: incomplete
+    missing_observation: "capture, retrieval, scoring and dream behaviour are observed by no enrolled gate; B3 owns them."
+    classification: exact
+    area: learning
+    summary: Capture, retrieval, scoring, memory, and dream behavior.
+    requirements:
+      - "Markers are LEARNING, TIL, INSIGHT, FINDING, PATTERN, APPROACH, GOTCHA, FIX, SOURCE, DECISION, TRADEOFF; ERROR is excluded."
+      - "Exact same-domain content and embedding similarity deduplicate; seen/use/injection/compliance counters, archive/promote state, quality/recency ranking, and citation IDs remain compatible."
+      - "Configured embedders fail closed on missing embeddings; nil embedder retains legacy NULL-embedding ingest; Gemini embedding credentials retain current resolution."
+      - "Worker/persona/global memories preserve quarantine/archive, merge, byte budgets, and incremental transcript/chunk hash behavior."
+    packages: [github.com/joeyhipolito/orchestrator-cli/internal/learning, github.com/joeyhipolito/orchestrator-cli/internal/worker, github.com/joeyhipolito/orchestrator-cli/internal/dream]
+
+  - id: ORC-METRICS-CRASH-001
+    status: incomplete
+    missing_observation: "kill9_restart_matrix cell 12 observes the metrics commit/acknowledgement boundary; the skill-less-phase durability claim of TRK-493 is observed by no enrolled gate."
+    classification: intentional-fix
+    area: metrics
+    issue: TRK-493
+    summary: Crash/cancel paths durably record every phase including skill-less phases.
+    requirements:
+      - "Phase metrics are committed at terminal transition, independent of skill-invocation rows and normal mission return."
+      - "Resume/upsert is idempotent and preserves the latest coherent mission aggregate after crash or cancellation."
+    packages: [github.com/joeyhipolito/orchestrator-cli/internal/metrics, github.com/joeyhipolito/orchestrator-cli/internal/engine]
+
+  - id: ORC-VERIFY-001
+    status: incomplete
+    missing_observation: "no enrolled gate observes a skipped test being refused as successful verification in the shipped verification path (TRK-535)."
+    classification: intentional-fix
+    area: quality_gate
+    issue: TRK-535
+    summary: Skipped tests are not successful verification.
+    foundation_evidence:
+      - "Partial intentional-fix evidence only: the four-test structured decision suite exhausts small count tuples and covers pass, fail, required skip, no-tests, timeout/stall, cancellation, signal/harness error, malformed totals, misleading output, and block/warn policy. Native fixture summaries reproduce pass/fail/skip/no-tests/misleading/contradictory outcomes, and lifecycle completion accepts only gate_passed=true. No production test-command adapter or live phase execution is implemented."
+    requirements:
+      - "Rust test-command classification distinguishes pass, fail, skip, no-tests, timeout, and infrastructure error."
+      - "A skipped required check fails block mode and warns with a non-PASS result in warn mode; it can never set gate_passed=true."
+    packages: [github.com/joeyhipolito/orchestrator-cli/internal/engine]
+
+  - id: ORC-AUDIT-DREAM-001
+    status: incomplete
+    missing_observation: "audit reports, scorecards, dream extraction and routing feedback are observed by no enrolled gate; B3 owns them."
+    classification: exact
+    area: audit
+    summary: Audit reports, scorecards, dream extraction, and routing feedback.
+    requirements:
+      - "audits.jsonl is append-ordered, 0600, tolerates malformed lines, and preserves the full AuditReport/scorecard/evaluation/convergence/change JSON schema."
+      - "Audit evaluation/apply runtimes remain delegated to gyo/ko; orchestrator retains scorecard trend analysis only."
+      - "Dream parses supported Claude/session JSONL, chunks deterministically, extracts via learning rules, and records hashes only after completed processing."
+      - "Audit findings feed routing correction/decomposition tables idempotently."
+    packages: [github.com/joeyhipolito/orchestrator-cli/internal/audit, github.com/joeyhipolito/orchestrator-cli/internal/dream, github.com/joeyhipolito/orchestrator-cli/internal/routing]
+
+  - id: ORC-PREFLIGHT-001
+    status: incomplete
+    missing_observation: "preflight_helpers_go_matrix records the Rust preflight surface as a deliberate gap row rather than a match, so the registry, ordering, rendering and audit behaviour remains unobserved."
+    classification: exact
+    area: preflight
+    summary: Operational brief registry, ordering, sources, rendering, and audit.
+    requirements:
+      - "Active section order/priorities: mission=5, scheduler=10, nen=15, slack_health=18, tracker=20, learnings=30; duplicate name replaces prior registration. The legacy obsidian=25 section is retired under ORC-LEGACY-INTEGRATION-RUNTIME-001."
+      - "Fetch errors degrade by omission; filtering uses stable section names; empty blocks are omitted; markdown starts with ## Operational Pre-flight."
+      - "Budget drops lowest-priority sections first and retains/truncates the highest-priority section; default hook budget is 6144 bytes."
+      - "Slack 2s fsck check, tracker/scheduler read-only queries, Nen stats, mission event summary, and daily preflight audit JSONL remain compatible. Rust does not resolve OBSIDIAN_VAULT_PATH, register/fetch Obsidian context, or read/write its preflight cache."
+    packages: [github.com/joeyhipolito/orchestrator-cli/internal/preflight, github.com/joeyhipolito/orchestrator-cli/cmd/hooks]
+
+  - id: ORC-DECOMPOSE-001
+    status: incomplete
+    missing_observation: "decomposition, persona selection, role, routing and review contract behaviour is observed by no enrolled gate; B2 owns them."
+    classification: exact
+    area: planning
+    summary: Decomposition, persona, role, routing, review, and contract behavior.
+    foundation_evidence:
+      - "Partial core-slice evidence only: four authenticated frozen-package mission observations call persona.SetDir, persona.Load, and decompose.PreDecomposed against fixture personas and cover structured positive fields, exported defaults/policy selection, authored phase order/dependencies, and malformed no-phase rejection. The six-test mission_parsing binary separately covers duplicate rejection, execution-mode derivation, and the 12-phase cap as Rust evidence. Broader LLM decomposition, skill discovery, role classification, handoffs, review, and output contracts remain unimplemented."
+    requirements:
+      - "Predecomposed PHASE syntax, LLM decomposition, keyword fallback, duplicate phase rejection, DAG dependencies, execution mode, target dir, priority, timeout, skill and runtime fields are preserved."
+      - "Decomposer skill precedence: NANIKA_DECOMPOSER_SKILL, VIA_DECOMPOSER_SKILL, ~/nanika/.claude/skills/decomposer/SKILL.md, legacy skill path, then hardcoded fallback."
+      - "Role classification priority is persona, phase name, objective, then implementer; handoff JSON/markdown and reviewer structured findings remain compatible."
+      - "Persona output contracts are advisory events; quality gates/review-loop blockers follow block/warn and retry limits."
+    packages: [github.com/joeyhipolito/orchestrator-cli/internal/decompose, github.com/joeyhipolito/orchestrator-cli/internal/persona, github.com/joeyhipolito/orchestrator-cli/internal/router, github.com/joeyhipolito/orchestrator-cli/internal/routing, github.com/joeyhipolito/orchestrator-cli/internal/core]
+
+  - id: ORC-RUNTIME-001
+    status: incomplete
+    missing_observation: "provider executors, streaming, the tool loop, quota and retry behaviour are observed by no enrolled gate; every enrolled gate forbids contacting a live provider."
+    classification: exact
+    area: runtime
+    summary: Runtime identifiers, provider executors, streaming, tool loop, quota, and retry behavior.
+    requirements:
+      - "Runtime strings: claude, codex, both, anthropic-api, openai-api, openrouter, gemini-api; empty means claude."
+      - "gemini-api is a registered fail-explicit placeholder; an unknown runtime retains the Go fallback to Claude, while both uses its dedicated dual-executor path."
+      - "Reviewer policy defaults to Claude, but explicit codex/both review runtime selection is honored and both executes the second-reviewer leg."
+      - "Provider request/stream parsing, model aliases, tool-call/result ordering, token/cost accounting, session resume capability checks, maximum turns, and output.md persistence are stable."
+      - "Native tools register in deterministic tier order: built-ins, then collision-free capability-bound Nanika tools. Process-backed daemon plugin tools are absent under ORC-LEGACY-INTEGRATION-RUNTIME-001."
+      - "Quota gate, escalation ladder, stall timeout, review loop, artifact merge, overlap detection, scratch handoff, and Barok/Ponytail/discipline injection retain current gates and telemetry; the legacy Zettel completion hook is retired under ORC-LEGACY-INTEGRATION-RUNTIME-001."
+    packages: [github.com/joeyhipolito/orchestrator-cli/internal/engine, github.com/joeyhipolito/orchestrator-cli/internal/engine/apiloop, github.com/joeyhipolito/orchestrator-cli/internal/tools, github.com/joeyhipolito/orchestrator-cli/internal/router]
+
+  - id: ORC-PERMISSIONS-001
+    status: incomplete
+    missing_observation: "explicit filesystem, process, network and native-extension authority is observed by no enrolled gate as a Go-comparable surface; B3 owns authority_adversarial_e2e."
+    classification: intentional-fix
+    area: permissions
+    summary: Rust enforces explicit filesystem, process, network, and native-extension authority.
+    foundation_evidence:
+      - "Partial intentional-fix evidence only: fresh canonical fixture capabilities deny live homes, the checkout, traversal, root/target/workspace/.claude symlink swaps, identity substitution, unsafe modes, and unpinned executables; fixture process launch is native non-shell argv with env_clear, an exact allowlist, dedicated groups, bounded descriptors/output, and no ambient poison value. Closed role policy and durable settings transactions preserve pre-existing bytes. General file/tool/network/native-extension authority, credentials, production targets, and live-home enrollment remain unimplemented."
+    requirements:
+      - "Every tool invocation carries a mission root and declared authority; relative paths resolve under the phase target and canonical paths cannot escape allowed roots."
+      - "file_read is read-only; file_write/file_edit require write authority and remain atomic; bash and any implemented native extension action require process authority, timeout, owned process groups, and non-shell argv where a shell is unnecessary."
+      - "Plugin manifest discovery/help is bounded, read-only, and treated as untrusted data. Legacy process-backed plugin query/action execution is omitted and cannot inherit or inspect ambient secrets."
+      - "Permissions may be stricter than Go's unrestricted native tools, but denials must be structured, observable, and must not mutate state."
+      - "Planner/reviewer policy denies Edit; all roles deny orchestrator-owned Git branch/PR/destructive commands, without losing or leaving behind a user's pre-existing settings.local.json."
+    packages: [github.com/joeyhipolito/orchestrator-cli/internal/tools, github.com/joeyhipolito/orchestrator-cli/internal/worker]
+
+  - id: ORC-SECURITY-001
+    status: incomplete
+    missing_observation: "path, auth, input, redaction and file-mode invariants are observed by no enrolled gate as a Go-comparable surface."
+    classification: exact
+    area: security
+    summary: Existing path, auth, input, redaction, and file-mode invariants.
+    foundation_evidence:
+      - "Capability-root containment, parent-alias rejection, symlink-escape rejection, and post-authorization symlink-swap resistance are executable-tested only for foundation fixture paths; the full security contract remains unimplemented."
+      - "Intentional Rust divergence, recorded here and not yet observed by an enrolled gate: Go's writerlock.Acquire provisions a missing writer home through provisionHomeNoFollow, while Rust's LegacyQuiescenceProof::inspect requires an existing, explicitly authorized home and fails closed on a missing one, taking no ambient filesystem authority. The mixed writer-authority proof supplies the shared home as fixture setup so the lock semantics it observes do not depend on which runtime moves first. Owner decision for M5; rationale in B5-DESIGN.md section 9.D.1."
+    requirements:
+      - "Resume/cancel workspace paths resolve within <config>/workspaces and reject traversal/symlink escape; template names cannot contain separators."
+      - "Untrusted task/objective text strips documented invisible Unicode, applies NFKC, detects mixed-script homoglyphs and prompt-injection patterns, and emits security events."
+      - "Network event copies remove sensitive-key data and dir/error; redact known token/key/PEM/Authorization patterns and high-entropy strings; task skips entropy only, never regex redaction."
+      - "Local API auth uses constant-time bearer comparison; remote mode requires bearer plus RS256 CF JWT with expiry, audience, exact email, and cached JWKS."
+      - "CORS permits localhost/127.0.0.1 origins only; OPTIONS is unauthenticated; health alone is unauthenticated; vault artifacts are allowlisted and traversal-safe."
+      - "Secrets/auth/checkpoints/events/audits/locks are user-only and auth refresh is temp+fsync+flock+atomic rename."
+    packages: [github.com/joeyhipolito/orchestrator-cli/internal/sanitize, github.com/joeyhipolito/orchestrator-cli/internal/event, github.com/joeyhipolito/orchestrator-cli/internal/daemon, github.com/joeyhipolito/orchestrator-cli/internal/auth, github.com/joeyhipolito/orchestrator-cli/internal/core, github.com/joeyhipolito/orchestrator-cli/internal/writerlock]
+
+  - id: ORC-NOTIFY-RUNTIME-001
+    status: incomplete
+    missing_observation: "no enrolled gate observes the retired Telegram/Discord notification runtime being absent from the shipped binary; B1 owns retired_surface_preservation."
+    classification: retired
+    disposition: omit
+    area: notifications
+    summary: Telegram/Discord plugin CLI notification execution is retired in Rust.
+    foundation_evidence:
+      - "Foundation disposition only: the retired runtime is absent from the locked native dependency graph and foundation commands do not launch JavaScript runtimes; general event, SSE, and plugin behavior is unimplemented."
+    requirements:
+      - "Do not spawn telegram or discord reply runtimes, subscribe notification consumers, format notification messages, or report them active."
+      - "Retirement must not disable the general event bus, SSE, scribe, read-only plugin manifest discovery, or read-only vault GET surfaces; separate ignored-integration contracts govern process-backed plugin execution, vault mutation, and Zettel completion."
+    packages: [github.com/joeyhipolito/orchestrator-cli/internal/notify, github.com/joeyhipolito/orchestrator-cli/internal/notify/cli]
+
+  - id: ORC-NOTIFY-DATA-001
+    status: incomplete
+    missing_observation: "no enrolled gate observes the notification configuration and plugin-owned auth/data preservation boundary being left untouched."
+    classification: retired
+    disposition: preserve
+    area: notifications
+    summary: Retired notification configuration and plugin-owned auth/data are preservation boundaries.
+    requirements:
+      - "Preserve <config>/channels/telegram.json and discord.json with channel_ids and events fields, plus every other channels/*.json file."
+      - "Preserve plugin-owned *-auth.json, caches, delivery state, and unknown fields/files; Rust must not delete, rewrite, validate-to-destruction, or migrate them."
+      - "Read-only channel status may report retired/preserved, never configured-active."
+    packages: [github.com/joeyhipolito/orchestrator-cli/internal/notify, github.com/joeyhipolito/orchestrator-cli/internal/daemon]
+
+  - id: ORC-LEGACY-INTEGRATION-RUNTIME-001
+    status: incomplete
+    missing_observation: "no enrolled gate observes the retired process-backed plugin execution, vault mutation and Obsidian integrations being absent from the shipped binary."
+    classification: retired
+    disposition: omit
+    area: daemon_integrations
+    summary: Unmanaged process-backed plugin execution, vault mutation, and legacy Obsidian integrations are retired.
+    foundation_evidence:
+      - "Go retirement overlay 63be724d removes daemon Telegram/Discord/Zettel launchers, process-backed plugin chat tools and binary resolution, and vault assignment writes; trap-process and byte-preservation tests prove deterministic disabled behavior. Rust implementation evidence remains incomplete."
+    requirements:
+      - "Keep GET /api/plugins/{name}/status, GET /api/plugins/{name}/items, and POST /api/plugins/{name}/action addressable only as deterministic 503 tombstones. They must fail before request-body parsing, manifest-selected or PATH binary resolution, filesystem probing for executables, process launch, or external effects."
+      - "Do not register or advertise daemon chat plugin_query or plugin_action tools. GET /api/plugins and GET /api/plugins/{name} remain bounded read-only manifest discovery surfaces."
+      - "Keep POST /api/vault/assign addressable only as a deterministic 503 tombstone that performs no read, validation-to-mutation, temp-file creation, rename, or vault write. Vault graph, note, search, and allowlisted artifact GET surfaces remain read-only."
+      - "Do not discover or launch Obsidian, subscribe a Zettel completion consumer, create dropped/zettel during startup, or emit new zettel.written, zettel.skipped, or zettel.write_failed events. Historical event vocabulary and records remain readable."
+      - "Do not register or fetch the Obsidian operational-preflight section, resolve OBSIDIAN_VAULT_PATH, inspect daily notes/MOCs, or create/read/write its preflight cache. Other preflight sections and their daily audit remain available."
+    packages: [github.com/joeyhipolito/orchestrator-cli/cmd/hooks, github.com/joeyhipolito/orchestrator-cli/internal/daemon, github.com/joeyhipolito/orchestrator-cli/internal/engine, github.com/joeyhipolito/orchestrator-cli/internal/preflight, github.com/joeyhipolito/orchestrator-cli/internal/tools]
+
+  - id: ORC-LEGACY-INTEGRATION-DATA-001
+    status: incomplete
+    missing_observation: "no enrolled gate observes the retired plugins' data, vault and Zettel bridge paths being preserved untouched."
+    classification: retired
+    disposition: preserve
+    area: daemon_integrations
+    summary: Data owned by retired process-backed plugins, vault mutation, and the Zettel bridge is preserved for rollback and inspection.
+    requirements:
+      - "Preserve plugin manifests, binaries, auth files, caches, delivery state, and unknown plugin-owned files/fields byte-for-byte unless a later explicit migration contract supersedes this boundary; bounded manifest discovery may read them but Rust must not repair, rewrite, execute, or delete them."
+      - "Preserve ~/.alluka/vault, ~/.alluka/dropped/zettel, any resolved OBSIDIAN_VAULT_PATH tree, and their MOCs, mission notes, caches, and dropped files without migration or cleanup; ORCHESTRATOR_CONFIG_DIR does not relocate these legacy boundaries. Historical Zettel records remain readable and are never removed or rewritten during append-only event replay/projection. Read-only vault indexing remains permitted."
+      - "Starting, inspecting, cleaning, upgrading, or handing authority between Go and Rust must not create ignored-integration directories or change preserved bytes, modes, or timestamps merely because these artifacts exist."
+    packages: [github.com/joeyhipolito/orchestrator-cli/cmd/hooks, github.com/joeyhipolito/orchestrator-cli/internal/daemon, github.com/joeyhipolito/orchestrator-cli/internal/engine, github.com/joeyhipolito/orchestrator-cli/internal/event, github.com/joeyhipolito/orchestrator-cli/internal/preflight, github.com/joeyhipolito/orchestrator-cli/internal/tools]
+
+  - id: ORC-HELPERS-001
+    status: incomplete
+    missing_observation: "generator, eval, rendering, usage and support package behaviour is observed by no enrolled gate."
+    classification: exact
+    area: build_support
+    summary: Generator, eval, rendering, usage, and support package behavior remains mapped.
+    requirements:
+      - "gen-decomposer-prompt and gen-persona-selector-prompt remain deterministic build-time generators, not root subcommands."
+      - "evals remains a fixture/test package; render remains stable terminal formatting; usage reads credentials without mutation; scratch paths remain phase-scoped."
+    packages: [github.com/joeyhipolito/orchestrator-cli/cmd/gen-decomposer-prompt, github.com/joeyhipolito/orchestrator-cli/cmd/gen-persona-selector-prompt, github.com/joeyhipolito/orchestrator-cli/evals, github.com/joeyhipolito/orchestrator-cli/internal/buildinfo, github.com/joeyhipolito/orchestrator-cli/internal/render, github.com/joeyhipolito/orchestrator-cli/internal/usage, github.com/joeyhipolito/orchestrator-cli/internal/scratch]
+
+coverage:
+  go_packages:
+    github.com/joeyhipolito/orchestrator-cli: [ORC-CLI-ROOT-001]
+    github.com/joeyhipolito/orchestrator-cli/cmd/gen-decomposer-prompt: [ORC-HELPERS-001]
+    github.com/joeyhipolito/orchestrator-cli/cmd/gen-persona-selector-prompt: [ORC-HELPERS-001]
+    github.com/joeyhipolito/orchestrator-cli/cmd/hooks: [ORC-PREFLIGHT-001, ORC-LEGACY-INTEGRATION-RUNTIME-001, ORC-LEGACY-INTEGRATION-DATA-001]
+    github.com/joeyhipolito/orchestrator-cli/evals: [ORC-HELPERS-001]
+    github.com/joeyhipolito/orchestrator-cli/internal/audit: [ORC-AUDIT-DREAM-001, ORC-CLI-ANALYTICS-001, ORC-DATA-SIDECARS-001]
+    github.com/joeyhipolito/orchestrator-cli/internal/auth: [ORC-CONFIG-RUNTIME-001, ORC-SECURITY-001]
+    github.com/joeyhipolito/orchestrator-cli/internal/buildinfo: [ORC-HELPERS-001]
+    github.com/joeyhipolito/orchestrator-cli/internal/claims: [ORC-DB-LEARNINGS-001, ORC-GIT-001]
+    github.com/joeyhipolito/orchestrator-cli/internal/cmd: [ORC-CLI-ROOT-001, ORC-CONFIG-STALL-001]
+    github.com/joeyhipolito/orchestrator-cli/internal/config: [ORC-CONFIG-HOME-001]
+    github.com/joeyhipolito/orchestrator-cli/internal/core: [ORC-DATA-CHECKPOINT-001, ORC-DATA-WORKSPACE-001]
+    github.com/joeyhipolito/orchestrator-cli/internal/daemon: [ORC-DAEMON-HTTP-001, ORC-DAEMON-SSE-001, ORC-DAEMON-UDS-001, ORC-DB-CHAT-001, ORC-LEGACY-INTEGRATION-RUNTIME-001, ORC-LEGACY-INTEGRATION-DATA-001]
+    github.com/joeyhipolito/orchestrator-cli/internal/decompose: [ORC-DECOMPOSE-001]
+    github.com/joeyhipolito/orchestrator-cli/internal/dream: [ORC-CLI-DREAM-001, ORC-AUDIT-DREAM-001]
+    github.com/joeyhipolito/orchestrator-cli/internal/engine: [ORC-RUNTIME-001, ORC-PROCESS-001, ORC-PROCESS-BG-001, ORC-VERIFY-001, ORC-LEGACY-INTEGRATION-RUNTIME-001, ORC-LEGACY-INTEGRATION-DATA-001]
+    github.com/joeyhipolito/orchestrator-cli/internal/engine/apiloop: [ORC-RUNTIME-001]
+    github.com/joeyhipolito/orchestrator-cli/internal/event: [ORC-DATA-EVENTS-001, ORC-DAEMON-UDS-001, ORC-LEGACY-INTEGRATION-DATA-001]
+    github.com/joeyhipolito/orchestrator-cli/internal/git: [ORC-GIT-001, ORC-GIT-BASE-001]
+    github.com/joeyhipolito/orchestrator-cli/internal/learning: [ORC-LEARNING-001, ORC-DB-LEARNINGS-001]
+    github.com/joeyhipolito/orchestrator-cli/internal/metrics: [ORC-DB-METRICS-001, ORC-METRICS-CRASH-001]
+    github.com/joeyhipolito/orchestrator-cli/internal/notify: [ORC-NOTIFY-RUNTIME-001, ORC-NOTIFY-DATA-001]
+    github.com/joeyhipolito/orchestrator-cli/internal/notify/cli: [ORC-NOTIFY-RUNTIME-001]
+    github.com/joeyhipolito/orchestrator-cli/internal/persona: [ORC-DECOMPOSE-001]
+    github.com/joeyhipolito/orchestrator-cli/internal/preflight: [ORC-PREFLIGHT-001, ORC-DB-EXTERNAL-001, ORC-DATA-SIDECARS-001, ORC-LEGACY-INTEGRATION-RUNTIME-001, ORC-LEGACY-INTEGRATION-DATA-001]
+    github.com/joeyhipolito/orchestrator-cli/internal/render: [ORC-HELPERS-001]
+    github.com/joeyhipolito/orchestrator-cli/internal/router: [ORC-CONFIG-RUNTIME-001, ORC-RUNTIME-001]
+    github.com/joeyhipolito/orchestrator-cli/internal/routing: [ORC-DECOMPOSE-001, ORC-DB-LEARNINGS-001]
+    github.com/joeyhipolito/orchestrator-cli/internal/sanitize: [ORC-SECURITY-001]
+    github.com/joeyhipolito/orchestrator-cli/internal/scratch: [ORC-DATA-WORKSPACE-001, ORC-HELPERS-001]
+    github.com/joeyhipolito/orchestrator-cli/internal/tools: [ORC-RUNTIME-001, ORC-PERMISSIONS-001, ORC-DATA-SIDECARS-001, ORC-PROCESS-BG-001, ORC-LEGACY-INTEGRATION-RUNTIME-001, ORC-LEGACY-INTEGRATION-DATA-001]
+    github.com/joeyhipolito/orchestrator-cli/internal/usage: [ORC-CONFIG-RUNTIME-001, ORC-HELPERS-001]
+    github.com/joeyhipolito/orchestrator-cli/internal/worker: [ORC-PROCESS-001, ORC-PROCESS-BG-001, ORC-LEARNING-001, ORC-DATA-WORKSPACE-001, ORC-DATA-SIDECARS-001, ORC-PERMISSIONS-001]
+    github.com/joeyhipolito/orchestrator-cli/internal/writerlock: [ORC-PROCESS-001, ORC-SECURITY-001]
+
+  commands:
+    orchestrator: [ORC-CLI-ROOT-001]
+    orchestrator run: [ORC-CLI-RUN-001]
+    orchestrator status: [ORC-CLI-OPS-001]
+    orchestrator cancel: [ORC-CLI-OPS-001]
+    orchestrator cleanup: [ORC-CLI-OPS-001]
+    orchestrator sync: [ORC-CLI-OPS-001]
+    orchestrator daemon: [ORC-CLI-DAEMON-001]
+    orchestrator daemon start: [ORC-CLI-DAEMON-001]
+    orchestrator daemon stop: [ORC-CLI-DAEMON-001]
+    orchestrator daemon status: [ORC-CLI-DAEMON-001]
+    orchestrator events: [ORC-CLI-EVENTS-001]
+    orchestrator events list: [ORC-CLI-EVENTS-001]
+    orchestrator events replay: [ORC-CLI-EVENTS-001]
+    orchestrator events tail: [ORC-CLI-EVENTS-001]
+    orchestrator doctor: [ORC-CLI-ANALYTICS-001]
+    orchestrator compare: [ORC-CLI-ANALYTICS-001]
+    orchestrator audit: [ORC-CLI-ANALYTICS-001]
+    orchestrator audit scorecard: [ORC-CLI-ANALYTICS-001]
+    orchestrator metrics: [ORC-CLI-ANALYTICS-001]
+    orchestrator metrics personas: [ORC-CLI-ANALYTICS-001]
+    orchestrator metrics skills: [ORC-CLI-ANALYTICS-001]
+    orchestrator metrics trends: [ORC-CLI-ANALYTICS-001]
+    orchestrator metrics routing: [ORC-CLI-ANALYTICS-001]
+    orchestrator metrics routing-methods: [ORC-CLI-ANALYTICS-001]
+    orchestrator metrics phases: [ORC-CLI-ANALYTICS-001]
+    orchestrator stats: [ORC-CLI-LEARNING-001]
+    orchestrator prune: [ORC-CLI-LEARNING-001]
+    orchestrator backfill-embeddings: [ORC-CLI-LEARNING-001]
+    orchestrator archive: [ORC-CLI-LEARNING-001]
+    orchestrator memory: [ORC-CLI-LEARNING-001]
+    orchestrator memory promote: [ORC-CLI-LEARNING-001]
+    orchestrator memory sync: [ORC-CLI-LEARNING-001]
+    orchestrator memory search: [ORC-CLI-LEARNING-001]
+    orchestrator routing: [ORC-CLI-LEARNING-001]
+    orchestrator routing seed: [ORC-CLI-LEARNING-001]
+    orchestrator routing correct: [ORC-CLI-LEARNING-001]
+    orchestrator routing corrections: [ORC-CLI-LEARNING-001]
+    orchestrator routing ingest-audit: [ORC-CLI-LEARNING-001]
+    orchestrator ingest: [ORC-CLI-LEARNING-001]
+    orchestrator ingest docs: [ORC-CLI-LEARNING-001]
+    orchestrator hooks: [ORC-CLI-HOOKS-001]
+    orchestrator hooks flush-context: [ORC-CLI-HOOKS-001]
+    orchestrator hooks inject-context: [ORC-CLI-HOOKS-001]
+    orchestrator hooks snapshot-session: [ORC-CLI-HOOKS-001]
+    orchestrator hooks preflight: [ORC-CLI-HOOKS-001]
+    orchestrator hooks bridge-session: [ORC-CLI-HOOKS-001]
+    orchestrator hooks insights: [ORC-CLI-HOOKS-001]
+    orchestrator hooks insights search: [ORC-CLI-HOOKS-001]
+    orchestrator hooks memory: [ORC-CLI-HOOKS-001]
+    orchestrator hooks memory add: [ORC-CLI-HOOKS-001]
+    orchestrator hooks memory list: [ORC-CLI-HOOKS-001]
+    orchestrator hooks memory search: [ORC-CLI-HOOKS-001]
+    orchestrator dream: [ORC-CLI-DREAM-001]
+    orchestrator dream run: [ORC-CLI-DREAM-001]
+    orchestrator dream status: [ORC-CLI-DREAM-001]
+    orchestrator dream reset: [ORC-CLI-DREAM-001]
+    orchestrator dream worker: [ORC-CLI-DREAM-001]
+    orchestrator templates: [ORC-CLI-MISC-001]
+    orchestrator templates list: [ORC-CLI-MISC-001]
+    orchestrator barok: [ORC-CLI-MISC-001]
+    orchestrator barok status: [ORC-CLI-MISC-001]
+    orchestrator discipline: [ORC-CLI-MISC-001]
+    orchestrator discipline status: [ORC-CLI-MISC-001]
+
+preservation:
+  notification_runtime:
+    classification: retired
+    disposition: omit
+    contract_ids: [ORC-NOTIFY-RUNTIME-001]
+  notification_config_and_data:
+    classification: retired
+    disposition: preserve
+    globs:
+      - "<config>/channels/*.json"
+      - "<config>/channels/*-auth.json"
+      - "<plugin-owned notification data>"
+    contract_ids: [ORC-NOTIFY-DATA-001]
+  ignored_integration_runtime:
+    classification: retired
+    disposition: omit
+    contract_ids: [ORC-LEGACY-INTEGRATION-RUNTIME-001]
+  ignored_integration_data:
+    classification: retired
+    disposition: preserve
+    globs:
+      - "~/nanika/plugins/**"
+      - "~/nanika/bin/**"
+      - "~/.alluka/vault/**"
+      - "~/.alluka/dropped/zettel/**"
+      - "<resolved OBSIDIAN_VAULT_PATH>/**"
+    contract_ids: [ORC-LEGACY-INTEGRATION-DATA-001]

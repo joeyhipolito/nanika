@@ -1,0 +1,38 @@
+[package]
+name = "orchestrator-first-use-pilot"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+# Experimental, explicit opt-in first-use pilot (docs/rust-orchestrator/FIRST-USE.md).
+# It is deliberately a separate binary so `orchestrator run` enrollment and the
+# `orchestrator-cli` source scan that keeps ClaudeProvider out of the ordinary
+# run path are unchanged.
+
+[dependencies]
+getrandom.workspace = true
+orchestrator-app = { path = "../orchestrator-app" }
+orchestrator-core = { path = "../orchestrator-core" }
+orchestrator-daemon = { path = "../orchestrator-daemon" }
+orchestrator-exec = { path = "../orchestrator-exec" }
+orchestrator-process = { path = "../orchestrator-process" }
+orchestrator-provider-claude = { path = "../orchestrator-provider-claude", features = ["experimental-first-use-pilot"] }
+rustix.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+signal-hook.workspace = true
+thiserror.workspace = true
+unicode-width.workspace = true
+
+[dev-dependencies]
+orchestrator-app = { path = "../orchestrator-app", features = ["test-support"] }
+
+[[bin]]
+name = "orchestrator-first-use-pilot"
+path = "src/main.rs"
+
+[lints]
+workspace = true

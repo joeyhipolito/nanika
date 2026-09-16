@@ -1,0 +1,46 @@
+# resource-baseline-v1
+# snapshot state=baseline offset_seconds=0 missions=0 root_pid=4242 observed_epoch=1000
+pid	ppid	rss_kib	cpu_pct	etime	executable
+4242	1	10000	0.0	00:10	orchestrator
+# snapshot state=active offset_seconds=0 missions=1 root_pid=4242 observed_epoch=1001
+pid	ppid	rss_kib	cpu_pct	etime	executable
+4242	1	10200	0.1	00:11	orchestrator
+# snapshot state=active offset_seconds=0 missions=10 root_pid=4242 observed_epoch=1002
+pid	ppid	rss_kib	cpu_pct	etime	executable
+4242	1	10200	0.1	00:12	orchestrator
+# snapshot state=active offset_seconds=0 missions=25 root_pid=4242 observed_epoch=1003
+pid	ppid	rss_kib	cpu_pct	etime	executable
+4242	1	10200	0.1	00:13	orchestrator
+# snapshot state=active offset_seconds=0 missions=50 root_pid=4242 observed_epoch=1004
+pid	ppid	rss_kib	cpu_pct	etime	executable
+4242	1	10200	0.1	00:14	orchestrator
+# snapshot state=active offset_seconds=0 missions=75 root_pid=4242 observed_epoch=1005
+pid	ppid	rss_kib	cpu_pct	etime	executable
+4242	1	10200	0.1	00:15	orchestrator
+# snapshot state=active offset_seconds=0 missions=100 root_pid=4242 observed_epoch=1006
+pid	ppid	rss_kib	cpu_pct	etime	executable
+4242	1	10200	0.1	00:16	orchestrator
+# snapshot state=post offset_seconds=0 missions=100 root_pid=4242 observed_epoch=2000
+pid	ppid	rss_kib	cpu_pct	etime	executable
+4242	1	10100	0.0	16:50	orchestrator
+# snapshot state=post offset_seconds=2 missions=100 root_pid=4242 observed_epoch=2002
+pid	ppid	rss_kib	cpu_pct	etime	executable
+4242	1	10100	0.0	16:52	orchestrator
+# snapshot state=post offset_seconds=4 missions=100 root_pid=4242 observed_epoch=2004
+pid	ppid	rss_kib	cpu_pct	etime	executable
+4242	1	10100	0.0	16:54	orchestrator
+# snapshot state=post offset_seconds=6 missions=100 root_pid=4242 observed_epoch=2006
+pid	ppid	rss_kib	cpu_pct	etime	executable
+4242	1	10100	0.0	16:56	orchestrator
+# snapshot state=post offset_seconds=8 missions=100 root_pid=4242 observed_epoch=2008
+pid	ppid	rss_kib	cpu_pct	etime	executable
+4242	1	10100	0.0	16:58	orchestrator
+# snapshot state=post offset_seconds=10 missions=100 root_pid=4242 observed_epoch=2010
+pid	ppid	rss_kib	cpu_pct	etime	executable
+4242	1	10100	0.0	17:00	orchestrator
+# snapshot state=warmed offset_seconds=10 missions=100 root_pid=4242 observed_epoch=2011
+pid	ppid	rss_kib	cpu_pct	etime	executable
+4242	1	10500	0.1	17:01	orchestrator
+# snapshot state=idle offset_seconds=10 missions=100 root_pid=4242 observed_epoch=2012
+pid	ppid	rss_kib	cpu_pct	etime	executable
+4242	1	10400	0.1	17:02	orchestrator

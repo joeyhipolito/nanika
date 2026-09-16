@@ -1,0 +1,26 @@
+Walks rows where embedding IS NULL and calls the Gemini embedding API to fill them.
+Default is a dry-run that prints row count + cost estimate. Pass --apply to write.
+
+Usage:
+  orchestrator backfill-embeddings [flags]
+
+Flags:
+      --apply              actually call the API and write embeddings (default is dry-run)
+      --batch-size int     rows per batchEmbedContents call (capped at 100) (default 100)
+  -h, --help               help for backfill-embeddings
+      --include-archived   include archived rows (default skips them)
+      --limit int          process at most N rows (0 = no cap)
+      --max-retries int    per-batch retry ceiling on 429 / 5xx (default 5)
+      --quiet              suppress per-batch progress lines
+      --rpm int            target requests per minute (0 = no throttle) (default 60)
+      --since duration     only consider rows created within this window (e.g. 720h); 0 = all rows
+
+Global Flags:
+      --domain string         task domain (dev/personal/work/creative/academic) (default "dev")
+      --dry-run               show plan without executing
+      --max-turns int         max agentic turns per worker (0 = use persona-aware default)
+      --model string          force model for all workers
+      --nanika-dir string     path to nanika directory (default: ~/nanika)
+      --personas-dir string   path to personas directory (default: ~/nanika/personas/)
+      --sequential            force sequential execution
+  -v, --verbose               verbose output

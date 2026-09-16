@@ -1,8 +1,9 @@
 # Working in the public Nanika repository
 
-This checkout ships a Go orchestrator, a Claude Code Go SDK, reusable guidance,
-and the plugins listed in the root [README](README.md). The Rust orchestrator
-rewrite and Portal helpers are not part of this public snapshot.
+This checkout ships a Rust execution pilot with Go compatibility, a Claude Code Go
+SDK, reusable guidance, and the plugins in the root [README](README.md).
+See the [Rust guide](skills/orchestrator-rs/README.md) for native command routing,
+pinned provider versions, and the remaining rewrite boundaries.
 
 ## Source and commands
 
@@ -11,7 +12,7 @@ Read [AGENTS.md](AGENTS.md) for verified skill/reference paths and
 repository: `GOWORK=off make build-orchestrator`. Do not use the root bulk build
 as a release gate; it still references an absent legacy dashboard.
 
-The CLI's shipped defaults use Claude. Explicit Codex and API runtime support
+The Go CLI's shipped defaults use Claude; native Rust code defaults to Codex and review to Claude. Explicit Codex and API runtime support
 must be assessed from this checkout's code and `--help`; do not infer defaults
 from another installed Nanika version. See the
 [orchestrator reference](skills/orchestrator/README.md).

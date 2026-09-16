@@ -1,0 +1,39 @@
+[package]
+name = "orchestrator-plugin-host"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+autotests = false
+
+[lib]
+test = false
+
+[features]
+default = []
+test-fixtures = []
+
+[dependencies]
+getrandom.workspace = true
+orchestrator-process = { path = "../orchestrator-process" }
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+
+[[bin]]
+name = "fake-orchestrator-plugin"
+path = "src/bin/fake-orchestrator-plugin.rs"
+required-features = ["test-fixtures"]
+
+[[test]]
+name = "public_api"
+path = "tests/public_api.rs"
+
+[[test]]
+name = "lazy_host_e2e"
+path = "tests/lazy_host_e2e_target.rs"
+harness = false
+
+[lints]
+workspace = true

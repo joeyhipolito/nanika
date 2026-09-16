@@ -1,0 +1,5 @@
+workspace     domain      status    decomp          persona                 duration phases        task
+------------------------------------------------------------------------------------------------------------------
+ws-alpha      dev         success   decomp.llm      architect               42s      3/3           build the thing
+
+1 missions  •  1 succeeded  •  0 failed  •  avg 42s

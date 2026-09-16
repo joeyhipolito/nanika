@@ -1,0 +1,6 @@
+embed-backfill (dry-run):
+  candidate rows: 3
+  est. tokens:    15 (chars/4 heuristic)
+  est. cost:      $0.0000 USD @ $0.15 per 1M tokens
+  batches:        1 × 100 (estimated wall time: ~1s at 60 rpm)
+  run with --apply to write embeddings

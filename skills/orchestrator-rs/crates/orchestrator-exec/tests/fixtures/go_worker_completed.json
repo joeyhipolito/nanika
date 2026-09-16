@@ -1,0 +1,13 @@
+{
+  "id": "evt_2123456789abcdef",
+  "type": "worker.completed",
+  "timestamp": "2026-07-15T00:00:02Z",
+  "sequence": 3,
+  "mission_id": "mission-1",
+  "phase_id": "phase-1",
+  "worker_id": "worker-1",
+  "data": {
+    "output_len": 128,
+    "duration": "1.25s"
+  }
+}

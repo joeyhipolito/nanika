@@ -1,0 +1,7 @@
+prune
+--max-age
+30
+--min-score
+0.5
+--max-count
+1

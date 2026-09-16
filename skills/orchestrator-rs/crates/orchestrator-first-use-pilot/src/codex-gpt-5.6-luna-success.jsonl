@@ -1,0 +1,5 @@
+{"type":"thread.started","thread_id":"sanitized-thread"}
+{"type":"item.completed","item":{"id":"item_0","type":"error","message":"Code Mode is unavailable because code-mode host is disabled. Code mode will fail closed; enable `features.code_mode_host` and install `codex-code-mode-host`."}}
+{"type":"turn.started"}
+{"type":"item.completed","item":{"id":"item_1","type":"agent_message","text":"Exit code zero only indicates the process ended without reporting an operating-system-level error; it does not prove the AI CLI completed its intended work or emitted a usable result. A successful terminal event provides an explicit application-level confirmation that the requested task reached its expected completion state."}}
+{"type":"turn.completed","usage":{"input_tokens":7762,"cached_input_tokens":4864,"cache_write_input_tokens":0,"output_tokens":57,"reasoning_output_tokens":0}}

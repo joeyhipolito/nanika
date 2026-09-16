@@ -1,0 +1,19 @@
+Usage:
+  orchestrator audit scorecard [flags]
+
+Flags:
+      --domain string   filter audits by domain
+      --format string   output format: text, json (default "text")
+  -h, --help            help for scorecard
+      --last int        limit to last N audits (0 = all)
+
+Global Flags:
+      --dry-run               show plan without executing
+      --max-turns int         max agentic turns per worker (0 = use persona-aware default)
+      --model string          force model for all workers
+      --nanika-dir string     path to nanika directory (default: ~/nanika)
+      --personas-dir string   path to personas directory (default: ~/nanika/personas/)
+      --sequential            force sequential execution
+  -v, --verbose               verbose output
+
+unknown flag: --local
