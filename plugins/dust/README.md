@@ -1,24 +1,43 @@
 # Dust
 
-`dust` is the Rust replacement shell for the current dashboard. This first cut is intentionally isolated from Nanika internals and only chases the desktop behavior:
+Dust is the experimental Tauri/React desktop and plugin-protocol source in this
+public repository. It has grown beyond the original shell prototype: the tree
+contains a Rust plugin host/registry, SDK and conformance fixtures, React scenes,
+and Tauri commands for missions, files, Git/diffs, notifications, and commit
+summaries. Some UI paths depend on configured local CLI services.
 
-- `Option+Space` toggles the window
-- frameless transparent palette-style window
-- hide on blur / click outside
-- small Raycast-like command surface for UI tuning
+This is not the retired Wails `plugins/dashboard` application and is not the Rust
+orchestrator rewrite. The root installer does not select Dust.
 
-## Run
+## Source layout
+
+- `dust-core/`, `dust-sdk/`, `dust-registry/`: protocol and host crates.
+- `dust-conformance/`: protocol fixtures and checks.
+- `dust-dashboard/`: dashboard crate in the Cargo workspace.
+- `src/`: React/Vite frontend.
+- `src-tauri/`: Tauri application and command implementations; excluded from the
+  root Rust workspace and built through Tauri.
+
+## Development commands
+
+The npm scripts declare these entrypoints:
 
 ```bash
 cd plugins/dust
 npm install
+npm run dev
+npm test
+npm run build
 npm run tauri:dev
 ```
 
-## Current Scope
+`npm run dev` starts the frontend only. `tauri:dev` starts the desktop app and
+requires Rust/Cargo and Tauri's platform prerequisites in addition to Node/npm.
+`npm install` installs dependencies and can run package lifecycle scripts.
+These commands document the shipped scripts; this documentation update did not
+verify a complete desktop build or live plugin session.
 
-- Rust host: Tauri
-- Frontend: React + Vite
-- No plugin protocol, no dashboard channel, no Nanika data plumbing yet
-
-The point of this stage is to get the shell feel right before wiring the rest of the system back in.
+For protocol details, see the [wire specification](../../docs/DUST-WIRE-SPEC.md)
+and [known gaps](../../docs/DUST-WIRE-SPEC-GAPS.md). Check the current manifests
+before selecting a crate or feature; do not infer implementation completeness
+from the presence of a scene or command.

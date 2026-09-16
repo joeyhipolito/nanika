@@ -1,50 +1,64 @@
 # Contributing to Nanika
 
-## Bug Reports
+Use GitHub issues in this repository for public bug reports and feature proposals.
+Include the command, expected and actual behavior, relevant output, commit, OS,
+and toolchain version. Remove credentials and personal runtime data from reports.
 
-Open a GitHub issue with:
-- What you ran (command, flags, input)
-- What you expected vs. what happened
-- Relevant output or error messages
-- OS and Go version (`go version`)
+Discuss a new component before implementing it. Keep pull requests focused and
+explain the problem, resulting behavior, and validation performed.
 
-## Skill Proposals
+## Repository layout
 
-New skills should solve a real, recurring need. Before opening a PR:
+- `skills/orchestrator/`: Go mission CLI.
+- `skills/decomposer/`: mission planning guidance; its `go.mod` has no Go packages.
+- `shared/sdk/`: Go library for the Claude Code CLI.
+- `plugins/`: separately built plugins; consult each `plugin.json` and module manifest.
+- `personas/`: role and style guidance.
+- `docs/`: standards and protocol references.
 
-1. Check the backlog — it may already be planned (Linear team `V` / `nanika`)
-2. Open an issue describing the skill, its CLI surface, and the problem it solves
-3. Wait for a thumbs-up before building — avoids wasted effort
+Keep the full checkout when building: the orchestrator's `go.mod` replaces the
+SDK and Nen modules with relative paths inside this repository.
 
-A valid skill has:
-- A single-purpose CLI binary under `skills/<name>/`
-- A skill definition at `.claude/skills/<name>/SKILL.md`
-- At minimum a `doctor` subcommand that validates configuration
-- Follows the conventions in `docs/SKILL-STANDARD.md`
+## Local checks
 
-## Code Style
-
-- Go: `gofmt`, standard library preferred, no unnecessary dependencies
-- Error messages lowercase, no trailing punctuation
-- CLIs use `cobra` + `viper` consistent with existing skills
-- Keep commands composable — prefer `--json` output flags for machine consumption
-
-Run before submitting:
+From the repository root, with Go 1.25.4 or newer:
 
 ```bash
-make test-<skill>   # e.g. make test-orchestrator
-make build-<skill>
+GOWORK=off make build-orchestrator
+(cd skills/orchestrator && GOWORK=off go test ./...)
+(cd shared/sdk && GOWORK=off go vet ./...)
+(cd shared/sdk && GOWORK=off go test -race -count=1 -timeout=2m ./...)
 ```
 
-## Pull Request Process
+The broad orchestrator suite has known baseline failures; report the exact
+failures and compare against your base commit. Do not describe a partial check
+as a passing full suite. The dedicated SDK workflow runs on Linux and macOS;
+the older all-skills workflow still references retired module paths.
 
-1. Fork the repo and create a feature branch (`feat/my-skill`, `fix/orchestrator-crash`)
-2. Keep PRs focused — one skill or one fix per PR
-3. PR description should explain *why*, not just *what* — the diff shows the what
-4. A maintainer will review within a few days; address feedback promptly
+SDK live-provider tests require both `-tags=integration` and
+`RUN_CLAUDE_INTEGRATION=1`. They invoke an authenticated Claude CLI and may incur
+usage. Ordinary SDK tests use fixtures. See [SDK documentation](shared/sdk/README.md).
 
-## What We Won't Accept
+Use `gofmt` for Go changes and run the relevant module's tests. For Rust or
+frontend plugins, use their own Cargo/npm configuration. Root `make build` and
+`make setup` still reference the absent legacy dashboard; use targeted builds.
 
-- Skills that require paid third-party services with no free tier
-- Breaking changes to existing CLI flags without a migration path
-- PRs that haven't been discussed via issue first (for new skills)
+## Adding skills and plugins
+
+A knowledge skill can be Markdown-only. A CLI plugin normally has a `plugin.json`,
+source and build configuration, and `skills/SKILL.md` explaining its commands.
+Follow the [skill standard](docs/SKILL-STANDARD.md) and
+[plugin protocol](docs/PLUGIN-PROTOCOL.md), checking actual neighboring code where
+older examples differ. Add a configuration/health check when appropriate.
+
+Some tracked `.claude/skills` links are unresolved in the public checkout.
+Verify each new link from a fresh clone; do not point to a personal checkout or
+assume an installed private skill exists. The curated [AGENTS.md](AGENTS.md)
+contains usable public references. Preview routing-index generation before
+allowing it to rewrite contributor-maintained guidance.
+
+## Review
+
+Keep user-visible CLI changes documented, include a migration path for breaking
+flags, and distinguish tested behavior from experimental support. Never commit
+provider credentials, local databases, session transcripts, or generated binaries.

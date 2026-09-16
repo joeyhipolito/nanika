@@ -1,31 +1,57 @@
-# Nanika Scripts
+# Nanika maintenance scripts
 
-Utility scripts for Nanika project maintenance.
+Run these from the repository root with Bash. Read a script before using it:
+several install binaries, modify local configuration, or control daemons.
 
-## generate-agents-md.sh
+| Script | Behavior |
+|--------|----------|
+| `install.sh` | Legacy interactive installer for the Go orchestrator and a fixed plugin selection; installs/configures local tools and may set up services. |
+| `nanika-update.sh` | Builds, installs, restarts, and verifies discovered plugins. Supports `--only`, `--skip`, and `--dry-run`. |
+| `new-mission.sh <slug>` | Creates a new dated mission template under `~/.alluka/missions/`; refuses an existing filename. |
+| `generate-agents-md.sh` | Discovers `.claude/skills` and plugin skill definitions, then rewrites routing guidance in AGENTS.md/CLAUDE.md. |
+| `audit-bins.sh` | Audits the local binary installation; consult the script for expected paths. |
+| `test-first-check.sh` | Checks a commit range for test-first conventions. |
+| `chaos-obsidian.sh` | Obsidian fault/recovery exercises; use its dry-run mode before an actual exercise. |
+| `experiment-snapshot.sh` | Captures experiment state; intended for an already configured local environment. |
 
-Auto-generates the routing index block in `CLAUDE.md` and `AGENTS.md` by scanning `plugins/*/skills/*/SKILL.md`.
+## Minimal CLI setup
 
-### Usage
+The bulk installer is optional. For just the orchestrator:
 
 ```bash
-# Generate and update AGENTS.md + CLAUDE.md
-./scripts/generate-agents-md.sh
-
-# Dry run (preview output without writing)
-./scripts/generate-agents-md.sh --dry-run
+GOWORK=off make build-orchestrator
+./bin/orchestrator --help
+GOWORK=off make install-orchestrator
 ```
 
-## Removed Scripts
+The install target writes `~/.alluka/bin/orchestrator`; add that directory to
+PATH. The full source checkout is required for relative Go module dependencies.
 
-The following scripts were removed during cleanup (Feb 2026):
+## Installer selection
 
-- **Quota scripts** (`update-quota-from-*.sh`) — superseded by `orchestrator detect`
-- **Validation scripts** (`validate-*.sh`, `verify-*.sh`) — validated archived features
-- **Test scripts** (`test-*.sh`) — tested archived features
-- **Packaging** (`package-skill.sh`) — unused dist packaging
-- **Status system** (`update-system-status.sh`, hooks/) — inactive feature
-## Mission / Backlog Scripts
+```bash
+bash scripts/install.sh --core
+bash scripts/install.sh --all
+bash scripts/install.sh --plugins discord
+```
 
-- `bootstrap-linear-backlog.sh` — seeds or fully refreshes the current Nanika implementation backlog in Linear; prefer the `linear` CLI for routine issue/project updates
-- `new-mission.sh <slug>` — creates a local mission file under `~/.alluka/missions/`
+Core selects `orchestrator`, `nen`, `tracker`, and `scheduler`. `--all` adds
+`discord` and `telegram`; it does not install Dust, Obsidian, or Nen MCP. Tracker
+requires Cargo. Additional components have their own manifests. Root bulk
+`make build`/`make setup` still reference the missing Wails dashboard and are not
+the recommended path for this snapshot.
+
+## Preview maintenance
+
+```bash
+bash scripts/generate-agents-md.sh --dry-run
+bash scripts/nanika-update.sh --dry-run --only scheduler
+```
+
+Skill discovery depends on the actual local links. Some tracked links are broken
+in a fresh public clone. The checked [agent index](../AGENTS.md) is maintained
+manually; running the generator without `--dry-run` replaces it with local output.
+
+`new-mission.sh` uses [templates/mission.md](../templates/mission.md) when present.
+Its historical frontmatter may include a Linear field; public contribution work
+uses GitHub issues and does not require a private Linear workspace.

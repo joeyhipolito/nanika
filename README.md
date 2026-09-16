@@ -1,252 +1,116 @@
-<p align="center">
-  <img src="assets/logo.png" alt="Nanika" width="200" />
-</p>
+# Nanika
 
-<h1 align="center">Nanika</h1>
+Nanika is a Go mission orchestrator: it decomposes a task into phases and runs each phase through an AI coding agent. The default execution runtime is Claude Code. An explicit Codex runtime is also supported, and experimental direct API executors are present in source. This repository does **not** include the Rust orchestrator rewrite or Portal — those are not part of this public checkout.
 
-<p align="center"><em>One sentence in. A team of specialists out.</em></p>
-<p align="center">A self-improving multi-agent orchestrator for Claude Code.<br>
-<sub>Experimental Codex support available — not fully tested.</sub></p>
+## Components
 
-```
-You: "research AI agent memory systems and write a report"
+| Path | Language | What it is |
+|---|---|---|
+| `skills/orchestrator` | Go | Mission orchestrator CLI. Depends on local `../../plugins/nen` and `../../shared/sdk`; must be built from a full clone. |
+| `skills/decomposer` | knowledge-only | Has a `go.mod` but no Go packages; decomposition guidance, not a runnable binary. |
+| `shared/sdk` | Go | Claude CLI SDK library used by the orchestrator. |
+| `plugins/nen` | Go | Health checks and evals. |
+| `plugins/tracker` | Rust | Issue-tracking CLI. |
+| `plugins/scheduler` | Go | Cron-style scheduling. |
+| `plugins/discord`, `plugins/telegram` | Go | Chat channel integrations. |
+| `plugins/nen_mcp` | Go | MCP server. |
+| `plugins/obsidian` | Go | Vault CLI/indexer. |
+| `plugins/dust` | Tauri + Rust + React | Experimental desktop app and protocol source. |
 
-  orchestrator decomposes the task:
-    PHASE: research    | PERSONA: architect           | OBJECTIVE: Compare 5 agent memory approaches
-    PHASE: write       | PERSONA: technical-writer    | OBJECTIVE: Draft the report | DEPENDS: research
-    PHASE: review      | PERSONA: staff-code-reviewer | OBJECTIVE: Review for accuracy | DEPENDS: write
+Not present in this checkout: a Wails-based `plugins/dashboard`, and `scout`, `gmail`, `engage`, `social` plugins, or `example-hello`/`example-bookmarks`. Optional plugin runtimes don't need to run for the orchestrator to work, but the `nen` and SDK **source** are local build dependencies for the orchestrator binary.
 
-  3 specialized workers execute in dependency order.
-  Each worker is a Claude Code (or Codex) session with a persona prompt.
-  Results flow between phases. Review gates enforce quality.
-  Nen observers watch for anomalies. Findings feed back into self-improvement.
-```
-
-## How It Works
-
-### Mission Execution
-
-Everything flows through the **orchestrator** — a Go CLI that turns natural language tasks into multi-phase, multi-agent missions.
+## Quickstart
 
 ```
-task → decompose → plan → spawn workers → collect artifacts → review → done
-```
-
-1. **Decompose** — the task is broken into PHASE lines with personas, dependencies, and objectives. You can pre-decompose (deterministic) or let the LLM decide.
-2. **Route** — each phase is assigned a model tier (think/work/quick) and runtime (Claude Code or Codex).
-3. **Spawn** — workers execute in parallel where dependencies allow. Each worker gets a persona prompt, skill access, and a workspace.
-4. **Gate** — review phases enforce quality. If a review fails, the engine can inject fix + re-review cycles.
-5. **Learn** — mission metrics (duration, retries, failures) are stored. Nen observers analyze patterns.
-
-### Event Bus
-
-The orchestrator daemon emits structured events to JSONL files and a Unix domain socket. Any subscriber can watch:
-
-```
-orchestrator daemon  →  events.sock (UDS)  →  nen-daemon (scanners)
-                     →  events/*.jsonl     →  dashboard (UI)
-                                           →  discord/telegram (notifications)
-```
-
-Plugins are **subscribers, not dependencies**. The orchestrator runs fine without any of them installed.
-
-### Self-Improvement (Nen)
-
-Named after *Hunter x Hunter's* Nen abilities. The system watches itself and gets better:
-
-| Ability | Role | How |
-|---------|------|-----|
-| **Shu** | Broad sweep | Evaluates all component health scores, flags degradation |
-| **Gyo** | Observe + diagnose | Watches mission metrics, detects anomalies (z-score), answers *why* things failed |
-| **Ko** | Eval engine | Promptfoo-compatible YAML test runner — runs assertions against LLM output to verify prompt quality |
-| **En** | System health | Binary freshness, workspace hygiene, daemon reachability |
-| **Ryu** | Cost analysis | Surfaces cost trends, model efficiency gaps, retry waste, minimal-output phases |
-| **Zetsu** | Suppress exposure | Strips untrusted input at trust boundaries so workers are invisible to injection |
-
-The loop: **Shu** finds "decomposer accuracy dropped" → **Gyo** diagnoses "persona mis-routing on implementation tasks" → **Ko** re-runs evals, verifies the regression → you fix the prompt, **Ko** confirms scores improve.
-
-Gyo, En, and Ryu run automatically via `nen-daemon` while missions execute. Run `shu evaluate` for broad sweeps and `ko evaluate` for targeted eval suites — manually or on a cron.
-
-When findings exceed severity thresholds, `shu propose` auto-generates remediation missions and tracker issues. You approve via `shu review`, and the scheduler dispatches approved missions automatically.
-
-> **Want heartbeat-style proactivity?** Use the scheduler to run any command on a cron — `scheduler jobs add --name "check-inbox" --cron "*/30 * * * *" --command "your-script"`. Nanika's self-improvement is findings-driven rather than timer-driven, but the scheduler gives you both.
-
-### Plugin Protocol
-
-Every plugin exposes a uniform query interface so the dashboard (and other plugins) can discover and render them without knowing implementation details:
-
-```bash
-<plugin> query status --json   →  { "status": "ok", ... }
-<plugin> query items --json    →  { "items": [...], "count": N }
-<plugin> query actions --json  →  { "actions": [{ "name", "command", "description" }] }
-```
-
-Declared in `plugin.json`. The dashboard polls these to render plugin cards, and plugins with `"ui": true` ship custom React components.
-
-### Personas
-
-Workers aren't generic — each gets a persona that defines expertise, tone, and methodology:
-
-```
-PHASE: design    | PERSONA: architect               | OBJECTIVE: Define the API contract
-PHASE: implement | PERSONA: senior-backend-engineer  | OBJECTIVE: Build the service
-PHASE: review    | PERSONA: security-auditor         | OBJECTIVE: Audit auth flow | DEPENDS: implement
-```
-
-10 included: `academic-researcher` · `architect` · `data-analyst` · `devops-engineer` · `qa-engineer` · `security-auditor` · `senior-backend-engineer` · `senior-frontend-engineer` · `staff-code-reviewer` · `technical-writer`
-
-## Architecture
-
-```
-┌────────────────────────────────────────────────────────┐
-│  Claude Code  (reads CLAUDE.md → discovers skills)     │
-├────────────────────────────────────────────────────────┤
-│  Orchestrator                                          │
-│  ┌─────────────┐  decomposes task into phases          │
-│  │ decomposer  │  assigns personas + dependencies      │
-│  └─────────────┘  spawns workers (Claude Code / Codex) │
-│         │                                              │
-│         ▼  workers call plugins via SKILL.md           │
-├────────────────────────────────────────────────────────┤
-│  Plugins  (CLIs in ~/bin, via plugin.json)             │
-│                                                        │
-│  nen ········ self-improvement (Shu, Gyo, Ko, En, Ryu) │
-│  tracker ···· local issue tracking (Rust)              │
-│  scheduler ·· cron jobs + dispatch loop                │
-│  discord ···· channel notifications + voice messages   │
-│  telegram ··· channel notifications + voice messages   │
-│         ▲                                              │
-│         │  subscribe to events                         │
-├────────────────────────────────────────────────────────┤
-│  Event Bus  (JSONL files + UDS socket)                 │
-│  orchestrator emits → nen, dashboard, channels consume │
-├────────────────────────────────────────────────────────┤
-│  ~/.alluka/                                            │
-│  missions/ · workspaces/ · metrics.db · findings.db    │
-└────────────────────────────────────────────────────────┘
-```
-
-**Skills** are the brain — orchestration and planning:
-- **orchestrator** — multi-agent mission execution engine with daemon, event bus, quality gates
-- **decomposer** — breaks tasks into dependency-aware PHASE lines (knowledge-only, no binary)
-
-**Plugins** are the hands — domain-specific CLIs that skills invoke:
-- **Core**: **nen** (self-improvement scanners + eval engine)
-- **Recommended**: **scout** (intelligence gathering), **obsidian** (vault CLI), **tracker** (issue tracking, Rust), **scheduler** (cron + publishing), **gmail** (multi-account), **engage** (cross-platform comments)
-- **Optional**: **linkedin**, **youtube**, **reddit**, **substack**, **elevenlabs** (TTS), **ynab** (budgets), **dashboard** (macOS Spotlight overlay, Wails)
-- **Channels**: **discord** / **telegram** — notifications + native voice messages
-- **Examples**: **example-hello** / **example-bookmarks** — starter plugins for learning the system
-
-## Quick Start
-
-```bash
-git clone https://github.com/joeyhipolito/nanika
+git clone https://github.com/joeyhipolito/nanika.git
 cd nanika
-scripts/install.sh
+GOWORK=off make build-orchestrator
+./bin/orchestrator --help
+mkdir -p "$HOME/.alluka"
+./bin/orchestrator --nanika-dir "$PWD" --personas-dir "$PWD/personas" run --no-comment "YOUR TASK"
 ```
 
-The installer is interactive — checks prerequisites, lets you pick plugins, builds and installs, then runs doctor checks on everything it installed.
+The `--help` step does not start a mission; the build writes a local binary. The final `run` command starts provider work and may edit your selected target — only run it against a task/target you intend to change.
 
-```bash
-scripts/install.sh                        # Interactive — pick what to install
-scripts/install.sh --core                 # Core only (orchestrator + nen + tracker + scheduler)
-scripts/install.sh --all                  # Core + discord, telegram, dashboard
-scripts/install.sh --plugins discord      # Core + specific plugins
-scripts/install.sh --no-interactive       # CI: core only, no prompts
-scripts/install.sh --dry-run              # Show what would be installed
-scripts/install.sh --repair              # Re-check prereqs, rebuild broken plugins
-```
+Use the orchestrator's actual `--help` output for flags; the flags above (`--nanika-dir`, `--personas-dir`, `run --no-comment`) are the ones used in this quickstart, not an exhaustive list.
 
-Open in Claude Code — it reads `CLAUDE.md` and discovers all skills automatically:
+### Requirements
 
-```bash
-cd nanika
-claude
-# "research golang error handling best practices and write a report"
-```
+- Go 1.25.4 or newer, per `go.mod`.
+- Claude CLI installed and authenticated, for Claude Code execution.
+- Codex CLI installed and authenticated, if you use the Codex runtime.
+- Keep the checkout intact — components use local relative dependencies (e.g. `../../plugins/nen`, `../../shared/sdk`), so building from a partial copy will fail.
+- Shell scripts under `scripts/` require `bash` and `python3`.
+- `plugins/tracker` and `dust` need Rust/Cargo; `dust` additionally needs Node/Tauri tooling.
 
-## Scripts
-
-```bash
-scripts/install.sh              # Interactive installer
-scripts/new-mission.sh <slug>   # Create a mission file in ~/.alluka/missions/
-scripts/generate-agents-md.sh   # Regenerate the AGENTS.md routing index
-scripts/nanika-update.sh        # Build, install, and verify all plugins; restart daemons
-```
-
-After adding a plugin or skill, run `generate-agents-md.sh` to update the routing index so the orchestrator can discover it.
-
-### Install Skills
-
-Workers automatically use installed [Claude Code skills](https://skill.sh) during missions. More skills = smarter workers.
-
-After installing a skill, regenerate the routing index so workers can discover it:
-
-```bash
-scripts/generate-agents-md.sh
-```
-
-## Building Your Own Plugin
-
-A plugin needs three things:
-
-1. **A CLI binary** — Go or Rust. Callable from the shell.
-2. **A `plugin.json`** — name, build command, install command, query protocol.
-3. **A `skills/SKILL.md`** — tells Claude Code when and how to invoke it.
+### Optional install
 
 ```
-plugins/my-plugin/
-├── plugin.json             # Build, install, query declarations
-├── skills/SKILL.md         # Claude Code skill definition
-├── cmd/my-plugin/main.go   # CLI entry point
-└── go.mod
+GOWORK=off make install-orchestrator
+export PATH="$HOME/.alluka/bin:$PATH"
 ```
 
-After creating your plugin, register it:
+This installs the orchestrator binary into `~/.alluka/bin`.
 
-```bash
-scripts/generate-agents-md.sh   # Updates AGENTS.md + CLAUDE.md routing index
-make build-plugin-my-plugin     # Build the binary
-make install-plugin-my-plugin   # Install to ~/.alluka/bin/
+## Runtimes
+
+- **Claude (default).** Tier aliases: `think=opus`, `work=sonnet`, `quick=haiku`.
+- **Codex (optional, explicit).** Current source maps all tiers to `gpt-5.4`. This is a source-level default, not a recommendation about model availability or fitness. Codex is never auto-selected — you must request it explicitly.
+- **API executor (experimental).** Executor names `anthropic-api`, `openai-api`, `openrouter`, and `gemini-api` exist in source. These are not production-parity alternatives to the Claude/Codex CLI runtimes.
+- Gemini CLI is not a default prerequisite.
+
+## Missions and phases
+
+Mission files live under `~/.alluka/missions`. `scripts/new-mission.sh` writes a dated template you edit. Each phase line has the form:
+
+```
+PHASE: <name> | OBJECTIVE: <deliverable> | PERSONA: <persona> | DEPENDS: <prior-phase> | RUNTIME: <runtime>
 ```
 
-See [SKILL-STANDARD.md](docs/SKILL-STANDARD.md) for the full specification.
+`DEPENDS` and `RUNTIME` are optional. Built-in runtime policy defaults to Claude;
+configuration or explicit routing can override it. Example personas: `architect`, `senior-backend-engineer`, `staff-code-reviewer`, `technical-writer`. Example:
 
-## Extending Nanika
-
-- **[Plugin Protocol](docs/PLUGIN-PROTOCOL.md)** — Full reference for `plugin.json`, the query protocol, dashboard microfrontend contract, and custom UI bundles.
-- **[Event Bus](docs/EVENT-BUS.md)** — How to subscribe to orchestrator events (mission lifecycle, phase completions, anomalies) via the JSONL log or Unix domain socket.
-
-## Requirements
-
-| Dependency | Version | Required for |
-|-----------|---------|-------------|
-| Go | >= 1.25 | Skills and most plugins |
-| Claude Code | latest | Agent integration |
-| Rust/Cargo | latest | `tracker` plugin (optional) |
-| Node.js | >= 22 | `dashboard` plugin (optional) |
-| Wails | v2 | `dashboard` plugin (optional) |
-
-The installer checks only what you need based on selected plugins.
-
-## Uninstall
-
-```bash
-make uninstall              # Stop daemons, remove launchd plists
-make clean                  # Remove build artifacts
-rm -rf ~/.alluka/bin/{orchestrator,shu,gyo,en,ryu,tracker,scheduler,discord,telegram}  # Remove binaries
-rm -rf ~/.alluka/           # Remove all runtime data (missions, databases, logs)
+```
+PHASE: design | OBJECTIVE: Draft the API contract for the export endpoint | PERSONA: architect
+PHASE: implement | OBJECTIVE: Implement the export endpoint per the design | PERSONA: senior-backend-engineer | DEPENDS: design
+PHASE: review | OBJECTIVE: Review the implementation for correctness and style | PERSONA: staff-code-reviewer | DEPENDS: implement
+PHASE: docs | OBJECTIVE: Write user-facing docs for the export endpoint | PERSONA: technical-writer | DEPENDS: implement | RUNTIME: claude
 ```
 
-## The Name
+Note that `--dry-run` previews are not guaranteed to be a pure offline operation for natural-language tasks: decomposition of a free-text objective can itself call an LLM.
 
-**Nanika** (ナニカ) and **Alluka** are from *Hunter x Hunter*. Alluka is the vessel; Nanika is the wish-granting intelligence inside.
+## Legacy install scripts
 
-- **`nanika/`** — the intelligence layer (skills, routing, orchestration)
-- **`~/.alluka/`** — the vessel (runtime state, missions, metrics, findings)
+`scripts/install.sh --core` builds and installs the orchestrator plus `nen`, `tracker`, and `scheduler`, wiring up symlinks/config and optionally managing daemons. `--all` additionally adds `discord` and `telegram`. These scripts are not needed for a minimal CLI setup — prefer the targeted `make build-orchestrator` path above unless you want the full daemon-managed install.
 
-The Nen abilities (Shu, Gyo, Ko, En, Ryu, Zetsu) are also HxH references — each maps to a real self-improvement capability.
+`scripts/nanika-update.sh` rebuilds, reinstalls, and restarts the actual plugins on your machine — treat it as an operator action, not a read-only check.
+
+Bulk targets like `make build`/`make setup` currently reference the missing dashboard component; prefer targeted per-component builds (e.g. `make build-orchestrator`) over the bulk targets.
+
+## Validation and known limits
+
+- `shared/sdk`: 69 tests, race-enabled, passing; the orchestrator Go CLI builds cleanly, as of this snapshot.
+- Broader orchestrator test suites have baseline failures at this snapshot — do not assume all orchestrator tests are green.
+- The old "all skills" CI references paths that have since been retired.
+- A dedicated SDK CI workflow runs on Linux and macOS.
+
+## Skills discovery
+
+Skills are tracked in their own directories, with additional links under `.claude/skills`. Some of those legacy links are broken in this public snapshot, so skill discovery is not guaranteed to be automatic — check `AGENTS.md` for the current catalog. The canonical decomposer skill definition is at `skills/decomposer/.claude/skills/decomposer/SKILL.md`.
+
+## Documentation
+
+- [`skills/orchestrator/README.md`](skills/orchestrator/README.md)
+- [`shared/sdk/README.md`](shared/sdk/README.md)
+- [`scripts/README.md`](scripts/README.md)
+- [`CONTRIBUTING.md`](CONTRIBUTING.md)
+- [`docs/SKILL-STANDARD.md`](docs/SKILL-STANDARD.md)
+- [`docs/PERSONA-STANDARD.md`](docs/PERSONA-STANDARD.md)
+- [`docs/PLUGIN-PROTOCOL.md`](docs/PLUGIN-PROTOCOL.md)
+- [`docs/EVENT-BUS.md`](docs/EVENT-BUS.md)
+- [`docs/OSS-UPDATE-2026-09.md`](docs/OSS-UPDATE-2026-09.md)
+- [`plugins/dust/README.md`](plugins/dust/README.md)
 
 ## License
 
-MIT
+MIT — see [`LICENSE`](LICENSE).
