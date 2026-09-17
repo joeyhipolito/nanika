@@ -1,9 +1,9 @@
 name: Rust orchestrator pilot
 on:
   push:
-    paths: ['skills/orchestrator-rs/**', 'skills/orchestrator/**', 'shared/sdk/**', 'plugins/nen/**', 'scripts/*rust*', 'scripts/orchestrator-dispatch.py', '.github/workflows/rust-orchestrator.yml']
+    paths: ['skills/orchestrator-rs/**', 'skills/orchestrator/**', 'shared/sdk/**', 'plugins/nen/**', 'scripts/*rust*', 'scripts/*experiment*', 'scripts/orchestrator-dispatch.py', '.github/workflows/rust-orchestrator.yml']
   pull_request:
-    paths: ['skills/orchestrator-rs/**', 'skills/orchestrator/**', 'shared/sdk/**', 'plugins/nen/**', 'scripts/*rust*', 'scripts/orchestrator-dispatch.py', '.github/workflows/rust-orchestrator.yml']
+    paths: ['skills/orchestrator-rs/**', 'skills/orchestrator/**', 'shared/sdk/**', 'plugins/nen/**', 'scripts/*rust*', 'scripts/*experiment*', 'scripts/orchestrator-dispatch.py', '.github/workflows/rust-orchestrator.yml']
 permissions:
   contents: read
 jobs:
@@ -25,6 +25,11 @@ jobs:
         with:
           go-version-file: skills/orchestrator/go.mod
           cache-dependency-path: skills/orchestrator/go.sum
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Offline experiment viewer checks
+        run: node scripts/test-experiment-viewer.cjs
       - name: Build paired runtime and helpers
         working-directory: skills/orchestrator-rs
         run: cargo build --locked -p orchestrator-first-use-pilot --bins -p orchestrator-process --bin orchestrator-process-broker

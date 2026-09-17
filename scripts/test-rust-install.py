@@ -5,7 +5,9 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -48,6 +50,29 @@ class DispatchTests(unittest.TestCase):
             self.assertEqual(result.returncode, 126)
             self.assertNotIn('GO-RAN', result.stdout)
 
+    def test_experiment_alias_enters_paired_bundle_without_implicit_opt_in(self):
+        with tempfile.TemporaryDirectory(prefix='experiment alias ') as temporary:
+            root = Path(temporary).resolve()
+            bundle, bindir = root / 'bundle', root / 'bin'
+            bundle.mkdir()
+            bindir.mkdir()
+            entry = bundle / 'orchestrator-experiment-entry'
+            entry.write_bytes((ROOT / 'scripts/orchestrator-experiment-dispatch.py').read_bytes())
+            entry.chmod(0o755)
+            runner = bundle / 'orchestrator-experiment'
+            runner.write_text('#!/usr/bin/env python3\nimport json,sys\nprint(json.dumps(sys.argv))\nsys.exit(23)\n')
+            runner.chmod(0o755)
+            alias = bindir / 'orchestrator-experiment'
+            alias.symlink_to(entry)
+            result = subprocess.run([str(alias), '--help', 'literal; $(not-a-command)'],
+                                    capture_output=True, text=True)
+            self.assertEqual(result.returncode, 23)
+            self.assertEqual(json.loads(result.stdout),
+                             [str(runner), '--help', 'literal; $(not-a-command)'])
+            runner.unlink()
+            result = subprocess.run([str(alias), '--help'], capture_output=True, text=True)
+            self.assertEqual(result.returncode, 126)
+
 
 def installed(prefix):
     executable = prefix / 'bin/orchestrator'
@@ -57,6 +82,11 @@ def installed(prefix):
     rust = Path(info['rust'])
     assert rust.parent == Path(info['go']).parent
     assert (rust.parent / 'orchestrator-process-broker').is_file()
+    experiment = prefix / 'bin/orchestrator-experiment'
+    assert experiment.resolve().parent == rust.parent
+    subprocess.run([str(experiment), '--help'], check=True, capture_output=True)
+    refusal = subprocess.run([str(experiment)], capture_output=True, text=True)
+    assert refusal.returncode != 0 and 'explicit --allow-provider-experiments required' in refusal.stderr
     for args in [['--help'], ['--engine', 'rust', '--help'], ['--engine', 'go', '--help']]:
         subprocess.run([str(executable), *args], check=True, capture_output=True)
     with tempfile.TemporaryDirectory(prefix='smoke-', dir=prefix) as temporary:
@@ -69,7 +99,17 @@ def installed(prefix):
                                 check=True, capture_output=True)
         assert log.read_text() == 'fixture'
         assert json.loads(result.stdout)
-    print('Installed paired engines, offline observation, and output helper passed.')
+        fixtures = Path(temporary) / 'experiment-fixtures'
+        shutil.copytree(ROOT / 'skills/orchestrator-rs/crates/orchestrator-first-use-pilot/tests/fixtures/experiment', fixtures)
+        checker = fixtures / 'check.py'
+        source = checker.read_text()
+        resolution = 'runner = pathlib.Path(sys.argv[2]).resolve()'
+        assert source.count(resolution) == 1
+        # Exercise the actual PATH alias, not a pre-resolved bundle executable.
+        checker.write_text(source.replace(resolution, 'runner = pathlib.Path(sys.argv[2]).absolute()'))
+        subprocess.run([sys.executable, '-I', str(checker), str(Path(temporary) / 'cases'),
+                        str(experiment.absolute())], check=True)
+    print('Installed paired engines, offline observation, output helper, and experiment alias passed.')
 
 
 if __name__ == '__main__':

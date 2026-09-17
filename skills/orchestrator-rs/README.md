@@ -20,7 +20,7 @@ orchestrator --engine go --help
 ```
 
 The installer builds the pilot, its matching process broker, output/usage
-helpers, and the Go compatibility binary. It installs a content-addressed bundle
+helpers, the auxiliary experiment runner, and the Go compatibility binary. It installs a content-addressed bundle
 under `~/.local/libexec/nanika-orchestrator/` and activates links in `~/.local/bin`.
 Use `--prefix /another/prefix` to choose another installation. An unmanaged binary
 or link at a destination is preserved and installation refuses; select another
@@ -194,6 +194,29 @@ used independently. Review-summary controls and matched savings benchmarks remai
 development work. Portal is not
 silently enabled by installation, and Claude's tool permissions are unchanged.
 
+## Matched experiments and offline comparison
+
+`orchestrator-experiment` is a separate, explicitly opted-in command for repeated
+standalone Codex OFF/ON pairs. It runs providers only with
+`--allow-provider-experiments`, preserves failed attempts and unknown usage, and
+requires an independent verifier for quality gates. A successful runner exit does
+not mean every sample passed. See [EXPERIMENTS.md](EXPERIMENTS.md) for arguments,
+input pinning, limits, and interpretation.
+
+After source installation, `orchestrator --engine-info` reports the absolute
+bundled Rust pilot path to supply as `--pilot`. Use the installed
+`orchestrator-experiment` command; its launcher resolves the matching broker
+before starting the runner. `orchestrator-experiment --help` is offline and does
+not require experiment opt-in.
+
+Open [experiment-viewer/index.html](experiment-viewer/index.html) directly from
+this checkout to inspect a saved report locally. Keep its HTML, CSS and JavaScript
+files together. The viewer accepts reports up to 4 MiB and cannot start providers
+or change feature settings. It is shipped in the source checkout, not copied into
+the executable bundle. Read the [viewer guide](experiment-viewer/README.md) for
+its receipt checks and limitations. Cache remains uncontrolled, and neither the
+runner nor the viewer claims savings from a pair of observations.
+
 ## Development and validation
 
 From `skills/orchestrator-rs`:
@@ -205,6 +228,15 @@ cargo test --locked -p orchestrator-first-use-pilot
 cargo test --locked -p orchestrator-provider-claude --features experimental-first-use-pilot
 cargo fmt --all --check
 cargo clippy --locked -p orchestrator-first-use-pilot --all-targets -- -D warnings
+```
+
+The runner's retained CLI fixtures use fake executables and invoke no providers.
+For focused runner and offline viewer checks (Node.js 22 or newer for tests):
+
+```sh
+cargo test --locked -p orchestrator-first-use-pilot --bin orchestrator-experiment
+cargo test --locked -p orchestrator-first-use-pilot --test experiment_cli
+node ../../scripts/test-experiment-viewer.cjs
 ```
 
 Build the broker before tests on macOS. Public CI runs these commands on macOS

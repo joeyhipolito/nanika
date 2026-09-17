@@ -13,10 +13,11 @@ import uuid
 
 ROOT = Path(__file__).resolve().parent.parent
 NAMES = ('orchestrator-first-use-pilot', 'orchestrator-process-broker',
-         'orchestrator-output', 'orchestrator-usage-replay')
+         'orchestrator-output', 'orchestrator-usage-replay', 'orchestrator-experiment')
 LINKS = {'orchestrator': 'orchestrator', 'orchestrator-go': 'orchestrator-go',
          'orchestrator-output': 'orchestrator-output',
-         'orchestrator-usage-replay': 'orchestrator-usage-replay'}
+         'orchestrator-usage-replay': 'orchestrator-usage-replay',
+         'orchestrator-experiment': 'orchestrator-experiment-entry'}
 
 
 def run(command, **kwargs):
@@ -59,6 +60,7 @@ def install(prefix, profile):
         run(['go', 'build', '-o', str(stage / 'orchestrator-go'), '.'],
             cwd=ROOT / 'skills/orchestrator', env=environment)
         shutil.copy2(ROOT / 'scripts/orchestrator-dispatch.py', stage / 'orchestrator')
+        shutil.copy2(ROOT / 'scripts/orchestrator-experiment-dispatch.py', stage / 'orchestrator-experiment-entry')
         hashes = {f.name: hashlib.sha256(f.read_bytes()).hexdigest() for f in sorted(stage.iterdir())}
         revision = subprocess.check_output(['git', '-C', str(ROOT), 'rev-parse', 'HEAD'], text=True).strip()
         dirty = bool(subprocess.check_output(['git', '-C', str(ROOT), 'status', '--porcelain']))

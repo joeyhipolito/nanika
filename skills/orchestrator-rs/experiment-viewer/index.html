@@ -1,0 +1,35 @@
+<!doctype html>
+<!-- THESIS: A receipt ledger makes every attempted sample visible before any comparison.
+OWN-WORLD: Nanika sumi surfaces, washi text, fine rules, restrained matcha and shu status accents.
+STORY: Import a local report, compare observed samples, inspect immutable settings and quality gates.
+FIRST VIEWPORT: Compact masthead and local import above a wide sample ledger; limitations sit beside filters.
+FORM: Precisely scoped extension of Nanika's existing operational tables; no concept seed or identity replacement. -->
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'none'; img-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'">
+  <title>Experiment ledger · Nanika</title>
+  <link rel="stylesheet" href="styles.css">
+  <script src="feature-rows.js" defer></script>
+  <script src="report-schema.js" defer></script>
+  <script src="app.js" defer></script>
+</head>
+<body>
+  <header class="masthead"><a href="#main" class="brand">Nanika <span>/ experiments</span></a><span>Local evidence viewer</span></header>
+  <main id="main">
+    <div class="intro"><div><h1>Experiment ledger</h1><p>Compare the attempts. Keep the failures.</p></div><div class="import"><label for="report-file">Open a local report</label><input id="report-file" type="file" accept="application/json,.json"><small>Runner v1 JSON · up to 4 MiB · stays in this browser</small></div></div>
+    <p id="error" role="alert" hidden></p>
+    <section id="empty" class="empty"><h2>Choose a report to begin</h2><p>Open <code>report.json</code> from a matched experiment. This viewer reads saved evidence; it cannot start or change a provider run.</p><p>Requested settings, effective settings and observed application are shown separately. Unknown values stay unknown.</p></section>
+    <div id="loaded" hidden>
+      <section aria-labelledby="outcome-title" class="outcome"><div><h2 id="outcome-title"></h2><p id="identity"></p></div><p class="caveat">Descriptive observations only.<br>Cache: external / uncontrolled.<br>Cost may be unknown; no savings claim.</p></section>
+      <div class="toolbar"><div><label for="arm">Arm</label><select id="arm"><option value="all">All arms</option><option value="off">OFF</option><option value="on">ON</option></select></div><div><label for="quality">Quality</label><select id="quality"><option value="all">All outcomes</option><option value="pass">Passed</option><option value="fail">Did not pass</option></select></div><p id="visible-count" aria-live="polite"></p></div>
+      <section aria-label="Matched sample comparison"><div class="table-scroll" tabindex="0" role="region" aria-label="Sample comparison, scroll horizontally on smaller screens"><table class="ledger"><caption>Ordered samples · elapsed includes pilot and verification</caption><thead><tr><th scope="col">Pair / order</th><th scope="col">Arm</th><th scope="col">Quality</th><th scope="col">Elapsed</th><th scope="col">Input tokens</th><th scope="col">Output tokens</th><th scope="col">Cached input</th><th scope="col">Cost</th><th scope="col">Evidence</th></tr></thead><tbody id="samples"></tbody></table></div><p id="no-matches" hidden>No samples match these filters.</p><p class="note">Cached input is a provider counter, not proof of a controlled warm cache. OFF command output may already be truncated by the provider.</p></section>
+      <section aria-labelledby="scope-title" class="scope"><h2 id="scope-title">Recorded capability</h2><p id="capability"></p><div class="modes"><label for="mode">Run mode <small>Read-only</small></label><select id="mode" disabled><option>Standalone Codex code</option><option disabled>Review — unsupported</option><option disabled>Durable mission — unsupported</option></select><span>Launching and changing feature settings are not available in this viewer.</span></div></section>
+      <section aria-labelledby="receipts-title"><h2 id="receipts-title">Sample receipts</h2><p class="note">Expand an attempt to inspect its gates and settings. Raw prompts and tool output are not displayed.</p><div id="receipts"></div></section>
+      <details class="identity-details"><summary>Pinned inputs and versions</summary><dl id="pins"></dl></details>
+    </div>
+    <footer>Nanika · immutable receipts, observed outcomes.<span>No network requests or provider execution.</span></footer>
+  </main>
+</body>
+</html>

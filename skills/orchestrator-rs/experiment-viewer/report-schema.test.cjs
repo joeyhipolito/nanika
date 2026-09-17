@@ -1,0 +1,23 @@
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const { validate } = require('./report-schema.js');
+const input = process.argv[2];
+assert(input, 'Supply the real runner report path for this read-only regression.');
+const original = JSON.parse(fs.readFileSync(input, 'utf8'));
+validate(original);
+const clone = () => JSON.parse(JSON.stringify(original));
+function rejected(mutate) { const report = clone(); mutate(report); assert.throws(() => validate(report)); }
+rejected(report => { report.schema = 'future'; });
+rejected(report => { report.savings_claim = true; });
+rejected(report => { report.samples[0].arm = 'on'; });
+rejected(report => { report.samples[0].metrics.input_tokens = -1; });
+rejected(report => { report.samples[0].artifacts.extra = {status:'unavailable',path:'x',reason:'x'}; });
+rejected(report => { report.samples[0].quality_gates.verification = false; });
+rejected(report => { report.samples[0].artifacts.features.value.entries.push(report.samples[0].artifacts.features.value.entries[0]); });
+rejected(report => { const on = report.samples.find(sample => sample.arm === 'on' && sample.quality_passed); on.artifacts.portal_application.value.applied = false; });
+rejected(report => { report.samples[0].identity_drift = 'source identity drift'; });
+rejected(report => { report.samples[0].artifacts.pilot_result.status = 'unavailable'; report.samples[0].artifacts.pilot_result.reason = 'missing'; });
+rejected(report => { report.samples[0].artifacts.features = {status:'unavailable',path:'missing.json',reason:'missing'}; });
+const unknown = clone(); unknown.samples[0].metrics = null; validate(unknown);
+const inert = clone(); inert.manifest.model = '<img src=x onerror=alert(1)>'; validate(inert);
+console.log('14 schema cases passed, including the real report and inert text.');
