@@ -12,6 +12,7 @@ HELP = """orchestrator: Rust-first entry point with Go compatibility
 
 Rust commands:
   code / review                 Native Rust argument syntax
+  features                      Recorded worker feature catalog
   run --repo ... --output-dir ... -- <verifier command>
   resume --output-dir <saved Rust run>
   status --output-dir <saved Rust run>
@@ -45,7 +46,7 @@ def select(arguments):
     if '--' in options:
         options = options[:options.index('--')]
     names = {option.split('=', 1)[0] for option in options if option.startswith('--')}
-    if command in ('code', 'review', 'resume', 'observe', 'view'):
+    if command in ('code', 'review', 'resume', 'observe', 'view', 'features'):
         return 'rust', arguments
     if command in ('run', 'status', 'cancel') and names.intersection({
         '--repo', '--output-dir', '--durable', '--task-file', '--mission-file', '--prompt-file'

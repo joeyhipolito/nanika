@@ -1988,3 +1988,37 @@ fn coding_contract_rejects_missing_duplicate_truncated_and_tool_only_results() -
     ));
     Ok(())
 }
+
+#[test]
+fn pilot_rate_limit_threshold_preserves_complete_stream_and_strict_boundary() -> TestResult {
+    let expected = parse_first_use_pilot(RECORDED_2_1_269_WIRE)?;
+    let mut records = RECORDED_2_1_269_WIRE
+        .lines()
+        .map(serde_json::from_str::<serde_json::Value>)
+        .collect::<Result<Vec<_>, _>>()?;
+    let index = records
+        .iter()
+        .position(|row| row["type"] == "rate_limit_event")
+        .ok_or("rate-limit record")?;
+    records[index]["rate_limit_info"]["surpassedThreshold"] = serde_json::json!(0.75);
+    let wire = records
+        .iter()
+        .map(serde_json::Value::to_string)
+        .collect::<Vec<_>>()
+        .join("\n");
+    let parsed = parse_first_use_pilot(&wire)?;
+    assert_eq!(parsed.output, expected.output);
+    assert_eq!(parsed.cost, expected.cost);
+    assert!(parse_one_shot_output(wire.as_bytes()).is_err());
+    records[index]["rate_limit_info"]["status"] = serde_json::json!("rejected");
+    let rejected = records
+        .iter()
+        .map(serde_json::Value::to_string)
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(matches!(
+        parse_first_use_pilot(&rejected),
+        Err(ClaudeOutputError::ProviderReportedError)
+    ));
+    Ok(())
+}

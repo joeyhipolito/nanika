@@ -10,7 +10,7 @@ fn envelope(runtime: &str, status: &str, extra: Value) -> Value {
     let mut value = json!({
         "schema": SCHEMA,
         "runtime": runtime,
-        "implementation_revision": IMPLEMENTATION_REVISION,
+        "implementation_revision": if runtime == "codex" { "codex-usage/v1" } else { IMPLEMENTATION_REVISION },
         "portal_requested": "off",
         "portal_effective": "off",
         "mode_source": "runtime-default",
@@ -24,7 +24,7 @@ fn envelope(runtime: &str, status: &str, extra: Value) -> Value {
 }
 
 pub(crate) fn capture(runtime: &str, stdout: Option<&[u8]>, discarded_bytes: Option<u64>) -> Value {
-    if runtime != "claude" {
+    if runtime != "claude" && runtime != "codex" {
         return envelope(runtime, "not_supported", json!({}));
     }
     let Some(stdout) = stdout else {
@@ -33,34 +33,56 @@ pub(crate) fn capture(runtime: &str, stdout: Option<&[u8]>, discarded_bytes: Opt
     if discarded_bytes != Some(0) {
         return envelope(runtime, "incomplete", json!({"reason": "discarded_bytes"}));
     }
-    let mut report = match usage::report(stdout) {
+    let mut report = match if runtime == "codex" {
+        crate::usage_codex::report(stdout).map_err(str::to_owned)
+    } else {
+        usage::report(stdout)
+    } {
         Ok(report) => report,
         Err(_) => return envelope(runtime, "unavailable", json!({})),
     };
-    if report["assistant_message_count"].as_u64() == Some(0) {
+    let count_key = if runtime == "codex" {
+        "provider_turn_count"
+    } else {
+        "assistant_message_count"
+    };
+    if report[count_key].as_u64() == Some(0) {
         return envelope(runtime, "unavailable", json!({}));
     }
     report["portal_mode"] = json!("off");
-    let events: Vec<Value> = report["messages"]
-        .as_array()
-        .cloned()
-        .unwrap_or_default()
-        .into_iter()
-        .map(|message| {
-            json!({
-                "kind": "worker.usage",
-                "delivery": "attempt-final-snapshot",
-                "session_id": message["session_id"],
-                "message_id": message["message_id"],
-                "message_ordinal": message["ordinal"],
-                "usage": message["usage"],
-                "ambiguous": message["ambiguous"],
-                "observed_input_tokens": message["observed_input_tokens"],
-                "own_tool_names": message["own_tool_names"],
-                "final_stream_output_observed": message["final_stream_output_observed"],
+    let events: Vec<Value> = if runtime == "codex" {
+        report["turns"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|mut event| {
+                event["delivery"] = json!("attempt-final-snapshot");
+                event
             })
-        })
-        .collect();
+            .collect()
+    } else {
+        report["messages"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|message| {
+                json!({
+                    "kind": "worker.usage",
+                    "delivery": "attempt-final-snapshot",
+                    "session_id": message["session_id"],
+                    "message_id": message["message_id"],
+                    "message_ordinal": message["ordinal"],
+                    "usage": message["usage"],
+                    "ambiguous": message["ambiguous"],
+                    "observed_input_tokens": message["observed_input_tokens"],
+                    "own_tool_names": message["own_tool_names"],
+                    "final_stream_output_observed": message["final_stream_output_observed"],
+                })
+            })
+            .collect()
+    };
     envelope(
         runtime,
         "available",
@@ -73,10 +95,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn non_claude_runtime_is_not_supported() {
-        let value = capture("codex", Some(b"{}"), None);
+    fn unknown_runtime_is_not_supported() {
+        let value = capture("unknown", Some(b"{}"), None);
         assert_eq!(value["status"], "not_supported");
-        assert_eq!(value["runtime"], "codex");
+        assert_eq!(value["runtime"], "unknown");
         assert!(value.get("report").is_none());
     }
 

@@ -62,6 +62,8 @@ struct DurableManifest {
     snapshot: SnapshotBinding,
     #[serde(default)]
     execution_environment: Option<Vec<EnvironmentBinding>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    feature_configuration: Option<features::Snapshot>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -279,6 +281,7 @@ pub(crate) struct DurableProcessOwner {
 
 pub(crate) struct DurablePilotProcessService {
     progress: super::progress::Progress,
+    usage_runtime: Option<&'static str>,
     owner: Arc<ProductionWriterAuthority>,
     mission_id: MissionId,
     phase_id: String,
@@ -372,6 +375,13 @@ impl DurableProcessOwner {
 }
 
 impl DurablePilotProcessService {
+    // Observational decoder selection is independent of the pinned executable ID.
+    // Only known provider services opt in; verifier output remains uninterpreted.
+    pub(crate) fn with_codex_usage(mut self) -> Self {
+        self.usage_runtime = Some("codex");
+        self
+    }
+
     #[expect(
         clippy::too_many_arguments,
         reason = "durable process admission keeps every authority binding explicit"
@@ -423,6 +433,7 @@ impl DurablePilotProcessService {
         };
         Ok(Self {
             progress: super::progress::Progress::default(),
+            usage_runtime: None,
             owner,
             mission_id,
             phase_id: phase_id.to_owned(),
@@ -585,7 +596,7 @@ impl ProcessService for DurablePilotProcessService {
             self.progress
                 .stage("process_dispatch", Some(&self.phase_id));
             self.progress
-                .forward(&self.phase_id, |output| {
+                .forward_observed(&self.phase_id, self.usage_runtime, |output| {
                     session.execute_with_output(&exact, budget, output)
                 })
                 .map_err(|_| {
@@ -809,6 +820,8 @@ fn status_with_observer(
         "mission_id": manifest.mission_id,
         "mission_digest": manifest.mission_digest,
         "recorded_status": recorded_status,
+        "feature_configuration": manifest.feature_configuration,
+        "feature_configuration_status": if manifest.feature_configuration.is_some() { "recorded" } else { "legacy-unrecorded" },
         "last_journal_sequence": replayed.last_sequence,
         "last_journal_timestamp": replayed.last_timestamp,
         "total_phase_count": mission.phases.len(),
@@ -829,6 +842,7 @@ pub(crate) fn run(
     cancellation: CancellationToken,
     progress: super::progress::Progress,
 ) -> Result<PilotSummary, PilotError> {
+    feature_snapshot(options)?;
     progress.stage("preparing_snapshot", None);
     let source = read_prompt_with_limit(&options.prompt_file, MAX_CODE_PROMPT_BYTES)?;
     let mission = authored_cycle::parse_mission(&source).map_err(PilotError::Composition)?;
@@ -2190,6 +2204,7 @@ fn build_manifest(
             workspace_digest,
         },
         execution_environment: Some(capture_execution_environment()?),
+        feature_configuration: Some(feature_snapshot(options)?),
     })
 }
 
@@ -2281,6 +2296,13 @@ fn options_from_manifest(
         durable: true,
         stop_after_phase: None,
         mission_id: None,
+        feature_requests: manifest
+            .feature_configuration
+            .as_ref()
+            .map(features::Snapshot::restore)
+            .transpose()
+            .map_err(PilotError::Composition)?
+            .unwrap_or_default(),
         progress_log: None,
         observe_follow: false,
         observe_format: super::observe::OutputFormat::Text,
@@ -2288,6 +2310,14 @@ fn options_from_manifest(
 }
 
 fn validate_manifest_contract(manifest: &DurableManifest, root: &Path) -> Result<(), PilotError> {
+    if let Some(snapshot) = &manifest.feature_configuration {
+        snapshot.restore().map_err(PilotError::Composition)?;
+        if !snapshot.context_matches("codex", "run") {
+            return Err(PilotError::Composition(
+                "durable feature settings have wrong runtime or command".to_owned(),
+            ));
+        }
+    }
     if manifest.schema != MANIFEST_SCHEMA
         || sha256(manifest.mission_text.as_bytes()) != manifest.mission_digest
         || Path::new(&manifest.output_root) != root
@@ -4167,6 +4197,7 @@ PHASE: verify | OBJECTIVE: Verify it | PERSONA: operator-verifier | ROLE: verifi
                 durable: true,
                 stop_after_phase: None,
                 mission_id: None,
+                feature_requests: features::Requests::default(),
                 progress_log: None,
                 observe_follow: false,
                 observe_format: super::observe::OutputFormat::Text,
@@ -4216,6 +4247,7 @@ PHASE: verify | OBJECTIVE: Verify it | PERSONA: operator-verifier | ROLE: verifi
                     workspace_digest: zero_digest,
                 },
                 execution_environment: None,
+                feature_configuration: None,
             };
             let manifest_path = root.join("manifest.json");
             let manifest_bytes = json_bytes(&manifest_path, &manifest)?;

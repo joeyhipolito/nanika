@@ -17,7 +17,7 @@ spec.loader.exec_module(dispatcher)
 
 class DispatchTests(unittest.TestCase):
     def test_native_and_legacy_selection(self):
-        for args in [['code'], ['review'], ['resume'], ['observe'], ['view'],
+        for args in [['code'], ['review'], ['resume'], ['observe'], ['view'], ['features'],
                      ['run', '--repo=x'], ['status', '--output-dir', 'x'],
                      ['cancel', '--output-dir=x']]:
             self.assertEqual(dispatcher.select(args), ('rust', args))

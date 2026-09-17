@@ -45,22 +45,18 @@ impl Progress {
         self.emit(json!({"kind": "stage", "stage": stage, "phase_id": phase}));
     }
 
-    pub(crate) fn forward<T: Send>(
-        &self,
-        phase: &str,
-        execute: impl FnOnce(ProcessOutputSender) -> T + Send,
-    ) -> Result<T, PilotError> {
-        self.forward_observed(phase, false, execute)
-    }
-
     pub(crate) fn forward_observed<T: Send>(
         &self,
         phase: &str,
-        claude_usage: bool,
+        runtime: Option<&str>,
         execute: impl FnOnce(ProcessOutputSender) -> T + Send,
     ) -> Result<T, PilotError> {
         let (sender, receiver) = output_channel();
-        let mut usage = LiveUsageDecoder::default();
+        let mut usage = LiveUsageDecoder {
+            codex: (runtime == Some("codex")).then(crate::usage_codex::CodexUsage::default),
+            ..Default::default()
+        };
+        let usage_enabled = matches!(runtime, Some("claude" | "codex"));
         let mut observed_loss = 0;
         thread::scope(|scope| {
             let worker = scope.spawn(move || execute(sender));
@@ -69,12 +65,12 @@ impl Progress {
                 match receiver.recv_timeout(if finished { Duration::ZERO } else { WAIT }) {
                     Ok(chunk) => {
                         let lost = receiver.dropped_bytes();
-                        if claude_usage && lost != observed_loss {
+                        if usage_enabled && lost != observed_loss {
                             usage.disable_after_loss();
                             self.emit(json!({"kind":"worker.usage_unavailable","phase_id":phase,"reason":"live source output dropped","bytes":lost-observed_loss}));
                             observed_loss = lost;
                         }
-                        if claude_usage && matches!(chunk.stream, ProcessOutputStream::Stdout) {
+                        if usage_enabled && matches!(chunk.stream, ProcessOutputStream::Stdout) {
                             for mut event in usage.push(&chunk.bytes) {
                                 event["phase_id"] = json!(phase);
                                 self.emit(event);
@@ -97,11 +93,11 @@ impl Progress {
                 }
             }
             let dropped = receiver.dropped_bytes();
-            if claude_usage && dropped != observed_loss {
+            if usage_enabled && dropped != observed_loss {
                 usage.disable_after_loss();
                 self.emit(json!({"kind":"worker.usage_unavailable","phase_id":phase,"reason":"live source output dropped","bytes":dropped-observed_loss}));
             }
-            if claude_usage && !usage.disabled && usage.framing.pending() {
+            if usage_enabled && !usage.disabled && usage.framing.pending() {
                 self.emit(json!({"kind":"worker.usage_unavailable","phase_id":phase,"reason":"unterminated final usage frame"}));
             }
             if dropped != 0 {
@@ -118,6 +114,7 @@ impl Progress {
 struct LiveUsageDecoder {
     framing: crate::observe::framing::Framer,
     usage: crate::usage_live::LiveUsage,
+    codex: Option<crate::usage_codex::CodexUsage>,
     disabled: bool,
 }
 impl LiveUsageDecoder {
@@ -134,6 +131,9 @@ impl LiveUsageDecoder {
         }
         let mut events = Vec::new();
         for byte in bytes {
+            if self.disabled {
+                break;
+            }
             let Some(line) = self.framing.push(*byte) else {
                 continue;
             };
@@ -144,9 +144,22 @@ impl LiveUsageDecoder {
                 .then(|| serde_json::from_slice(&line.bytes).ok())
                 .flatten()
             {
-                events.extend(self.usage.observe(&row));
+                if let Some(codex) = self.codex.as_mut() {
+                    match codex.observe(&row) {
+                        Ok(observed) => events.extend(observed),
+                        Err(reason) => {
+                            self.disabled = true;
+                            events.push(json!({"kind":"worker.usage_unavailable","runtime":"codex","reason":reason}));
+                        }
+                    }
+                } else {
+                    events.extend(self.usage.observe(&row));
+                }
             } else {
                 self.usage.reset();
+                if self.codex.is_some() {
+                    self.disabled = true;
+                }
                 events.push(json!({"kind":"worker.usage_unavailable","reason":"invalid, ambiguous or oversized live frame"}));
             }
         }
@@ -233,6 +246,32 @@ pub(crate) fn run(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn codex_usage_is_live_at_terminal_and_disabled_after_malformed_or_lost_source()
+    -> Result<(), String> {
+        let mut decoder = LiveUsageDecoder {
+            codex: Some(crate::usage_codex::CodexUsage::default()),
+            ..Default::default()
+        };
+        let wire = include_bytes!("codex-success.jsonl");
+        let split = wire.len() / 2;
+        assert!(decoder.push(&wire[..split]).is_empty());
+        let events = decoder.push(&wire[split..]);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0]["granularity"], "provider-turn");
+        assert_eq!(events[0]["usage"]["input_tokens"], 10430);
+        let error = decoder.push(b"{invalid}\n");
+        assert_eq!(error[0]["kind"], "worker.usage_unavailable");
+        assert!(decoder.push(wire).is_empty());
+        let mut decoder = LiveUsageDecoder {
+            codex: Some(crate::usage_codex::CodexUsage::default()),
+            ..Default::default()
+        };
+        decoder.disable_after_loss();
+        assert!(decoder.push(wire).is_empty());
+        Ok(())
+    }
 
     #[test]
     fn detected_loss_prevents_queued_starts_from_rebuilding_correlation() {

@@ -33,13 +33,15 @@ invoked directly to use the previous paired engines, or relink
 `<prefix>/bin/orchestrator` to it for rollback. The manifest records hashes,
 platform, source revision, and whether the checkout was dirty. This is a local
 source build, not a signed/notarized binary distribution or a publisher signature.
-`--profile dev` provides a faster debug build. No provider runs during install.
+The default `release` profile optimizes runtime work such as executable identity
+hashing. `--profile dev` builds faster but can make large-provider startup much
+slower. No provider runs during install.
 
 ## Command routing
 
 | Command | Engine |
 |---|---|
-| `code`, `review`, `resume`, `observe`, `view` | Rust |
+| `code`, `review`, `resume`, `observe`, `view`, `features` | Rust |
 | `run`, `status`, `cancel` with native selectors such as `--repo` or `--output-dir` | Rust |
 | Existing plain-text missions, global status, metrics, audit, daemon | Go |
 | `--engine rust ...` / `--engine go ...` | Explicit selection |
@@ -87,8 +89,15 @@ orchestrator status --output-dir /path/to/run
 orchestrator resume --output-dir /path/to/run
 ```
 
-The verifier must produce recognized test results with a positive executed-test
-count for a passing gate; a bare successful exit is insufficient. Durable state
+The verifier must execute its checks and write a fresh JSON report to the path in
+`NANIKA_VERIFICATION_REPORT`. A passing one-check report has this shape:
+
+```json
+{"schema":"nanika.rust-first-use-verification.v1","discovered":1,"executed":1,"passed":1,"failed":0,"required_skipped":0}
+```
+
+Counts must describe the checks actually run. A successful exit or test-runner
+stdout alone is insufficient; zero executed checks and required skips cannot pass. Durable state
 belongs to the private output directory. Native status reads saved state without
 starting a provider and does not prove a process is currently alive.
 For a live durable owner, read the exact `mission_id` from `manifest.json`, then:
@@ -123,6 +132,47 @@ live usage decoding for that attempt. Final `worker-usage.json` and
 `worker-usage-events.jsonl` are independently derived from captured output;
 telemetry is best-effort and does not decide execution acceptance.
 
+Codex code/review emits provider-turn usage at `turn.completed`, identified by
+thread plus an attempt-local turn ordinal. Repeated terminal snapshots are
+deduplicated; cached input is already included in input tokens. Unknown costs or
+counters stay null. Authored/durable Codex code and review phases persist usage
+under their phase directories and retain it across resume. Completed resume emits
+no duplicate usage. Failed attempts may retain valid usage without becoming
+successful; verification output cannot impersonate provider telemetry.
+
+## Feature controls and Portal
+
+`orchestrator features` displays the supported worker settings without invoking a
+provider. Fresh code/review/run commands accept repeatable `--feature name=off|on`.
+Unknown, duplicate and unsupported ON requests are refused before execution.
+Standalone Codex coding supports the output cap:
+
+```sh
+orchestrator code --runtime codex --feature portal-output-cap=on \
+  --codex /path/to/codex-0.154.0 --repo /path/to/clean/repo \
+  --prompt-file /path/to/task.md --output-dir /path/to/fresh/result
+```
+
+OFF is the default and preserves the existing worker path without invoking the
+helper. ON instructs every shell command to use the installed sibling output
+helper. Full private logs remain under `portal-logs`; returned JSON is capped at
+16 KiB. Post-run validation matches command starts/completions, exit status, byte
+counts and full-log SHA-256, and rejects missing, changed or unexpected artifacts.
+Only the log directory is added to writable roots. This is an instructed wrapper,
+not interception: an unwrapped command may already have returned raw output before
+validation rejects the run. Failed commands keep their real exit codes and logs.
+
+`run-features.json` records requested/effective settings and capability revision.
+The v2 admission snapshot leaves `applied` null; `portal-application.json` records
+observed application separately. No-shell runs report applied false. Durable
+manifests retain their recorded settings through resume, including the frozen v1
+schema; historical unrecorded settings stay unrecorded.
+
+ON remains unsupported for Claude, review and durable/fixed/authored missions.
+Barok, Ponytail, Discipline, review summaries, KB, learnings and worker memory
+remain unwired in the Rust pilot. Output-byte reduction alone is not proof of token,
+cost or quality improvement; matched repeated trials and verification are needed.
+
 `orchestrator-usage-replay` analyzes saved Claude JSONL offline. For an explicit
 command-output experiment:
 
@@ -135,12 +185,13 @@ An optional `--output-cap off|on` before `--log` overrides the helper's cap.
 Omitting it follows `--portal`. `--portal on --output-cap off` returns raw bytes
 and records requested/effective modes separately; `--portal off --output-cap on`
 is contradictory and refused before execution or artifact creation. This control
-applies only to the explicit helper, not automatic provider integration.
+applies to the explicit helper; the worker flag above selects Portal and its cap
+together.
 
 Both modes retain a full fresh log; ON returns a bounded structured result,
-OFF returns uncapped captured output after command completion. The helper is
-explicit: automatic provider tool-output caps, independent summary controls, and
-matched provider savings benchmarks remain development work. Portal is not
+OFF returns uncapped captured output after command completion. The helper can also be
+used independently. Review-summary controls and matched savings benchmarks remain
+development work. Portal is not
 silently enabled by installation, and Claude's tool permissions are unchanged.
 
 ## Development and validation

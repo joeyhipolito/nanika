@@ -121,6 +121,7 @@ fn options(
         durable: false,
         stop_after_phase: None,
         mission_id: None,
+        feature_requests: features::Requests::default(),
         progress_log: None,
         observe_follow: false,
         observe_format: observe::OutputFormat::Text,

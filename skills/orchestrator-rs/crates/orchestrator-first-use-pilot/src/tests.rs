@@ -58,6 +58,7 @@ impl Scratch {
             durable: false,
             stop_after_phase: None,
             mission_id: None,
+            feature_requests: features::Requests::default(),
             progress_log: None,
             observe_follow: false,
             observe_format: observe::OutputFormat::Text,
@@ -1863,6 +1864,7 @@ fn coding_malformed_process_timeout_and_cancel_are_not_success() -> TestResult {
         let repo = scratch.git_repo("repo")?;
         let workspace = scratch.0.join("out/workspace");
         let good = code_wire(&workspace);
+        let provider_ready = scratch.0.join("provider-ready");
         let body = match mode {
             "stale" => emit(
                 &good
@@ -1872,7 +1874,10 @@ fn coding_malformed_process_timeout_and_cancel_are_not_success() -> TestResult {
             ),
             "malformed" => emit(&["{\"type\":\"turn.completed\"}"]),
             "exit" => format!("{}\nexit 7", emit(&good.lines().collect::<Vec<_>>())),
-            _ => "echo started; exec sleep 60".to_owned(),
+            _ => format!(
+                ": > '{}'; echo started; exec sleep 60",
+                provider_ready.display()
+            ),
         };
         let options = code_options(
             &scratch,
@@ -1884,8 +1889,15 @@ fn coding_malformed_process_timeout_and_cancel_are_not_success() -> TestResult {
         let canceller = if mode == "cancel" {
             let token = token.clone();
             Some(thread::spawn(move || {
-                thread::sleep(Duration::from_millis(500));
+                let deadline = Instant::now() + Duration::from_secs(15);
+                while !provider_ready.exists() && Instant::now() < deadline {
+                    thread::sleep(Duration::from_millis(10));
+                }
                 token.cancel();
+                assert!(
+                    provider_ready.exists(),
+                    "provider did not start before cancellation deadline"
+                );
             }))
         } else {
             None
@@ -2275,7 +2287,7 @@ fn usage_artifact_collision_is_diagnostic_and_never_overwrites() -> TestResult {
         stderr: Vec::new(),
         summary: json!({"stdout_discarded_bytes":0}),
     };
-    let usage = record_worker_usage(&scratch.0, "claude", Some(&observation));
+    let usage = record_worker_usage(&scratch.0, "claude", Some(&observation), None);
     assert_eq!(usage["status"], "unavailable");
     assert!(usage.get("report_artifact").is_none());
     assert!(usage.get("summary").is_none());
@@ -2295,5 +2307,111 @@ fn usage_capture_cannot_turn_a_failed_provider_into_success() -> TestResult {
     assert_eq!(result["provider_completed"], false);
     assert_eq!(result["worker_usage"]["status"], "available");
     assert!(!options.output_dir.join("review.md").exists());
+    Ok(())
+}
+
+#[test]
+fn feature_catalog_is_read_only_and_needs_no_opt_in() -> TestResult {
+    let mut out = Vec::new();
+    let mut err = Vec::new();
+    assert_eq!(main_with(["features"], None, &mut out, &mut err), 0);
+    let catalog: Value = serde_json::from_slice(&out)?;
+    assert_eq!(catalog["scope"], "rust-pilot-worker");
+    assert_eq!(catalog["features"].as_array().ok_or("features")?.len(), 8);
+    assert!(err.is_empty());
+    assert_eq!(
+        main_with(
+            ["features", "--feature", "kb=on"],
+            None,
+            &mut Vec::new(),
+            &mut err
+        ),
+        2
+    );
+    Ok(())
+}
+
+#[test]
+fn feature_requests_are_refused_before_output_or_provider_execution() -> TestResult {
+    let scratch = Scratch::new()?;
+    let marker = scratch.0.join("provider-invoked");
+    let provider = scratch.fake_claude("2.1.269", &format!("touch '{}'", marker.display()))?;
+    let prompt = scratch.file("feature-prompt", "review")?;
+    let output = scratch.0.join("feature-output");
+    for request in ["kb=on", "unknown=off", "kb=maybe", "kb=off=on"] {
+        let args = vec![
+            "review".to_owned(),
+            "--prompt-file".into(),
+            prompt.display().to_string(),
+            "--output-dir".into(),
+            output.display().to_string(),
+            "--claude".into(),
+            provider.display().to_string(),
+            "--feature".into(),
+            request.into(),
+        ];
+        assert_eq!(
+            main_with(args, Some("1".into()), &mut Vec::new(), &mut Vec::new()),
+            2
+        );
+        assert!(!output.exists());
+        assert!(!marker.exists());
+    }
+    for command in ["resume", "status", "cancel", "observe", "view"] {
+        assert!(parse_arguments([command, "--feature", "kb=off"]).is_err());
+    }
+    assert!(parse_arguments(["review", "--feature", "kb=off", "--feature", "kb=off"]).is_err());
+    Ok(())
+}
+
+#[test]
+fn feature_receipt_survives_provider_version_refusal() -> TestResult {
+    let scratch = Scratch::new()?;
+    let provider = scratch.fake_claude("0.0.0", "exit 99")?;
+    let mut options = scratch.options(&provider, 10)?;
+    options.feature_requests.request("portal-output-cap=off")?;
+    let summary = run_review(&options, CancellationToken::new())?;
+    assert!(!summary.completed);
+    let receipt: Value =
+        serde_json::from_slice(&fs::read(options.output_dir.join("run-features.json"))?)?;
+    assert_eq!(receipt["runtime"], "claude");
+    assert_eq!(receipt["command"], "review");
+    assert_eq!(receipt["entries"][3]["requested"], "off");
+    assert_eq!(receipt["entries"][3]["source"], "explicit-run-option");
+    assert!(receipt["entries"][0]["requested"].is_null());
+    assert!(receipt["entries"][3]["applied"].is_null());
+    Ok(())
+}
+
+#[test]
+fn phase_usage_persistence_failure_is_unavailable_without_aggregates() -> TestResult {
+    let scratch = Scratch::new()?;
+    let not_directory = scratch.file("not-directory", "original")?;
+    let observation = Observation {
+        summary: json!({"stdout_discarded_bytes":0}),
+        stdout: include_bytes!("codex-success.jsonl").to_vec(),
+        stderr: Vec::new(),
+    };
+    let usage =
+        record_worker_usage_for_phase(&not_directory, "codex", Some(&observation), "phase-9");
+    assert_eq!(usage["status"], "unavailable");
+    assert_eq!(usage["phase_id"], "phase-9");
+    assert!(usage.get("summary").is_none());
+    assert!(usage.get("provider_turn_count").is_none());
+    assert!(usage.get("report_artifact").is_none());
+    assert_eq!(fs::read_to_string(not_directory)?, "original");
+    Ok(())
+}
+
+#[test]
+fn phase_usage_with_missing_observation_stays_unknown() -> TestResult {
+    let scratch = Scratch::new()?;
+    let usage = record_worker_usage_for_phase(&scratch.0, "codex", None, "phase-7");
+    assert_eq!(usage["status"], "unavailable");
+    assert_eq!(usage["phase_id"], "phase-7");
+    assert!(usage.get("provider_turn_count").is_none());
+    let saved: Value = serde_json::from_slice(&fs::read(scratch.0.join("worker-usage.json"))?)?;
+    assert_eq!(saved["status"], "unavailable");
+    assert!(fs::read(scratch.0.join("worker-usage-events.jsonl"))?.is_empty());
     Ok(())
 }

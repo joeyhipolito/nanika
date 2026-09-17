@@ -10,11 +10,17 @@ mod cancellation;
 mod codex;
 mod cycle;
 mod durable;
+mod features;
 mod observe;
+mod portal;
+mod portal_command;
 mod progress;
 mod routing;
 mod snapshot;
 mod usage;
+mod usage_codex;
+#[cfg(test)]
+mod usage_codex_tests;
 mod usage_live;
 mod usage_runtime;
 mod view;
@@ -107,6 +113,12 @@ usage: NANIKA_RUST_FIRST_USE_PILOT=1 orchestrator-first-use-pilot review \\
        NANIKA_RUST_FIRST_USE_PILOT=1 orchestrator-first-use-pilot view \
          --progress-log <regular-file> [--follow]
 
+       orchestrator-first-use-pilot features
+
+Fresh code/review/run accepts repeatable --feature <name=off|on>.
+Portal output capping supports ON for standalone Codex code; other ON requests are refused.
+OFF receipts distinguish default from explicit requests; durable resume preserves recorded settings.
+
 Experimental pilot: one review, one coding attempt, or a fixed or authored Codex-only local mission cycle.
 Run exit 0 requires successful terminal, provider, and post-run gates; a requested durable pause exits 3.
 Status is read-only inspection of a strictly validated snapshot of visible recorded journal state;
@@ -177,6 +189,7 @@ pub struct PilotOptions {
     pub durable: bool,
     pub stop_after_phase: Option<String>,
     pub mission_id: Option<String>,
+    pub(crate) feature_requests: features::Requests,
     pub(crate) progress_log: Option<PathBuf>,
     pub(crate) observe_follow: bool,
     pub(crate) observe_format: observe::OutputFormat,
@@ -223,6 +236,7 @@ where
             ));
         }
     };
+    let mut feature_requests = features::Requests::default();
     let mut prompt_file = None;
     let mut output_dir = None;
     let mut repo = None;
@@ -264,6 +278,19 @@ where
                 .ok_or_else(|| usage(&format!("{flag} requires a value")))
         };
         match flag.as_str() {
+            "--feature" => {
+                if !matches!(
+                    command,
+                    PilotCommand::Code | PilotCommand::Review | PilotCommand::Run
+                ) {
+                    return Err(usage(
+                        "--feature is available only with code, review, or run; resume preserves recorded settings",
+                    ));
+                }
+                feature_requests
+                    .request(&value()?)
+                    .map_err(PilotError::Usage)?;
+            }
             "--prompt-file" => {
                 if command == PilotCommand::Run {
                     return Err(usage("run requires --task-file, not --prompt-file"));
@@ -611,6 +638,7 @@ where
         durable,
         stop_after_phase,
         mission_id,
+        feature_requests,
         progress_log,
         observe_follow,
         observe_format,
@@ -632,6 +660,22 @@ where
     let mut lookahead: Vec<String> = Vec::with_capacity(3);
     let help_requested = match arguments.next().map(Into::into) {
         None => false,
+        Some(first) if first == "features" => {
+            if arguments.next().is_some() {
+                let _ = writeln!(error_output, "features accepts no arguments");
+                return 2;
+            }
+            return match serde_json::to_writer_pretty(&mut *output, &features::catalog()) {
+                Ok(()) => {
+                    if writeln!(output).is_ok() {
+                        0
+                    } else {
+                        1
+                    }
+                }
+                Err(_) => 1,
+            };
+        }
         Some(first) => {
             lookahead.push(first);
             if matches!(lookahead[0].as_str(), "--help" | "-h") {
@@ -834,6 +878,7 @@ fn run_review_with_progress(
     cancellation: CancellationToken,
     progress: progress::Progress,
 ) -> Result<PilotSummary, PilotError> {
+    let feature_snapshot = feature_snapshot(options)?;
     let prompt = if matches!(options.command, PilotCommand::Code | PilotCommand::Run) {
         read_prompt_with_limit(&options.prompt_file, MAX_CODE_PROMPT_BYTES)?
     } else {
@@ -841,8 +886,17 @@ fn run_review_with_progress(
     };
     let route = routing::select(options, &prompt);
     let layout = create_output_layout(&options.output_dir, options.command)?;
+    write_feature_snapshot(&layout.root, &feature_snapshot)?;
     let result = run_prepared(options, &prompt, &route, &layout, cancellation, progress);
     if let Err(error) = &result {
+        if options.feature_requests.portal_output_cap()
+            && !layout.root.join("portal-application.json").exists()
+        {
+            write_portal_application(
+                &layout.root,
+                &portal::unavailable("unavailable", &error.to_string()),
+            )?;
+        }
         write_result(
             &layout.root,
             &json!({
@@ -888,6 +942,11 @@ fn run_prepared(
         .map_or(layout.worker.as_path(), |snapshot| {
             snapshot.workspace.as_path()
         });
+    let portal = if options.feature_requests.portal_output_cap() {
+        Some(portal::Portal::prepare(&layout.root).map_err(PilotError::Composition)?)
+    } else {
+        None
+    };
     let observed_version = match probe_runtime_version(options, worker, &cancellation, &supervisor)
     {
         Ok(version) => version,
@@ -898,6 +957,12 @@ fn run_prepared(
                 }
                 _ => ("refused_probe", None),
             };
+            if portal.is_some() {
+                write_portal_application(
+                    &layout.root,
+                    &portal::unavailable("not-dispatched", &error.to_string()),
+                )?;
+            }
             let record = json!({
                     "schema": RESULT_SCHEMA,
                     "status": status,
@@ -970,7 +1035,31 @@ fn run_prepared(
             }
         }
     }
+    let portal_application = if let Some(portal) = portal {
+        let validated = observation
+            .as_ref()
+            .ok_or_else(|| "provider observation is missing".to_owned())
+            .and_then(|observation| {
+                portal::require_complete_capture(&observation.summary)?;
+                codex::parse_code_commands(&observation.stdout, worker).map_err(str::to_owned)
+            })
+            .and_then(|parsed| portal.validate(&parsed.commands));
+        let report = match validated {
+            Ok(report) => report,
+            Err(reason) => {
+                if post_failure.is_none() {
+                    post_failure = Some(format!("Portal validation failed: {reason}"));
+                }
+                portal::unavailable("failed-validation", &reason)
+            }
+        };
+        write_portal_application(&layout.root, &report)?;
+        Some(report)
+    } else {
+        None
+    };
     let coding = CodingFinish {
+        portal_application,
         snapshot: snapshot.as_ref(),
         source_preserved,
         post_failure: post_failure.as_deref(),
@@ -1206,7 +1295,23 @@ fn dispatch_phase(
                         service.executable_id(),
                         service.process_environment(),
                     )
-                    .map_err(|e| composition(&e))?,
+                    .map_err(|e| composition(&e))?
+                    .with_portal_directory(
+                        if options.feature_requests.portal_output_cap() {
+                            Some(
+                                worker
+                                    .parent()
+                                    .ok_or_else(|| {
+                                        PilotError::Composition(
+                                            "workspace has no parent".to_owned(),
+                                        )
+                                    })?
+                                    .join("portal-logs"),
+                            )
+                        } else {
+                            None
+                        },
+                    ),
                 ),
             )
             .map_err(|e| composition(&e))?;
@@ -1264,7 +1369,15 @@ fn phase_execution_request(
 ) -> Result<ExecutionRequest, PilotError> {
     let composition = |error: &dyn std::fmt::Display| PilotError::Composition(error.to_string());
     let objective = if options.command == PilotCommand::Code {
-        format!("{CODE_OBJECTIVE_PREFIX}{prompt}")
+        if options.feature_requests.portal_output_cap() {
+            let prefix = CODE_OBJECTIVE_PREFIX.replace("Do not read or write outside the current workspace.", "Respect the workspace boundary with only the narrow Portal helper/log exception below.");
+            format!(
+                "{prefix}{}{prompt}",
+                portal::policy(worker).map_err(PilotError::Composition)?
+            )
+        } else {
+            format!("{CODE_OBJECTIVE_PREFIX}{prompt}")
+        }
     } else {
         prompt.to_owned()
     };
@@ -1303,6 +1416,7 @@ fn phase_execution_request(
 }
 
 struct CodingFinish<'a> {
+    portal_application: Option<Value>,
     snapshot: Option<&'a snapshot::RepositorySnapshot>,
     source_preserved: Option<bool>,
     post_failure: Option<&'a str>,
@@ -1329,7 +1443,12 @@ fn finish(
         )?;
         process = observation.summary.clone();
     }
-    let worker_usage = record_worker_usage(root, &options.runtime, observation.as_ref());
+    let worker_usage = record_worker_usage(
+        root,
+        &options.runtime,
+        observation.as_ref(),
+        coding.portal_application.as_ref(),
+    );
     let codex_protocol = observation
         .as_ref()
         .filter(|_| options.runtime == "codex")
@@ -1408,6 +1527,7 @@ fn finish(
         "reason": reason,
         "review_dispatched": options.command == PilotCommand::Review,
         "provider_dispatched": true,
+        "portal_application": coding.portal_application,
         "runtime": options.runtime,
                 "runtime_executable_requested": options.executable().to_string_lossy(),
         "runtime_version_required": options.required_version(),
@@ -1443,14 +1563,68 @@ fn finish(
 
 // Diagnostic persistence is best effort; a missing telemetry artifact must not
 // relabel provider execution. The result always records unavailable evidence.
-fn record_worker_usage(root: &Path, runtime: &str, observation: Option<&Observation>) -> Value {
-    let captured = usage_runtime::capture(
+fn record_worker_usage(
+    root: &Path,
+    runtime: &str,
+    observation: Option<&Observation>,
+    portal_application: Option<&Value>,
+) -> Value {
+    record_worker_usage_scoped(root, runtime, observation, None, portal_application)
+}
+
+fn record_worker_usage_for_phase(
+    root: &Path,
+    runtime: &str,
+    observation: Option<&Observation>,
+    phase_id: &str,
+) -> Value {
+    record_worker_usage_scoped(root, runtime, observation, Some(phase_id), None)
+}
+
+fn record_worker_usage_scoped(
+    root: &Path,
+    runtime: &str,
+    observation: Option<&Observation>,
+    phase_id: Option<&str>,
+    portal_application: Option<&Value>,
+) -> Value {
+    let mut captured = usage_runtime::capture(
         runtime,
         observation.map(|value| value.stdout.as_slice()),
         observation.and_then(|value| value.summary["stdout_discarded_bytes"].as_u64()),
     );
-    if runtime != "claude" {
+    if runtime != "claude" && runtime != "codex" {
         return captured;
+    }
+    if let Some(application) = portal_application {
+        captured["portal_requested"] = json!("on");
+        captured["portal_effective"] = if application["applied"] == true {
+            json!("on")
+        } else {
+            Value::Null
+        };
+        captured["mode_source"] = json!("explicit-run-option; observed application report");
+        captured["portal_application_status"] = application["status"].clone();
+        captured["portal_application_artifact"] = json!("portal-application.json");
+        if captured["report"].is_object() {
+            captured["report"]["portal_mode"] = captured["portal_effective"].clone();
+        }
+    }
+    if let Some(phase_id) = phase_id {
+        captured["phase_id"] = json!(phase_id);
+        if let Some(report) = captured.get_mut("report") {
+            report["phase_id"] = json!(phase_id);
+            if let Some(turns) = report.get_mut("turns").and_then(Value::as_array_mut) {
+                for turn in turns {
+                    turn["phase_id"] = json!(phase_id);
+                }
+            }
+        }
+        if let Some(events) = captured.get_mut("events").and_then(Value::as_array_mut) {
+            for event in events {
+                event["phase_id"] = json!(phase_id);
+            }
+        }
     }
     let mut summary = captured.clone();
     if let Some(object) = summary.as_object_mut() {
@@ -1462,6 +1636,10 @@ fn record_worker_usage(root: &Path, runtime: &str, observation: Option<&Observat
         summary["quality"] = captured["report"]["quality"].clone();
         summary["assistant_message_count"] = captured["report"]["assistant_message_count"].clone();
         summary["tool_call_count"] = captured["report"]["tool_call_count"].clone();
+        if runtime == "codex" {
+            summary["provider_turn_count"] = captured["report"]["provider_turn_count"].clone();
+            summary["granularity"] = json!("provider-turn");
+        }
     }
     let saved = (|| -> Result<(), PilotError> {
         let report = serde_json::to_vec_pretty(&captured)
@@ -1497,12 +1675,49 @@ fn record_worker_usage(root: &Path, runtime: &str, observation: Option<&Observat
                 "quality",
                 "assistant_message_count",
                 "tool_call_count",
+                "provider_turn_count",
+                "granularity",
             ] {
                 object.remove(key);
             }
         }
     }
     summary
+}
+
+fn feature_snapshot(options: &PilotOptions) -> Result<features::Snapshot, PilotError> {
+    if options.feature_requests.portal_output_cap() && (options.durable || options.authored_mission)
+    {
+        return Err(PilotError::Usage(
+            "Portal output capping is available only for standalone Codex code".to_owned(),
+        ));
+    }
+    let command = match options.command {
+        PilotCommand::Code => "code",
+        PilotCommand::Review => "review",
+        PilotCommand::Run => "run",
+        _ => {
+            return Err(PilotError::Usage(
+                "feature settings require a fresh execution command".to_owned(),
+            ));
+        }
+    };
+    options
+        .feature_requests
+        .snapshot(&options.runtime, command)
+        .map_err(PilotError::Usage)
+}
+
+fn write_portal_application(root: &Path, report: &Value) -> Result<(), PilotError> {
+    let bytes =
+        serde_json::to_vec_pretty(report).map_err(|e| PilotError::Composition(e.to_string()))?;
+    write_artifact(&root.join("portal-application.json"), &bytes)
+}
+
+fn write_feature_snapshot(root: &Path, snapshot: &features::Snapshot) -> Result<(), PilotError> {
+    let bytes = serde_json::to_vec_pretty(&snapshot.value())
+        .map_err(|error| PilotError::Composition(error.to_string()))?;
+    write_artifact(&root.join("run-features.json"), &bytes)
 }
 
 fn write_result(root: &Path, record: &Value) -> Result<PathBuf, PilotError> {
@@ -1705,7 +1920,7 @@ impl ProcessService for PilotProcessService {
         }
         let report = if self.progress.enabled() {
             self.progress
-                .forward_observed("standalone", self.executable_id == "claude", |output| {
+                .forward_observed("standalone", Some(self.executable_id.as_str()), |output| {
                     self.supervisor
                         .run(&spec.with_output_sender(output), request.working_root())
                 })

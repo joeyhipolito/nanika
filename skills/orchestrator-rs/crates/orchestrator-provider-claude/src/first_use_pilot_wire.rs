@@ -87,6 +87,7 @@ fn validate_rate_limit_event(record: &Object) -> Result<(), ClaudeOutputError> {
             "overageStatus",
             "overageDisabledReason",
             "unifiedWindows",
+            "surpassedThreshold",
         ],
     )?;
     match info.get("status").and_then(Value::as_str) {
@@ -97,6 +98,11 @@ fn validate_rate_limit_event(record: &Object) -> Result<(), ClaudeOutputError> {
     }
     optional_exact_string(info, "overageStatus", "rejected")?;
     optional_exact_string(info, "overageDisabledReason", "out_of_credits")?;
+    match info.get("surpassedThreshold").map(Value::as_f64) {
+        None => {}
+        Some(Some(threshold)) if threshold.is_finite() && (0.0..=1.0).contains(&threshold) => {}
+        Some(_) => return Err(ClaudeOutputError::Malformed),
+    }
     let typed = info.get("resetsAt").is_none_or(Value::is_u64)
         && info.get("rateLimitType").is_none_or(Value::is_string)
         && info.get("utilization").is_none_or(Value::is_number)
@@ -446,5 +452,101 @@ fn remove_zero(object: &mut Object, key: &str) -> Result<(), ClaudeOutputError> 
         None | Some(Some(0)) => Ok(()),
         Some(Some(_)) => Err(ClaudeOutputError::UnknownProtocolValue),
         Some(None) => Err(ClaudeOutputError::Malformed),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn record(info: Value) -> Object {
+        Object::from_iter([
+            ("type".to_owned(), json!("rate_limit_event")),
+            ("rate_limit_info".to_owned(), info),
+        ])
+    }
+
+    #[test]
+    fn allowed_warning_with_surpassed_threshold_075() {
+        let record = record(json!({"status": "allowed_warning", "surpassedThreshold": 0.75}));
+        assert!(validate_rate_limit_event(&record).is_ok());
+    }
+
+    #[test]
+    fn surpassed_threshold_absent_is_backwards_compatible() {
+        let record = record(json!({"status": "allowed_warning"}));
+        assert!(validate_rate_limit_event(&record).is_ok());
+    }
+
+    #[test]
+    fn surpassed_threshold_endpoints_are_valid() {
+        for endpoint in [0.0, 1.0] {
+            let record = record(json!({"status": "allowed", "surpassedThreshold": endpoint}));
+            assert!(validate_rate_limit_event(&record).is_ok());
+        }
+    }
+
+    #[test]
+    fn surpassed_threshold_null_is_malformed() {
+        let record = record(json!({"status": "allowed", "surpassedThreshold": null}));
+        assert!(matches!(
+            validate_rate_limit_event(&record),
+            Err(ClaudeOutputError::Malformed)
+        ));
+    }
+
+    #[test]
+    fn surpassed_threshold_string_is_malformed() {
+        let record = record(json!({"status": "allowed", "surpassedThreshold": "0.75"}));
+        assert!(matches!(
+            validate_rate_limit_event(&record),
+            Err(ClaudeOutputError::Malformed)
+        ));
+    }
+
+    #[test]
+    fn surpassed_threshold_bool_is_malformed() {
+        let record = record(json!({"status": "allowed", "surpassedThreshold": true}));
+        assert!(matches!(
+            validate_rate_limit_event(&record),
+            Err(ClaudeOutputError::Malformed)
+        ));
+    }
+
+    #[test]
+    fn surpassed_threshold_negative_is_malformed() {
+        let record = record(json!({"status": "allowed", "surpassedThreshold": -0.1}));
+        assert!(matches!(
+            validate_rate_limit_event(&record),
+            Err(ClaudeOutputError::Malformed)
+        ));
+    }
+
+    #[test]
+    fn surpassed_threshold_above_one_is_malformed() {
+        let record = record(json!({"status": "allowed", "surpassedThreshold": 1.1}));
+        assert!(matches!(
+            validate_rate_limit_event(&record),
+            Err(ClaudeOutputError::Malformed)
+        ));
+    }
+
+    #[test]
+    fn unknown_fields_are_still_rejected() {
+        let record = record(json!({"status": "allowed", "surpassedThreshold": 0.5, "extra": 1}));
+        assert!(matches!(
+            validate_rate_limit_event(&record),
+            Err(ClaudeOutputError::Malformed)
+        ));
+    }
+
+    #[test]
+    fn rejected_status_still_returns_provider_reported_error_with_threshold() {
+        let record = record(json!({"status": "rejected", "surpassedThreshold": 1.0}));
+        assert!(matches!(
+            validate_rate_limit_event(&record),
+            Err(ClaudeOutputError::ProviderReportedError)
+        ));
     }
 }

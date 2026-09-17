@@ -11,8 +11,9 @@ use std::time::Instant;
 
 use serde::Serialize;
 use serde_json::json;
+use sha2::{Digest, Sha256};
 
-const REVISION: &str = "portal-output/v1";
+const REVISION: &str = "portal-output/v2";
 const CONTROLS_REVISION: &str = "portal-controls/v1";
 const BUDGET: usize = 16 * 1024;
 const PREVIEW: usize = 512;
@@ -107,6 +108,7 @@ struct Excerpt {
 
 #[derive(Default, Serialize)]
 struct Summary {
+    full_log_sha256: String,
     lines: u64,
     failure_lines: u64,
     summary_lines: u64,
@@ -173,6 +175,7 @@ impl Line {
 fn summarize(reader: impl Read) -> io::Result<Summary> {
     let mut reader = BufReader::with_capacity(8192, reader);
     let mut out = Summary::default();
+    let mut digest = Sha256::new();
     let mut line = Line::default();
     let mut offset = 0;
     loop {
@@ -185,6 +188,7 @@ fn summarize(reader: impl Read) -> io::Result<Summary> {
             .position(|b| *b == b'\n')
             .map_or(chunk.len(), |n| n + 1);
         let complete = chunk[count - 1] == b'\n';
+        digest.update(&chunk[..count]);
         line.push(&chunk[..count]);
         reader.consume(count);
         if complete {
@@ -196,6 +200,7 @@ fn summarize(reader: impl Read) -> io::Result<Summary> {
     if line.bytes != 0 {
         line.finish(&mut out, offset);
     }
+    out.full_log_sha256 = format!("{:x}", digest.finalize());
     Ok(out)
 }
 
@@ -348,6 +353,7 @@ fn execute(options: &Options, output: impl Write) -> Result<i32> {
         let reader = (&mut log).take(before.len());
         if options.effective_output_cap == Mode::On {
             let summary = summarize(reader)?;
+            receipt["full_log_sha256"] = json!(summary.full_log_sha256);
             if !unchanged(&before, &log.metadata()?) {
                 return Err("log changed during summary; use foreground commands".into());
             }

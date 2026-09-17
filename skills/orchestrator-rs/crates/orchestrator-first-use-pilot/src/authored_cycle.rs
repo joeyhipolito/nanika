@@ -109,6 +109,7 @@ struct DispatchedPhase<'a> {
     observed_version: &'a str,
     outcome: &'a AttemptOutcome,
     observation: Option<&'a Observation>,
+    worker_usage: Value,
 }
 
 impl DispatchedPhase<'_> {
@@ -123,6 +124,7 @@ impl DispatchedPhase<'_> {
             self.observation,
         );
         decorate(&mut record, self.phase, self.role, true);
+        record["worker_usage"] = self.worker_usage.clone();
         record
     }
 
@@ -146,7 +148,9 @@ pub(crate) fn run(
 ) -> Result<PilotSummary, PilotError> {
     let source = read_prompt_with_limit(&options.prompt_file, MAX_CODE_PROMPT_BYTES)?;
     let mission = parse_mission(&source).map_err(PilotError::Composition)?;
+    let feature_snapshot = feature_snapshot(options)?;
     let layout = create_output_layout(&options.output_dir, PilotCommand::Run)?;
+    write_feature_snapshot(&layout.root, &feature_snapshot)?;
     write_artifact(&layout.root.join("mission.md"), source.as_bytes())?;
     write_plan(&layout.root, &mission)?;
 
@@ -678,6 +682,12 @@ pub(crate) fn run_code_phase(
         observed_version: environment.observed_version,
         outcome: &outcome,
         observation: observation.as_ref(),
+        worker_usage: crate::record_worker_usage_for_phase(
+            phase_root,
+            "codex",
+            observation.as_ref(),
+            phase.id.as_str(),
+        ),
     };
     cycle::save_observation(phase_root, observation.as_ref())
         .map_err(|reason| dispatched.failure(reason))?;
@@ -750,6 +760,12 @@ pub(crate) fn run_review_phase(
         observed_version: environment.observed_version,
         outcome: &outcome,
         observation: observation.as_ref(),
+        worker_usage: crate::record_worker_usage_for_phase(
+            phase_root,
+            "codex",
+            observation.as_ref(),
+            phase.id.as_str(),
+        ),
     };
     cycle::save_observation(phase_root, observation.as_ref())
         .map_err(|reason| dispatched.failure(reason))?;
@@ -874,7 +890,9 @@ fn provider_service(
                 shell_config,
                 environment.cancellation.clone(),
             )
-            .map(|service| Box::new(service) as Box<dyn ObservedProcessService>);
+            .map(|service| {
+                Box::new(service.with_codex_usage()) as Box<dyn ObservedProcessService>
+            });
     }
     cycle::codex_service(
         environment.options,

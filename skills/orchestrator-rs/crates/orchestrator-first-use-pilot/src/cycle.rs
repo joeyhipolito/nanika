@@ -66,7 +66,9 @@ pub(crate) fn run(
     let task = read_prompt_with_limit(&options.prompt_file, MAX_CODE_PROMPT_BYTES)?;
     validate_fixed_plan(&task).map_err(PilotError::Composition)?;
     let code_route = routing::select(options, &task);
+    let feature_snapshot = feature_snapshot(options)?;
     let layout = create_output_layout(&options.output_dir, PilotCommand::Run)?;
+    write_feature_snapshot(&layout.root, &feature_snapshot)?;
     write_artifact(&layout.root.join("task.md"), task.as_bytes())?;
     let mut phases = Vec::new();
     let result = run_inner(

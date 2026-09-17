@@ -512,6 +512,7 @@ fn downgrade_to_original_v1_manifest(output: &Path) -> TestResult {
         .as_object_mut()
         .ok_or("manifest is not an object")?;
     object.remove("execution_environment");
+    object.remove("feature_configuration");
     manifest["provider"]
         .as_object_mut()
         .ok_or("provider binding is not an object")?
@@ -524,7 +525,11 @@ fn downgrade_to_original_v1_manifest(output: &Path) -> TestResult {
     manifest_bytes.push(b'\n');
     fs::write(&manifest_path, &manifest_bytes)?;
 
-    let mut previous = format!("{:x}", Sha256::digest(&manifest_bytes));
+    rechain_manifest(output, &manifest_bytes)
+}
+
+fn rechain_manifest(output: &Path, manifest_bytes: &[u8]) -> TestResult {
+    let mut previous = format!("{:x}", Sha256::digest(manifest_bytes));
     let mut records = fs::read_dir(output.join("journal"))?
         .map(|entry| entry.map(|entry| entry.path()))
         .collect::<Result<Vec<_>, _>>()?;
@@ -571,6 +576,7 @@ fn durable_manifest_serialization_includes_additive_process_bindings() -> TestRe
         "output_directory",
         "snapshot",
         "execution_environment",
+        "feature_configuration",
     ]);
     assert_eq!(actual, expected);
     Ok(())
@@ -2797,5 +2803,287 @@ fn live_output_arrives_before_provider_exit() -> TestResult {
         "mission failed: {:?}",
         result.status
     );
+    Ok(())
+}
+
+#[test]
+fn feature_settings_survive_pause_resume_and_refuse_overrides() -> TestResult {
+    let scratch = Scratch::new()?;
+    let repo = scratch.repo()?;
+    let mission = scratch.file("mission.md", MISSION, false)?;
+    let (provider, verifier, _) = fixture(
+        &scratch,
+        r#"{"schema":"nanika.rust-first-use-review.v1","verdict":"pass","blockers":[],"warnings":[]}"#,
+        None,
+        false,
+    )?;
+    let output = scratch.path("out");
+    let mut command = pilot(&scratch);
+    command.args([
+        "run",
+        "--durable",
+        "--stop-after-phase",
+        "code-one",
+        "--feature",
+        "portal-output-cap=off",
+        "--feature",
+        "kb=off",
+    ]);
+    run_args_tail(&mut command, &repo, &mission, &output, &provider, &verifier);
+    let paused = command.output()?;
+    assert_eq!(
+        paused.status.code(),
+        Some(3),
+        "{}",
+        String::from_utf8_lossy(&paused.stderr)
+    );
+    let manifest = fs::read(output.join("manifest.json"))?;
+    let value: Value = serde_json::from_slice(&manifest)?;
+    let settings = &value["feature_configuration"];
+    assert_eq!(settings["entries"][3]["requested"], "off");
+    assert!(settings["entries"][0]["requested"].is_null());
+    assert_eq!(
+        status_report(&status(&scratch, &output)?)?["feature_configuration"],
+        *settings
+    );
+    let count = lines(&scratch.path("provider-count"))?;
+    let refused = pilot(&scratch)
+        .args([
+            "resume",
+            "--output-dir",
+            output.to_str().ok_or("path")?,
+            "--feature",
+            "kb=off",
+        ])
+        .output()?;
+    assert_eq!(refused.status.code(), Some(2));
+    assert_eq!(lines(&scratch.path("provider-count"))?, count);
+    let resumed = resume(&scratch, &output)?;
+    assert!(
+        resumed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&resumed.stderr)
+    );
+    assert_eq!(fs::read(output.join("manifest.json"))?, manifest);
+    assert_eq!(
+        status_report(&status(&scratch, &output)?)?["feature_configuration"],
+        *settings
+    );
+    Ok(())
+}
+
+#[test]
+fn legacy_feature_settings_remain_unrecorded_after_resume() -> TestResult {
+    let scratch = Scratch::new()?;
+    let output = paused_durable_run(&scratch)?;
+    downgrade_to_original_v1_manifest(&output)?;
+    let manifest = fs::read(output.join("manifest.json"))?;
+    let report = status_report(&status(&scratch, &output)?)?;
+    assert_eq!(report["feature_configuration_status"], "legacy-unrecorded");
+    assert!(report["feature_configuration"].is_null());
+    assert!(resume(&scratch, &output)?.status.success());
+    assert_eq!(fs::read(output.join("manifest.json"))?, manifest);
+    Ok(())
+}
+
+#[test]
+fn tampered_feature_settings_are_refused_without_provider_dispatch() -> TestResult {
+    for field in ["supported", "runtime", "revision", "missing"] {
+        let scratch = Scratch::new()?;
+        let output = paused_durable_run(&scratch)?;
+        let count = lines(&scratch.path("provider-count"))?;
+        let path = output.join("manifest.json");
+        let mut manifest: Value = serde_json::from_slice(&fs::read(&path)?)?;
+        match field {
+            "supported" => {
+                manifest["feature_configuration"]["entries"][0]["supported"] = Value::Bool(true)
+            }
+            "runtime" => {
+                manifest["feature_configuration"]["runtime"] = Value::String("claude".into())
+            }
+            "revision" => {
+                manifest["feature_configuration"]["implementation_revision"] =
+                    Value::String("unknown".into())
+            }
+            _ => {
+                manifest
+                    .as_object_mut()
+                    .ok_or("object")?
+                    .remove("feature_configuration");
+            }
+        }
+        fs::write(&path, serde_json::to_vec_pretty(&manifest)?)?;
+        assert!(!resume(&scratch, &output)?.status.success(), "{field}");
+        assert!(!status(&scratch, &output)?.status.success(), "{field}");
+        assert_eq!(lines(&scratch.path("provider-count"))?, count);
+    }
+    Ok(())
+}
+
+#[test]
+fn recorded_v1_feature_settings_remain_frozen_after_resume() -> TestResult {
+    let scratch = Scratch::new()?;
+    let output = paused_durable_run(&scratch)?;
+    let path = output.join("manifest.json");
+    let mut manifest: Value = serde_json::from_slice(&fs::read(&path)?)?;
+    let feature = &mut manifest["feature_configuration"];
+    feature["schema"] = Value::String("nanika.run-features.v1".into());
+    feature["implementation_revision"] = Value::String("rust-pilot-features/v1".into());
+    for entry in feature["entries"].as_array_mut().ok_or("entries")? {
+        entry["applied"] = Value::Bool(false);
+    }
+    let settings = feature.clone();
+    let mut bytes = serde_json::to_vec_pretty(&manifest)?;
+    bytes.push(b'\n');
+    fs::write(&path, &bytes)?;
+    rechain_manifest(&output, &bytes)?;
+    assert_eq!(
+        status_report(&status(&scratch, &output)?)?["feature_configuration"],
+        settings
+    );
+    let resumed = resume(&scratch, &output)?;
+    assert!(
+        resumed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&resumed.stderr)
+    );
+    assert_eq!(fs::read(&path)?, bytes);
+    assert_eq!(
+        status_report(&status(&scratch, &output)?)?["feature_configuration"],
+        settings
+    );
+    Ok(())
+}
+
+#[test]
+fn durable_usage_is_phase_scoped_and_resume_does_not_duplicate_snapshots() -> TestResult {
+    let scratch = Scratch::new()?;
+    let output = paused_durable_run(&scratch)?;
+    let first_path = output.join("phases/01-code-one/worker-usage-events.jsonl");
+    let before = fs::read(&first_path)?;
+    let first: Value = serde_json::from_slice(&before)?;
+    assert_eq!(first["phase_id"], "phase-1");
+    assert_eq!(first["turn_id"], "turn-1");
+    assert_eq!(first["usage"]["input_tokens"], 1);
+    let completed = resume(&scratch, &output)?;
+    assert!(
+        completed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&completed.stderr)
+    );
+    assert_eq!(before, fs::read(&first_path)?);
+    let progress: Vec<Value> = String::from_utf8_lossy(&completed.stderr)
+        .lines()
+        .filter_map(|line| serde_json::from_str(line).ok())
+        .filter(|v: &Value| v["kind"] == "worker.usage")
+        .collect();
+    assert_eq!(progress.len(), 2);
+    assert_eq!(progress[0]["phase_id"], "phase-2");
+    assert_eq!(progress[1]["phase_id"], "phase-3");
+    for (directory, phase) in [
+        ("01-code-one", "phase-1"),
+        ("02-code-two", "phase-2"),
+        ("03-review", "phase-3"),
+    ] {
+        let report: Value = serde_json::from_slice(&fs::read(
+            output
+                .join("phases")
+                .join(directory)
+                .join("worker-usage.json"),
+        )?)?;
+        assert_eq!(report["phase_id"], phase);
+        assert_eq!(report["report"]["provider_turn_count"], 1);
+        assert!(report["report"]["summary"]["cost_usd"].is_null());
+    }
+    let replayed = resume(&scratch, &output)?;
+    assert!(replayed.status.success());
+    assert!(
+        !String::from_utf8_lossy(&replayed.stderr)
+            .lines()
+            .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+            .any(|event| event["kind"] == "worker.usage")
+    );
+    assert_eq!(
+        lines(&scratch.path("provider-count"))?,
+        ["code-one", "code-two", "review"]
+    );
+    assert_eq!(before, fs::read(&first_path)?);
+    Ok(())
+}
+
+#[test]
+fn rejected_durable_review_preserves_usage_without_passing_or_running_dependents() -> TestResult {
+    let scratch = Scratch::new()?;
+    let repo = scratch.repo()?;
+    let mission = scratch.file("mission.md", MISSION, false)?;
+    let (provider, verifier, _) = fixture(
+        &scratch,
+        r#"{"schema":"nanika.rust-first-use-review.v1","verdict":"reject","blockers":["broken"],"warnings":[]}"#,
+        None,
+        false,
+    )?;
+    let output = scratch.path("out");
+    let mut command = pilot(&scratch);
+    run_args(&mut command, &repo, &mission, &output, &provider, &verifier);
+    let failed = command.output()?;
+    assert!(!failed.status.success());
+    let records = journal_records(&output)?;
+    let review = records
+        .iter()
+        .find(|r| {
+            r.record.phase_id.as_deref() == Some("phase-3") && r.record.kind == "phase_terminal"
+        })
+        .ok_or("missing review record")?;
+    let result = review
+        .record
+        .result
+        .as_ref()
+        .ok_or("missing review result")?;
+    assert_eq!(result["status"], "failed");
+    assert_eq!(result["worker_usage"]["status"], "available");
+    assert_eq!(result["worker_usage"]["phase_id"], "phase-3");
+    assert_eq!(result["worker_usage"]["provider_turn_count"], 1);
+    assert!(!scratch.path("verifier-count").exists());
+    Ok(())
+}
+
+#[test]
+fn verifier_output_cannot_impersonate_provider_usage() -> TestResult {
+    let scratch = Scratch::new()?;
+    let repo = scratch.repo()?;
+    let mission = scratch.file("mission.md", MISSION, false)?;
+    let (provider, verifier, _) = fixture(
+        &scratch,
+        r#"{"schema":"nanika.rust-first-use-review.v1","verdict":"pass","blockers":[],"warnings":[]}"#,
+        None,
+        false,
+    )?;
+    let mut script = fs::read_to_string(&verifier)?;
+    script.push_str(
+        r#"cat <<'EOF'
+{"type":"thread.started","thread_id":"not-a-provider"}
+{"type":"turn.started"}
+{"type":"turn.completed","usage":{"input_tokens":999,"output_tokens":999}}
+EOF
+"#,
+    );
+    fs::write(&verifier, script)?;
+    let output = scratch.path("out");
+    let mut command = pilot(&scratch);
+    run_args(&mut command, &repo, &mission, &output, &provider, &verifier);
+    let completed = command.output()?;
+    assert!(
+        completed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&completed.stderr)
+    );
+    let events: Vec<Value> = String::from_utf8_lossy(&completed.stderr)
+        .lines()
+        .filter_map(|line| serde_json::from_str(line).ok())
+        .filter(|event: &Value| event["kind"] == "worker.usage")
+        .collect();
+    assert_eq!(events.len(), 3);
+    assert!(events.iter().all(|event| event["phase_id"] != "phase-4"));
+    assert!(!output.join("phases/04-verify/worker-usage.json").exists());
     Ok(())
 }

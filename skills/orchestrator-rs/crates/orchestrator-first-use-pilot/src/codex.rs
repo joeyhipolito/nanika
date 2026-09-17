@@ -120,6 +120,7 @@ pub struct CodexExecutor {
     mode: Mode,
     executable_id: String,
     environment: Vec<(String, String)>,
+    portal_directory: Option<std::path::PathBuf>,
 }
 impl CodexExecutor {
     pub(crate) fn new_with_process_binding(
@@ -132,7 +133,13 @@ impl CodexExecutor {
             mode,
             executable_id: executable_id.into(),
             environment,
+            portal_directory: None,
         })
+    }
+
+    pub(crate) fn with_portal_directory(mut self, directory: Option<std::path::PathBuf>) -> Self {
+        self.portal_directory = directory;
+        self
     }
 
     pub(crate) fn process_request(
@@ -153,6 +160,11 @@ impl CodexExecutor {
                 Mode::Review => "read-only",
                 Mode::Code => "workspace-write",
             })?;
+        if let (Mode::Code, Some(directory)) = (self.mode, &self.portal_directory) {
+            process = process
+                .with_argument("--add-dir")?
+                .with_argument(directory.to_string_lossy())?;
+        }
         for flag in COMMON_POLICY {
             process = process.with_argument(*flag)?;
         }
@@ -232,7 +244,11 @@ impl PhaseExecutor for CodexExecutor {
             (Mode::Code, Some(target)) => target == request.worker_dir(),
             _ => false,
         };
-        if !target_matches || request.resume_from().is_some() || request.max_turns() != 1 {
+        if !target_matches
+            || request.resume_from().is_some()
+            || request.max_turns() != 1
+            || (self.portal_directory.is_some() && self.mode != Mode::Code)
+        {
             return failed(Duration::ZERO, self.mode);
         }
         let process = match self.process_request(request) {
@@ -479,15 +495,38 @@ enum PendingTool {
     EmptyWait,
 }
 
+pub(crate) struct CommandEvidence {
+    pub(crate) id: String,
+    pub(crate) command: String,
+    pub(crate) output: String,
+    pub(crate) exit_code: i32,
+}
+
 pub struct CodeParsed {
     pub output: String,
     pub usage: Usage,
     pub command_count: u64,
     pub file_change_count: u64,
     pub tool_failed: bool,
+    pub(crate) commands: Vec<CommandEvidence>,
 }
 
 pub fn parse_code(bytes: &[u8], workspace: &Path) -> Result<CodeParsed, &'static str> {
+    parse_code_inner(bytes, workspace, false)
+}
+
+pub(crate) fn parse_code_commands(
+    bytes: &[u8],
+    workspace: &Path,
+) -> Result<CodeParsed, &'static str> {
+    parse_code_inner(bytes, workspace, true)
+}
+
+fn parse_code_inner(
+    bytes: &[u8],
+    workspace: &Path,
+    capture_commands: bool,
+) -> Result<CodeParsed, &'static str> {
     let text = std::str::from_utf8(bytes).map_err(|_| "UTF-8")?;
     let workspace = workspace
         .canonicalize()
@@ -500,6 +539,7 @@ pub fn parse_code(bytes: &[u8], workspace: &Path) -> Result<CodeParsed, &'static
     let mut last_item_was_answer = false;
     let mut usage = None;
     let mut command_count = 0_u64;
+    let mut commands = Vec::new();
     let mut file_change_count = 0_u64;
     let mut tool_failed = false;
     for line in text.lines() {
@@ -559,14 +599,15 @@ pub fn parse_code(bytes: &[u8], workspace: &Path) -> Result<CodeParsed, &'static
                     CodeItem::Command {
                         id,
                         command,
-                        aggregated_output: _,
+                        aggregated_output,
                         exit_code,
                         status,
                     },
             } if state == 2 => {
                 last_item_was_answer = false;
-                if pending.remove(&id) != Some(PendingTool::Command(command)) {
-                    return Err("command completion did not match its start");
+                match pending.remove(&id) {
+                    Some(PendingTool::Command(start)) if start == command => {}
+                    _ => return Err("command completion did not match its start"),
                 }
                 let exit_code = exit_code.ok_or("command completion omitted exit code")?;
                 let valid_status = match status {
@@ -579,6 +620,17 @@ pub fn parse_code(bytes: &[u8], workspace: &Path) -> Result<CodeParsed, &'static
                 }
                 tool_failed |= exit_code != 0;
                 command_count = command_count.checked_add(1).ok_or("too many commands")?;
+                if capture_commands {
+                    if commands.len() >= 256 {
+                        return Err("too many Portal commands");
+                    }
+                    commands.push(CommandEvidence {
+                        id,
+                        command,
+                        output: aggregated_output,
+                        exit_code,
+                    });
+                }
             }
             CodeEvent::ItemStarted {
                 item:
@@ -686,6 +738,7 @@ pub fn parse_code(bytes: &[u8], workspace: &Path) -> Result<CodeParsed, &'static
         output: output.ok_or("missing coding answer")?,
         usage: usage.ok_or("missing coding usage")?,
         command_count,
+        commands,
         file_change_count,
         tool_failed,
     })
